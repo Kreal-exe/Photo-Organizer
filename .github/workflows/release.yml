@@ -1,0 +1,43 @@
+# Push a tag like v1.0.0 → the app is built, tested and attached to a GitHub release of that version.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Test
+        run: ./build.sh test
+
+      - name: Build
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          export VERSION="${VERSION#v}"
+          export BUILD_NUMBER="${{ github.run_number }}"
+          ./build.sh zip
+          echo "ZIP=build/PhotoOrganizer-${VERSION}.zip" >> "$GITHUB_ENV"
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ github.ref_name }}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            # The tag was moved to a newer commit: replace the build and the notes of the existing release.
+            gh release upload "$TAG" "$ZIP" --clobber
+            gh release edit "$TAG" --title "Photo Organizer $TAG" --notes-file .github/release-notes.md
+          else
+            gh release create "$TAG" "$ZIP" \
+              --title "Photo Organizer $TAG" \
+              --generate-notes \
+              --notes-file .github/release-notes.md
+          fi
