@@ -74,12 +74,15 @@ public sealed class PhotoSearchWindow : Window
         Closing += (_, e) => { e.Cancel = true; Hide(); };   // kept for the next search, as on the Mac
     }
 
+    /// <summary>A picture: a video can't be an example (as on the Mac).</summary>
+    static bool IsPicture(string path) => File.Exists(path) && Scanner.MediaKind(path) == "image";
+
     static string? Dropped(DragEventArgs e) =>
-        e.Data.GetDataPresent(DataFormats.FileDrop) ? (e.Data.GetData(DataFormats.FileDrop) as string[])?.FirstOrDefault(File.Exists) : null;
+        e.Data.GetDataPresent(DataFormats.FileDrop) ? (e.Data.GetData(DataFormats.FileDrop) as string[])?.FirstOrDefault(IsPicture) : null;
 
     void Paste()
     {
-        if (Clipboard.ContainsFileDropList() && Clipboard.GetFileDropList().Cast<string>().FirstOrDefault(File.Exists) is { } file)
+        if (Clipboard.ContainsFileDropList() && Clipboard.GetFileDropList().Cast<string>().FirstOrDefault(IsPicture) is { } file)
         {
             Load(file);
             return;

@@ -1,4 +1,8 @@
-// Draws the 1024×1024 app icon: `make icon` turns the PNG into Resources/AppIcon.icns.
+// Draws the 1024×1024 app icon. Resources/AppIcon.icns is made from it by hand, only when the icon changes:
+//   clang -fobjc-arc -framework Cocoa Tools/make_icon.m -o /tmp/make-icon && /tmp/make-icon /tmp/icon.png
+//   mkdir /tmp/AppIcon.iconset; for s in 16 32 128 256 512; do sips -z $s $s /tmp/icon.png --out /tmp/AppIcon.iconset/icon_${s}x$s.png;
+//     sips -z $((s*2)) $((s*2)) /tmp/icon.png --out /tmp/AppIcon.iconset/icon_${s}x$s@2x.png; done
+//   iconutil -c icns /tmp/AppIcon.iconset -o Resources/AppIcon.icns
 #import <Cocoa/Cocoa.h>
 
 int main(int argc, const char *argv[]) {

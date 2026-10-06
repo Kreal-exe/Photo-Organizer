@@ -29,20 +29,26 @@ public sealed class PhotoGrid : Grid
     readonly ScrollViewer _scroll = new() { VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled, CanContentScroll = false, Focusable = false };
     readonly Canvas _canvas;
     readonly TextBlock _placeholder = new() { TextWrapping = TextWrapping.Wrap, TextAlignment = TextAlignment.Center, FontSize = 17, FontWeight = FontWeights.Medium, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(60), IsHitTestVisible = false };
-    readonly Border _yearBar = new() { CornerRadius = new CornerRadius(10), BorderThickness = new Thickness(1), HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 8, 0), Padding = new Thickness(0, 6, 0, 6) };
+    readonly Border _yearBar = new() { CornerRadius = new CornerRadius(10), BorderThickness = new Thickness(1), HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 10, 8, 10), Padding = new Thickness(0, 6, 0, 6) };
     readonly StackPanel _years = new();
+    // Every year stays in the strip; when there are more than fit, it scrolls with the wheel.
+    readonly ScrollViewer _yearScroll = new() { VerticalScrollBarVisibility = ScrollBarVisibility.Hidden, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled, Focusable = false };
     readonly Border _dropHighlight = new() { BorderThickness = new Thickness(3), CornerRadius = new CornerRadius(10), Margin = new Thickness(3), Visibility = Visibility.Collapsed, IsHitTestVisible = false };
 
     readonly Thumbnails _thumbnails;
     List<Section> _sections = [];
     List<PhotoItem> _flat = [];
     Dictionary<PhotoItem, int> _indexOf = [];
-    readonly Dictionary<PhotoItem, Rect> _positions = [];
+    // The cell of each place in _flat. A file can be shown twice (in the duplicates view: in a set of look-alikes and as
+    // the original of exact copies), so cells go by place, not by file.
+    readonly List<Rect> _cells = [];
     readonly List<(double Y, double Height, Section Section)> _headers = [];
+    readonly List<(int Year, int Index)> _yearStarts = [];
     readonly List<(string Year, double Y)> _yearPositions = [];
-    // Visual rows top to bottom and the action buttons of the headers, made in Relayout: hit testing, drawing and the
-    // arrow keys look things up here instead of going through every file (a library can hold ~100,000).
-    readonly List<(double Top, List<PhotoItem> Items)> _rows = [];
+    // Visual rows top to bottom (the places in _flat they hold) and the action buttons of the headers, made in Relayout:
+    // hit testing, drawing and the arrow keys look things up here instead of going through every file (a library can
+    // hold ~100,000).
+    readonly List<(double Top, int Start, int Count)> _rows = [];
     readonly List<(Rect Rect, Section Section)> _actions = [];
     double _yearBarWidth;
     HashSet<PhotoItem> _selected = [];
@@ -57,6 +63,8 @@ public sealed class PhotoGrid : Grid
     public double CellSize { get; private set; } = 190;
     public bool ShowsOriginalBadge { get; private set; }
     public bool AcceptsImageDrops { get; set; }
+    /// <summary>Files of the grid are being dragged out (a drop back onto the window is not a folder to open).</summary>
+    public bool Dragging => _dragging;
     public bool ShowsNudityScores { get; set; }
 
     public event Action<PhotoItem>? Activated;
@@ -81,7 +89,8 @@ public sealed class PhotoGrid : Grid
         Children.Add(_placeholder);
         _yearBar.SetResourceReference(Border.BackgroundProperty, "Toolbar");
         _yearBar.SetResourceReference(Border.BorderBrushProperty, "Separator");
-        _yearBar.Child = _years;
+        _yearScroll.Content = _years;
+        _yearBar.Child = _yearScroll;
         Children.Add(_yearBar);
         _dropHighlight.SetResourceReference(Border.BorderBrushProperty, "Accent");
         Children.Add(_dropHighlight);
@@ -107,7 +116,18 @@ public sealed class PhotoGrid : Grid
         _indexOf = new Dictionary<PhotoItem, int>();
         for (int i = 0; i < _flat.Count; i++) _indexOf.TryAdd(_flat[i], i);
         _selected = _selected.Where(_indexOf.ContainsKey).ToHashSet();
-        _yearBarWidth = sections.Select(s => YearOf(s.Title)).Where(y => y != null).Distinct().Skip(1).Any() ? 46 : 0;
+        // The strip of years goes by the files' own dates, as on the Mac: the first file of each later year.
+        _yearStarts.Clear();
+        int last = 0;
+        for (int i = 0; i < _flat.Count; i++)
+        {
+            if (_flat[i].Undated || _flat[i].Date.Year <= last) continue;
+            last = _flat[i].Date.Year;
+            _yearStarts.Add((last, i));
+        }
+        _yearBarWidth = _yearStarts.Count > 1 ? 46 : 0;
+        _rows.Clear();
+        _cells.Clear();
         Relayout();
         _scroll.ScrollToVerticalOffset(keepScroll ? offset : 0);
         _placeholder.Visibility = sections.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
@@ -146,21 +166,15 @@ public sealed class PhotoGrid : Grid
         _anchor = item;
         _cursor = null;
         Relayout();
-        if (_positions.TryGetValue(item, out var rect)) _scroll.ScrollToVerticalOffset(Math.Max(0, rect.Top - HeaderHeight - 20));
+        if (CellOf(item) is { } rect) _scroll.ScrollToVerticalOffset(Math.Max(0, rect.Top - HeaderHeight - 20));
         _canvas.InvalidateVisual();
         SelectionChanged?.Invoke();
     }
 
     // --- Layout -----------------------------------------------------------------------------------------------------
 
-    static string? YearOf(string title)
-    {
-        foreach (string word in title.Replace(",", " ").Split(' '))
-        {
-            if (word.Length == 4 && word.All(char.IsAsciiDigit)) return word;
-        }
-        return null;
-    }
+    /// <summary>The cell of a file: the first place it is shown in.</summary>
+    Rect? CellOf(PhotoItem item) => _indexOf.TryGetValue(item, out int index) && index < _cells.Count ? _cells[index] : null;
 
     double YearBarWidth => _yearBarWidth;
 
@@ -173,29 +187,34 @@ public sealed class PhotoGrid : Grid
         _columns = Math.Max(1, (int)((usable + Spacing) / (CellSize + Spacing)));
         // Cells grow to fill the row, as in the macOS app.
         _cell = Math.Floor((usable - (_columns - 1) * Spacing) / _columns);
-        _positions.Clear();
+        _cells.Clear();
         _headers.Clear();
         _yearPositions.Clear();
         _rows.Clear();
         _actions.Clear();
-        var years = new HashSet<string>();
         double y = 6;
+        int place = 0, nextYear = 0;
         foreach (var section in _sections)
         {
             _headers.Add((y, HeaderHeight, section));
             if (ActionRect(section, y, width) is { } action) _actions.Add((action, section));
-            if (YearOf(section.Title) is { } year && years.Add(year)) _yearPositions.Add((year, y));
+            double sectionTop = y;
             y += HeaderHeight;
             for (int start = 0; start < section.Items.Count; start += _columns)
             {
-                var row = new List<PhotoItem>(_columns);
-                for (int column = 0; column < _columns && start + column < section.Items.Count; column++)
+                int count = Math.Min(_columns, section.Items.Count - start);
+                for (int column = 0; column < count; column++)
                 {
-                    var item = section.Items[start + column];
-                    _positions[item] = new Rect(Inset + column * (_cell + Spacing), y, _cell, _cell);
-                    row.Add(item);
+                    if (nextYear < _yearStarts.Count && _yearStarts[nextYear].Index == place)
+                    {
+                        // A year that starts with the section's first row jumps to the section's title.
+                        _yearPositions.Add((_yearStarts[nextYear].Year.ToString(), start == 0 ? sectionTop : y - 10));
+                        nextYear++;
+                    }
+                    _cells.Add(new Rect(Inset + column * (_cell + Spacing), y, _cell, _cell));
+                    place++;
                 }
-                _rows.Add((y, row));
+                _rows.Add((y, place - count, count));
                 y += _cell + CaptionHeight + RowGap;
             }
             y += 10;
@@ -210,12 +229,10 @@ public sealed class PhotoGrid : Grid
         _years.Children.Clear();
         _yearBar.Visibility = YearBarWidth > 0 ? Visibility.Visible : Visibility.Collapsed;
         if (YearBarWidth == 0) return;
-        double available = Math.Max(ActualHeight - 60, 22);
-        int step = Math.Max(1, (int)Math.Ceiling(_yearPositions.Count * 22 / available));
-        for (int i = 0; i < _yearPositions.Count; i += step)
+        foreach (var (year, y) in _yearPositions)
         {
-            var (year, y) = _yearPositions[i];
-            var text = new TextBlock { Text = year, Width = 46, Height = 22, TextAlignment = TextAlignment.Center, FontSize = 12, Cursor = Cursors.Hand, Padding = new Thickness(0, 3, 0, 0), Tag = year, Background = Brushes.Transparent };
+            var text = new TextBlock { Text = year, Width = 46, Height = 22, TextAlignment = TextAlignment.Center, FontSize = 12, Cursor = Cursors.Hand, Padding = new Thickness(0, 3, 0, 0), Tag = year, Background = Brushes.Transparent,
+                                       ToolTip = F("Перейти к %@ году", year) };
             text.MouseLeftButtonDown += (_, e) => { _scroll.ScrollToVerticalOffset(y); e.Handled = true; };
             _years.Children.Add(text);
         }
@@ -230,6 +247,7 @@ public sealed class PhotoGrid : Grid
             bool now = (string)text.Tag == current;
             text.FontWeight = now ? FontWeights.Bold : FontWeights.Normal;
             text.SetResourceReference(TextBlock.ForegroundProperty, now ? "Accent" : "Secondary");
+            if (now) text.BringIntoView();
         }
     }
 
@@ -308,16 +326,18 @@ public sealed class PhotoGrid : Grid
         }
         for (int r = FirstRowReaching(top); r < _rows.Count && _rows[r].Top <= bottom; r++)
         {
-            foreach (var item in _rows[r].Items) DrawCell(dc, item, _positions[item], pixels, text, secondary);
+            var (_, start, count) = _rows[r];
+            for (int i = start; i < start + count; i++) DrawCell(dc, _flat[i], _cells[i], pixels, text, secondary);
         }
     }
 
     (string Text, string Brush)? Badge(PhotoItem item)
     {
+        // In the order the Mac shows them.
         if (ShowsNudityScores && item.NudityScore is { } score) return ($"{score * 100:0} %", "BadgePink");
-        if (item.Tiny) return (L("Миниатюра"), "BadgePurple");
         if (item.IsDuplicate) return (L("Дубликат"), "BadgeOrange");
-        if (item.BetterCopy != null) return (L("Хуже качеством"), "BadgeOrange");
+        if (item.Tiny) return (L("Миниатюра"), "BadgePurple");
+        if (ShowsOriginalBadge && item.BetterCopy != null) return (L("Хуже качеством"), "BadgeOrange");
         if (ShowsOriginalBadge && item.BestOfCopies) return (L("Лучшее качество"), "BadgeGreen");
         if (ShowsOriginalBadge && item.Duplicates is { Count: > 0 }) return (L("Оригинал"), "BadgeGreen");
         return null;
@@ -328,7 +348,17 @@ public sealed class PhotoGrid : Grid
         var clip = new RectangleGeometry(rect, 8, 8);
         dc.DrawGeometry(Theme.Brush("Cell"), null, clip);
         var image = _thumbnails.Get(item, pixels, out bool failed);
-        if (image != null)
+        if (image != null && item.Tiny && item.PixelWidth > 0 && item.PixelHeight > 0)
+        {
+            // A thumbnail at its own size (no larger than the cell): how small it is is the point.
+            double dpi = VisualTreeHelper.GetDpi(this).PixelsPerDip;
+            double scale = Math.Min(1, Math.Min(rect.Width / (item.PixelWidth / dpi), rect.Height / (item.PixelHeight / dpi)));
+            double w = item.PixelWidth / dpi * scale, h = item.PixelHeight / dpi * scale;
+            dc.PushClip(clip);
+            dc.DrawImage(image, new Rect(rect.X + (rect.Width - w) / 2, rect.Y + (rect.Height - h) / 2, w, h));
+            dc.Pop();
+        }
+        else if (image != null)
         {
             // Aspect fill: the middle of the picture fills the square.
             double scale = Math.Max(rect.Width / image.Width, rect.Height / image.Height);
@@ -358,8 +388,8 @@ public sealed class PhotoGrid : Grid
             double width = Text(duration, Semibold, 10.5, Brushes.White).Width + 14;
             DrawPill(dc, new Point(rect.Right - 7 - width, rect.Bottom - 7 - 18), duration, new SolidColorBrush(Color.FromArgb(150, 0, 0, 0)));
         }
-        // Caption: the name, then the date and the size.
-        var name = Text(item.Name, Regular, 12.5, text, rect.Width + 8);
+        // Caption: the name, then the date and the size. Copies often share a name: the duplicates view shows where each lives.
+        var name = Text(ShowsOriginalBadge ? item.RelativePath.Replace('/', '\\') : item.Name, Regular, 12.5, text, rect.Width + 8);
         name.TextAlignment = TextAlignment.Center;
         dc.DrawText(name, new Point(rect.X - 4, rect.Bottom + 6));
         string size = item.PixelWidth > 0 ? $"{item.PixelWidth}×{item.PixelHeight}" : item.CloudOnly ? L("в облаке") : L("не читается");
@@ -383,10 +413,10 @@ public sealed class PhotoGrid : Grid
     {
         int r = FirstRowReaching(point.Y);
         if (r >= _rows.Count || point.Y < _rows[r].Top) return null;
-        foreach (var item in _rows[r].Items)
+        var (_, start, count) = _rows[r];
+        for (int i = start; i < start + count; i++)
         {
-            var rect = _positions[item];
-            if (point.X >= rect.Left && point.X <= rect.Right) return item;
+            if (point.X >= _cells[i].Left && point.X <= _cells[i].Right) return _flat[i];
         }
         return null;
     }
@@ -509,10 +539,15 @@ public sealed class PhotoGrid : Grid
         }
     }
 
+    /// <summary>What the Mac's tooltip says, and the faces found.</summary>
     static string Tooltip(PhotoItem item)
     {
-        var lines = new List<string> { item.RelativePath.Replace('/', '\\'), $"{item.DateText(true)} — {item.DateSourceText}" };
+        string dimensions = item.PixelWidth > 0 ? $"{item.PixelWidth}×{item.PixelHeight}" : item.CloudOnly ? L("в облаке") : L("не читается");
+        var lines = new List<string> { item.RelativePath.Replace('/', '\\'), $"{dimensions}, {Strings.Size(item.FileSize)}", $"{item.DateSourceText}: {item.DateText(true)}" };
         if (item.CloudOnly) lines.Add(L("Файлы ещё не загружены из облака: дата взята из файла, на дубликаты не проверялись"));
+        if (item.Labels is { Count: > 0 } labels)
+            lines.Add(L("На снимке: ") + string.Join(", ", labels.OrderByDescending(p => p.Value).Take(8).Select(p => Labels.DisplayName(p.Key)).Distinct()));
+        if (item.NudityScore is { } score) lines.Add(F("Оценка откровенности: %.0f %%", (score * 100).ToString("0")));
         if (item.Faces is { Count: > 0 }) lines.Add(F("Лиц на фото: %@", item.Faces.Count));
         if (item.DuplicateOf != null) lines.Add(F("Копия файла %@", item.DuplicateOf.RelativePath.Replace('/', '\\')));
         if (item.DestinationFolder != null) lines.Add(item.NeedsMove ? $"→ {item.DestinationFolder.Replace('/', '\\')}\\" : L("Уже на месте"));
@@ -565,7 +600,7 @@ public sealed class PhotoGrid : Grid
             case Key.PageUp:
                 _scroll.PageUp();
                 return true;
-            case Key.Left or Key.Right or Key.Up or Key.Down when _flat.Count > 0:
+            case Key.Left or Key.Right or Key.Up or Key.Down when _flat.Count > 0 && _cells.Count == _flat.Count:
                 // From the selected file, or the first one when nothing is selected yet.
                 bool extend = Keyboard.Modifiers.HasFlag(ModifierKeys.Shift);
                 var anchor = _anchor != null && _selected.Contains(_anchor) ? _anchor : _flat.FirstOrDefault(_selected.Contains);
@@ -599,16 +634,16 @@ public sealed class PhotoGrid : Grid
     {
         if (key == Key.Left) return index - 1;
         if (key == Key.Right) return index + 1;
-        var rect = _positions[_flat[index]];
+        var rect = _cells[index];
         int r = FirstRowReaching(rect.Top + 1) + (key == Key.Up ? -1 : 1);
         if (r < 0 || r >= _rows.Count) return index;
-        var best = _rows[r].Items.MinBy(item => Math.Abs(_positions[item].Left - rect.Left))!;
-        return _indexOf[best];
+        var (_, start, count) = _rows[r];
+        return Enumerable.Range(start, count).MinBy(i => Math.Abs(_cells[i].Left - rect.Left));
     }
 
     void ScrollTo(PhotoItem item)
     {
-        var rect = _positions[item];
+        if (CellOf(item) is not { } rect) return;
         if (rect.Top - 10 < _scroll.VerticalOffset) _scroll.ScrollToVerticalOffset(rect.Top - HeaderHeight);
         else if (rect.Bottom + CaptionHeight + 10 > _scroll.VerticalOffset + _scroll.ViewportHeight)
             _scroll.ScrollToVerticalOffset(rect.Bottom + CaptionHeight + 10 - _scroll.ViewportHeight);
@@ -620,7 +655,8 @@ public sealed class PhotoGrid : Grid
     {
         // Never its own files dragged back in: that would start a search by accident.
         if (_dragging || !AcceptsImageDrops || !e.Data.GetDataPresent(DataFormats.FileDrop)) return null;
-        return (e.Data.GetData(DataFormats.FileDrop) as string[])?.FirstOrDefault(File.Exists);
+        // Pictures only: a video can't be an example.
+        return (e.Data.GetData(DataFormats.FileDrop) as string[])?.FirstOrDefault(path => File.Exists(path) && Scanner.MediaKind(path) == "image");
     }
 
     protected override void OnDragEnter(DragEventArgs e)

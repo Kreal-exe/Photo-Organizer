@@ -21,13 +21,36 @@ public sealed partial class Scanner
     readonly CancellationTokenSource _cancel = new();
     List<string> _sidecars = [];
 
-    public Scanner(string root)
+    public Scanner(string root) : this([root])
     {
-        Root = System.IO.Path.GetFullPath(root).TrimEnd('\\', '/');
-        if (Root.EndsWith(':')) Root += "\\";
     }
 
+    /// <summary>
+    /// A library of several folders, scanned together (copies are found across them). A folder inside another one is
+    /// left out: the outer one covers it.
+    /// </summary>
+    public Scanner(IEnumerable<string> roots)
+    {
+        Roots = Normalized(roots);
+        Root = Roots.Count > 0 ? Roots[0] : "";
+    }
+
+    public static string NormalizedRoot(string root)
+    {
+        string full = System.IO.Path.GetFullPath(root).TrimEnd('\\', '/');
+        return full.EndsWith(':') ? full + "\\" : full;
+    }
+
+    public static List<string> Normalized(IEnumerable<string> roots)
+    {
+        var all = roots.Select(NormalizedRoot).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        bool Inside(string a, string b) => a.StartsWith(b.TrimEnd('\\') + "\\", StringComparison.OrdinalIgnoreCase);
+        return all.Where(r => !all.Any(other => other != r && Inside(r, other))).ToList();
+    }
+
+    /// <summary>The first folder of the library.</summary>
     public string Root { get; }
+    public List<string> Roots { get; }
     /// <summary>Top-level folders whose files are never picked as the original of a duplicate set.</summary>
     public List<string> DeprioritizedFolders { get; set; } = [];
 
@@ -39,17 +62,27 @@ public sealed partial class Scanner
         var token = _cancel.Token;
         var items = Enumerate(progress, token);
         if (token.IsCancellationRequested) return null;
-        // What earlier scans of this folder read is reused: only new and changed files are read again.
-        using var cache = new ScanCache(Root);
-        ForEach(items, ScanPhase.Metadata, progress, item => ReadMetadata(item, cache), token);
+        // What earlier scans of these folders read is reused: only new and changed files are read again.
+        var caches = Roots.ToDictionary(r => r, r => new ScanCache(r), StringComparer.OrdinalIgnoreCase);
+        using var disposer = new Disposer(caches.Values);
+        ForEach(items, ScanPhase.Metadata, progress, item => ReadMetadata(item, caches[item.Root]), token);
         if (token.IsCancellationRequested) return null;
         DateFromTakeoutSidecars(items, _sidecars);
         DateFromNeighbors(items);
+        DateFromTakeoutFolders(items);
         ManualDates.ApplyTo(items);
-        FindDuplicates(items, cache, progress, token);
+        FindDuplicates(items, caches, progress, token);
         if (token.IsCancellationRequested) return null;
         items.Sort(PhotoItem.ByDate);
         return items;
+    }
+
+    sealed class Disposer(IEnumerable<IDisposable> items) : IDisposable
+    {
+        public void Dispose()
+        {
+            foreach (var item in items) item.Dispose();
+        }
     }
 
     // --- Dates in file names ----------------------------------------------------------------------------------------
@@ -150,7 +183,7 @@ public sealed partial class Scanner
         return true;
     }
 
-    static bool HasOwnDate(PhotoItem item) => item.DateSource is DateSource.Exif or DateSource.Name or DateSource.Takeout;
+    static bool HasOwnDate(PhotoItem item) => item.DateSource is DateSource.Exif or DateSource.Name or DateSource.Takeout or DateSource.Manual;
 
     /// <summary>
     /// Gives files that have no date of their own the date of their neighbours — but only when that is safe: the file
@@ -202,6 +235,77 @@ public sealed partial class Scanner
     [GeneratedRegex(@"\((\d+)\)\.json$", RegexOptions.IgnoreCase)]
     private static partial Regex CopyNumber();
 
+    [GeneratedRegex(@"\(\d+\)$")]
+    private static partial Regex TrailingCopyNumber();
+
+    [GeneratedRegex(@"-(edited|отредактировано|изменено|bearbeitet|modifié|editado|modificato|bewerkt|edytowane|redigeret|redigerad|muokattu|collage|photo_frame|animation|effects|mix|snippet|cinematic|stylized)$", RegexOptions.IgnoreCase)]
+    private static partial Regex EditSuffix();
+
+    [GeneratedRegex(@"^(photos from|фото за|фото) (\d{4})( ?г\.?)?$", RegexOptions.IgnoreCase)]
+    private static partial Regex TakeoutYearFolder();
+
+    /// <summary>
+    /// The year of the Google Takeout folder a file is in ("Фото 2023 г", "Photos from 2023") for a file nothing else
+    /// dates: Takeout sorts by the date Google Photos gives a file, so the year is Google's own. Only the year — the
+    /// file goes into that year's folder, not into a month — and a copy with a date of its own still wins.
+    /// </summary>
+    public static void DateFromTakeoutFolders(IEnumerable<PhotoItem> items)
+    {
+        foreach (var item in items)
+        {
+            if (!item.Undated) continue;
+            string folder = item.CurrentFolder.Split('/').Last().Normalize(NormalizationForm.FormC);
+            var match = TakeoutYearFolder().Match(folder);
+            if (!match.Success || !int.TryParse(match.Groups[2].Value, out int year) || year < 1990 || year > 2100) continue;
+            item.Date = new DateTime(year, 7, 1, 12, 0, 0, DateTimeKind.Local);
+            item.DateSource = DateSource.TakeoutFolder;
+        }
+    }
+
+    /// <summary>
+    /// When no title is the file's own name, the file is one Takeout gave no .json of its own: its name cut to 47
+    /// characters while the title is whole, a numbered copy of a file that has one ("…(1).jpg"), an edited copy
+    /// ("IMG_1-отредактировано.jpg", "IMG_1-EFFECTS.jpg") or the video of a Live Photo ("IMG_1.MP4" next to
+    /// "IMG_1.HEIC"). It then takes the .json of that file — for a cut name, only when every title it could be the start
+    /// of says the same.
+    /// </summary>
+    static string? TakeoutKey<T>(string path, Dictionary<string, T> known, Dictionary<string, HashSet<string>> titlesByFolder, bool video)
+    {
+        string key = PathKey(path);
+        if (known.ContainsKey(key)) return key;
+        string folder = System.IO.Path.GetDirectoryName(key) ?? "";
+        string extension = System.IO.Path.GetExtension(key);
+        string baseName = TrailingCopyNumber().Replace(System.IO.Path.GetFileNameWithoutExtension(key), "");
+        string? Named(string name) => known.ContainsKey(System.IO.Path.Combine(folder, name + extension)) ? System.IO.Path.Combine(folder, name + extension) : null;
+        if (Named(baseName) is { } numbered) return numbered;
+        for (string stripped = EditSuffix().Replace(baseName, ""); stripped != baseName; stripped = EditSuffix().Replace(baseName, ""))
+        {
+            baseName = stripped;
+            if (Named(baseName) is { } edited) return edited;
+        }
+        if (!titlesByFolder.TryGetValue(folder, out var titles)) return null;
+        if (video && titles.FirstOrDefault(t => System.IO.Path.GetFileNameWithoutExtension(t) == baseName) is { } still)
+            return System.IO.Path.Combine(folder, still);
+        if (baseName.Length < 30) return null;
+        string? found = null;
+        foreach (string title in titles)
+        {
+            if (System.IO.Path.GetExtension(title) != extension || !title.StartsWith(baseName, StringComparison.Ordinal)) continue;
+            string candidate = System.IO.Path.Combine(folder, title);
+            if (found != null && !Equals(known[found], known[candidate])) return null;
+            found = candidate;
+        }
+        return found;
+    }
+
+    /// <summary>A number in a Takeout .json, written as a number or as a string ("1563121862"); 0 when neither.</summary>
+    static double JsonNumber(JsonElement element) => element.ValueKind switch
+    {
+        JsonValueKind.Number => element.GetDouble(),
+        JsonValueKind.String => double.TryParse(element.GetString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var value) ? value : 0,
+        _ => 0,
+    };
+
     static string PathKey(string path) => path.ToLowerInvariant().Normalize(NormalizationForm.FormC);
 
     /// <summary>
@@ -217,7 +321,7 @@ public sealed partial class Scanner
         {
             try
             {
-                if (new FileInfo(path).Length > 1_000_000) continue;
+                if (new FileInfo(path).Length >= 1_000_000) continue;
                 using var json = JsonDocument.Parse(File.ReadAllBytes(path));
                 var root = json.RootElement;
                 if (root.ValueKind != JsonValueKind.Object || !root.TryGetProperty("title", out var titleElement)
@@ -226,14 +330,12 @@ public sealed partial class Scanner
                 if (root.TryGetProperty("photoTakenTime", out var taken) && taken.ValueKind == JsonValueKind.Object
                     && taken.TryGetProperty("timestamp", out var stamp))
                 {
-                    timestamp = stamp.ValueKind == JsonValueKind.String
-                        ? double.TryParse(stamp.GetString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var t) ? t : 0
-                        : stamp.ValueKind == JsonValueKind.Number ? stamp.GetDouble() : 0;
+                    timestamp = JsonNumber(stamp);
                 }
                 if (root.TryGetProperty("geoData", out var geo) && geo.ValueKind == JsonValueKind.Object)
                 {
-                    if (geo.TryGetProperty("latitude", out var la) && la.ValueKind == JsonValueKind.Number) latitude = la.GetDouble();
-                    if (geo.TryGetProperty("longitude", out var lo) && lo.ValueKind == JsonValueKind.Number) longitude = lo.GetDouble();
+                    if (geo.TryGetProperty("latitude", out var la)) latitude = JsonNumber(la);
+                    if (geo.TryGetProperty("longitude", out var lo)) longitude = JsonNumber(lo);
                 }
                 bool hasPlace = (latitude != 0 || longitude != 0) && Math.Abs(latitude) <= 90 && Math.Abs(longitude) <= 180;
                 if (timestamp < 631152000 && !hasPlace) continue;
@@ -252,9 +354,16 @@ public sealed partial class Scanner
             {
             }
         }
+        var titlesByFolder = new Dictionary<string, HashSet<string>>();
+        foreach (string key in dates.Keys.Concat(places.Keys))
+        {
+            string folder = System.IO.Path.GetDirectoryName(key) ?? "";
+            if (!titlesByFolder.TryGetValue(folder, out var titles)) titlesByFolder[folder] = titles = [];
+            titles.Add(System.IO.Path.GetFileName(key));
+        }
         foreach (var item in items)
         {
-            string key = PathKey(item.Path);
+            string key = TakeoutKey(item.Path, dates, titlesByFolder, item.Video) ?? TakeoutKey(item.Path, places, titlesByFolder, item.Video) ?? "";
             if (places.TryGetValue(key, out var place) && !item.HasLocation)
             {
                 (item.Latitude, item.Longitude) = place;
@@ -283,12 +392,12 @@ public sealed partial class Scanner
     {
         var items = new List<PhotoItem>();
         _sidecars = [];
-        var stack = new Stack<string>();
-        stack.Push(Root);
+        var stack = new Stack<(string Directory, string Root)>();
+        foreach (string root in Roots) stack.Push((root, root));
         var options = new EnumerationOptions { IgnoreInaccessible = true, AttributesToSkip = 0, RecurseSubdirectories = false };
         while (stack.Count > 0 && !token.IsCancellationRequested)
         {
-            string directory = stack.Pop();
+            var (directory, root) = stack.Pop();
             IEnumerable<FileSystemInfo> entries;
             try
             {
@@ -306,7 +415,11 @@ public sealed partial class Scanner
                 if ((attributes & (FileAttributes.Hidden | FileAttributes.System)) != 0) continue;
                 if ((attributes & FileAttributes.Directory) != 0)
                 {
-                    if ((attributes & FileAttributes.ReparsePoint) == 0 && !SkippedFolders.Contains(name)) stack.Push(entry.FullName);
+                    // Links and junctions lead to folders seen elsewhere (or to loops); a OneDrive folder that is not
+                    // downloaded is a reparse point too, but a placeholder, not a link, and its files are listed.
+                    bool link = (attributes & FileAttributes.ReparsePoint) != 0 && entry.LinkTarget != null;
+                    if (!link && !SkippedFolders.Contains(name) && !name.EndsWith(".photoslibrary", StringComparison.OrdinalIgnoreCase))
+                        stack.Push((entry.FullName, root));
                     continue;
                 }
                 if (name.EndsWith(".json", StringComparison.OrdinalIgnoreCase))
@@ -317,8 +430,8 @@ public sealed partial class Scanner
                 string? kind = MediaKind(name);
                 if (kind == null) continue;
                 var file = (FileInfo)entry;
-                string relative = System.IO.Path.GetRelativePath(Root, entry.FullName).Replace('\\', '/');
-                var item = new PhotoItem(entry.FullName, relative)
+                string relative = System.IO.Path.GetRelativePath(root, entry.FullName).Replace('\\', '/');
+                var item = new PhotoItem(entry.FullName, relative, root)
                 {
                     Video = kind == "video",
                     CloudOnly = (attributes & CloudOnlyAttributes) != 0,
@@ -378,13 +491,14 @@ public sealed partial class Scanner
         }
     }
 
-    void FindDuplicates(List<PhotoItem> items, ScanCache cache, Action<ScanPhase, int, int>? progress, CancellationToken token)
+    void FindDuplicates(List<PhotoItem> items, Dictionary<string, ScanCache> caches, Action<ScanPhase, int, int>? progress, CancellationToken token)
     {
         // Only files that share their size with another file can be identical, so only those get hashed.
         var candidates = items.Where(i => i.FileSize > 0 && !i.CloudOnly).GroupBy(i => i.FileSize)
                               .Where(g => g.Count() > 1).SelectMany(g => g).ToList();
         ForEach(candidates, ScanPhase.Duplicates, progress, item =>
         {
+            var cache = caches[item.Root];
             item.ContentHash = cache.HashFor(item);
             if (item.ContentHash != null) return;
             item.ContentHash = HashFile(item.Path, token);

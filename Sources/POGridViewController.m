@@ -8,7 +8,10 @@
 
 static NSUserInterfaceItemIdentifier const POCellIdentifier = @"POPhotoCell";
 static NSUserInterfaceItemIdentifier const POHeaderIdentifier = @"POSectionHeader";
-static const CGFloat PODefaultCellWidth = 168;
+/// The thumbnail sizes, the same as on Windows: 110–420 points, 190 at first.
+static const CGFloat PODefaultCellWidth = 190;
+static const CGFloat POMinimumCellWidth = 110;
+static const CGFloat POMaximumCellWidth = 420;
 static NSString *const POCellWidthKey = @"gridCellWidth";
 static const CGFloat POCellCaptionHeight = 46;
 
@@ -166,7 +169,7 @@ static NSTextField *POCaptionLabel(NSFont *font, NSColor *color) {
         [_badge.topAnchor constraintEqualToAnchor:_thumb.topAnchor constant:7],
         [_badge.leadingAnchor constraintEqualToAnchor:_thumb.leadingAnchor constant:7],
         [_durationBadge.bottomAnchor constraintEqualToAnchor:_thumb.bottomAnchor constant:-7],
-        [_durationBadge.leadingAnchor constraintEqualToAnchor:_thumb.leadingAnchor constant:7],
+        [_durationBadge.trailingAnchor constraintEqualToAnchor:_thumb.trailingAnchor constant:-7],
         [_nameLabel.topAnchor constraintEqualToAnchor:_thumb.bottomAnchor constant:6],
         [_nameLabel.leadingAnchor constraintEqualToAnchor:_thumb.leadingAnchor],
         [_nameLabel.trailingAnchor constraintEqualToAnchor:_thumb.trailingAnchor],
@@ -192,7 +195,8 @@ static NSTextField *POCaptionLabel(NSFont *font, NSColor *color) {
 
 - (void)configureWithItem:(POPhotoItem *)item showsOriginalBadge:(BOOL)showsOriginalBadge showsNudityScore:(BOOL)showsNudityScore {
     NSString *date = POItemDateText(item, NO);
-    NSString *dimensions = item.pixelWidth > 0 ? [NSString stringWithFormat:@"%ld×%ld", (long)item.pixelWidth, (long)item.pixelHeight] : POL(@"не читается");
+    NSString *dimensions = item.pixelWidth > 0 ? [NSString stringWithFormat:@"%ld×%ld", (long)item.pixelWidth, (long)item.pixelHeight]
+                         : item.isCloudOnly ? POL(@"в облаке") : POL(@"не читается");
     // Copies often share a file name, so the duplicates view shows where each one lives.
     _nameLabel.stringValue = showsOriginalBadge ? item.relativePath : item.url.lastPathComponent;
     _detailLabel.stringValue = [NSString stringWithFormat:@"%@ · %@", date, dimensions];
@@ -214,9 +218,10 @@ static NSTextField *POCaptionLabel(NSFont *font, NSColor *color) {
     _badge.hidden = !(nudityScore || item.isDuplicate || item.isTiny ||
                       (showsOriginalBadge && (item.duplicates.count || item.betterCopy || item.bestOfCopies)));
 
-    _durationBadge.hidden = !item.isVideo;
+    // A length that could not be read is not shown as "0:00".
+    NSInteger seconds = (NSInteger)round(item.duration);
+    _durationBadge.hidden = !item.isVideo || seconds <= 0;
     if (item.isVideo) {
-        NSInteger seconds = (NSInteger)round(item.duration);
         NSString *duration = seconds >= 3600
             ? [NSString stringWithFormat:@"%ld:%02ld:%02ld", (long)(seconds / 3600), (long)(seconds / 60 % 60), (long)(seconds % 60)]
             : [NSString stringWithFormat:@"%ld:%02ld", (long)(seconds / 60), (long)(seconds % 60)];
@@ -226,7 +231,7 @@ static NSTextField *POCaptionLabel(NSFont *font, NSColor *color) {
     NSMutableArray<NSString *> *lines = [NSMutableArray arrayWithObject:item.relativePath];
     [lines addObject:[NSString stringWithFormat:@"%@, %@", dimensions,
                       [NSByteCountFormatter stringFromByteCount:(long long)item.fileSize countStyle:NSByteCountFormatterCountStyleFile]]];
-    [lines addObject:[NSString stringWithFormat:@"%@: %@", POItemDateSourceText(item), date]];
+    [lines addObject:[NSString stringWithFormat:@"%@: %@", POItemDateSourceText(item), POItemDateText(item, YES)]];
     if (item.isCloudOnly) [lines addObject:POL(@"Не загружен из iCloud: дата взята из файла, на дубликаты не проверялся")];
     NSDictionary<NSString *, NSNumber *> *labels = item.labels;
     if (labels.count) {
@@ -237,6 +242,7 @@ static NSTextField *POCaptionLabel(NSFont *font, NSColor *color) {
         [lines addObject:[POL(@"На снимке: ") stringByAppendingString:[names.array componentsJoinedByString:@", "]]];
     }
     if (item.nudityScore) [lines addObject:[NSString stringWithFormat:POL(@"Оценка откровенности: %.0f %%"), item.nudityScore.doubleValue * 100]];
+    if (item.faces.count) [lines addObject:[NSString stringWithFormat:POL(@"Лиц на фото: %@"), PONumber(item.faces.count)]];
     if (item.duplicateOf) [lines addObject:[NSString stringWithFormat:POL(@"Копия файла %@"), item.duplicateOf.relativePath]];
     if (item.destinationFolder) {
         [lines addObject:item.needsMove ? [NSString stringWithFormat:@"→ %@/", item.destinationFolder] : POL(@"Уже на месте")];
@@ -252,6 +258,7 @@ static NSTextField *POCaptionLabel(NSFont *font, NSColor *color) {
     _thumbnailToken = [POThumbnailCache.sharedCache thumbnailForURL:item.url
                                                                size:280
                                                               scale:NSScreen.mainScreen.backingScaleFactor ?: 2
+                                                            decodes:!item.isCloudOnly
                                                          completion:^(CGImageRef image) {
         typeof(self) cell = weakSelf;
         if (cell && [cell->_path isEqualToString:path]) cell->_thumb.image = (__bridge id)image;
@@ -337,10 +344,13 @@ static NSTextField *POCaptionLabel(NSFont *font, NSColor *color) {
 @protocol POCollectionViewActions <NSObject>
 - (void)openSelection:(nullable id)sender;
 - (void)togglePreviewPanel:(nullable id)sender;
+- (void)zoomThumbnailsBy:(CGFloat)points;
 @end
 
 @interface POCollectionView : NSCollectionView
 @property (nonatomic, weak) id<POCollectionViewActions> actionTarget;
+/// The menu of a click on empty space, between and below the photos.
+@property (nonatomic, strong) NSMenu *emptySpaceMenu;
 @end
 
 @implementation POCollectionView
@@ -366,10 +376,23 @@ static NSTextField *POCaptionLabel(NSFont *font, NSColor *color) {
     [super mouseDown:event];
 }
 
-/// Right-clicking an unselected photo selects it first, like Finder does.
+/// ⌘ and the scroll wheel (or two fingers) change the size of the thumbnails, as ⌘+ and ⌘− do.
+- (void)scrollWheel:(NSEvent *)event {
+    if (event.modifierFlags & NSEventModifierFlagCommand) {
+        CGFloat delta = event.hasPreciseScrollingDeltas ? event.scrollingDeltaY : event.scrollingDeltaY * 10;
+        if (fabs(delta) >= 1) [self.actionTarget zoomThumbnailsBy:delta > 0 ? 20 : -20];
+        return;
+    }
+    [super scrollWheel:event];
+}
+
+/// Right-clicking an unselected photo selects it first, like Finder does; empty space has a menu of its own.
 - (NSMenu *)menuForEvent:(NSEvent *)event {
     NSIndexPath *indexPath = [self indexPathForItemAtPoint:[self convertPoint:event.locationInWindow fromView:nil]];
-    if (!indexPath) return nil;
+    if (!indexPath) {
+        [self deselectAll:nil];
+        return self.emptySpaceMenu;
+    }
     if (![self.selectionIndexPaths containsObject:indexPath]) {
         [self deselectAll:nil];
         [self selectItemsAtIndexPaths:[NSSet setWithObject:indexPath] scrollPosition:NSCollectionViewScrollPositionNone];
@@ -453,18 +476,23 @@ static NSTextField *POCaptionLabel(NSFont *font, NSColor *color) {
     CGFloat _jumpedOffset;    // for each button of _yearStack: the first photo of that year
 }
 
++ (CGFloat)minimumCellWidth { return POMinimumCellWidth; }
++ (CGFloat)maximumCellWidth { return POMaximumCellWidth; }
++ (CGFloat)defaultCellWidth { return PODefaultCellWidth; }
+
 - (void)setCellWidth:(CGFloat)cellWidth {
-    cellWidth = MIN(MAX(cellWidth, 90), 480);
+    cellWidth = MIN(MAX(cellWidth, POMinimumCellWidth), POMaximumCellWidth);
     if (cellWidth == _cellWidth) return;
     _cellWidth = cellWidth;
     [NSUserDefaults.standardUserDefaults setDouble:cellWidth forKey:POCellWidthKey];
     [_collectionView.collectionViewLayout invalidateLayout];
+    if (self.onCellWidthChange) self.onCellWidthChange(cellWidth);
 }
 
 - (void)loadView {
     _sections = @[];
     CGFloat savedWidth = [NSUserDefaults.standardUserDefaults doubleForKey:POCellWidthKey];
-    _cellWidth = savedWidth >= 90 ? MIN(savedWidth, 480) : PODefaultCellWidth;
+    _cellWidth = savedWidth > 0 ? MIN(MAX(savedWidth, POMinimumCellWidth), POMaximumCellWidth) : PODefaultCellWidth;
     _collectionView = [POCollectionView new];
     _collectionView.collectionViewLayout = [self makeLayout];
     _collectionView.dataSource = self;
@@ -481,21 +509,12 @@ static NSTextField *POCaptionLabel(NSFont *font, NSColor *color) {
         forSupplementaryViewOfKind:NSCollectionElementKindSectionHeader
                     withIdentifier:POHeaderIdentifier];
 
-    NSMenu *menu = [NSMenu new];
-    [[menu addItemWithTitle:POL(@"Открыть") action:@selector(openSelection:) keyEquivalent:@""] setTarget:self];
-    [[menu addItemWithTitle:POL(@"Быстрый просмотр") action:@selector(togglePreviewPanel:) keyEquivalent:@""] setTarget:self];
-    [[menu addItemWithTitle:POL(@"Открыть в программе по умолчанию") action:@selector(openSelectionExternally:) keyEquivalent:@""] setTarget:self];
-    [[menu addItemWithTitle:POL(@"Показать в Finder") action:@selector(revealSelection:) keyEquivalent:@""] setTarget:self];
-    [[menu addItemWithTitle:POL(@"Скопировать путь") action:@selector(copySelectionPaths:) keyEquivalent:@""] setTarget:self];
-    [menu addItem:NSMenuItem.separatorItem];
-    // These go up the responder chain to the window controller, which owns the files.
-    [menu addItemWithTitle:POL(@"Показать в медиатеке по дате") action:@selector(showInLibrary:) keyEquivalent:@""];
-    [menu addItemWithTitle:POL(@"Задать дату…") action:@selector(setDateForSelection:) keyEquivalent:@""];
-    [menu addItemWithTitle:POL(@"Найти похожие") action:@selector(findSimilarToSelection:) keyEquivalent:@""];
-    [menu addItemWithTitle:POL(@"Найти этот предмет на других фото…") action:@selector(findObjectInSelection:) keyEquivalent:@""];
-    [menu addItemWithTitle:POL(@"Переместить в папку…") action:@selector(moveSelectionToFolder:) keyEquivalent:@""];
-    [menu addItemWithTitle:POL(@"Переместить в Корзину") action:@selector(trashSelection:) keyEquivalent:@""];
-    _collectionView.menu = menu;
+    _collectionView.menu = [self itemMenuForViewer:NO];
+    NSMenu *empty = [NSMenu new];
+    [[empty addItemWithTitle:POL(@"Выбрать всё") action:@selector(selectAll:) keyEquivalent:@""] setTarget:_collectionView];
+    // Up the responder chain to the window controller, which owns the files.
+    [empty addItemWithTitle:POL(@"Переместить показанное в папку…") action:@selector(moveShownToFolder:) keyEquivalent:@""];
+    _collectionView.emptySpaceMenu = empty;
 
     NSScrollView *scrollView = [NSScrollView new];
     scrollView.documentView = _collectionView;
@@ -561,6 +580,45 @@ static NSTextField *POCaptionLabel(NSFont *font, NSColor *color) {
 
 - (void)dealloc {
     [NSNotificationCenter.defaultCenter removeObserver:self];
+}
+
+- (NSMenu *)itemMenuForViewer:(BOOL)viewer {
+    NSMenu *menu = [NSMenu new];
+    if (!viewer) {
+        [[menu addItemWithTitle:POL(@"Открыть") action:@selector(openSelection:) keyEquivalent:@""] setTarget:self];
+        [[menu addItemWithTitle:POL(@"Быстрый просмотр") action:@selector(togglePreviewPanel:) keyEquivalent:@""] setTarget:self];
+    }
+    [[menu addItemWithTitle:POL(@"Открыть в программе по умолчанию") action:@selector(openSelectionExternally:) keyEquivalent:@""] setTarget:self];
+    [[menu addItemWithTitle:POL(@"Показать в Finder") action:@selector(revealSelection:) keyEquivalent:@""] setTarget:self];
+    [[menu addItemWithTitle:POL(@"Скопировать путь") action:@selector(copySelectionPaths:) keyEquivalent:@""] setTarget:self];
+    [menu addItem:NSMenuItem.separatorItem];
+    // These go up the responder chain to the window controller, which owns the files.
+    [menu addItemWithTitle:POL(@"Показать оригинал") action:@selector(showOriginal:) keyEquivalent:@""];
+    [menu addItemWithTitle:POL(@"Показать в медиатеке по дате") action:@selector(showInLibrary:) keyEquivalent:@""];
+    [menu addItemWithTitle:POL(@"Задать дату…") action:@selector(setDateForSelection:) keyEquivalent:@""];
+    [menu addItemWithTitle:POL(@"Найти похожие") action:@selector(findSimilarToSelection:) keyEquivalent:@""];
+    [menu addItemWithTitle:POL(@"Найти этот предмет на других фото…") action:@selector(findObjectInSelection:) keyEquivalent:@""];
+    [menu addItemWithTitle:POL(@"Найти этого человека") action:@selector(findPersonInSelection:) keyEquivalent:@""];
+    [menu addItem:NSMenuItem.separatorItem];
+    [menu addItemWithTitle:POL(@"Переместить в папку…") action:@selector(moveSelectionToFolder:) keyEquivalent:@""];
+    [menu addItemWithTitle:POL(@"Переместить в Корзину") action:@selector(trashSelection:) keyEquivalent:@""];
+    return menu;
+}
+
+- (void)selectItem:(POPhotoItem *)item {
+    for (NSInteger section = 0; section < (NSInteger)_sections.count; section++) {
+        NSUInteger index = [_sections[section].items indexOfObjectIdenticalTo:item];
+        if (index == NSNotFound) continue;
+        [_collectionView deselectAll:nil];
+        [_collectionView selectItemsAtIndexPaths:[NSSet setWithObject:[NSIndexPath indexPathForItem:index inSection:section]]
+                                  scrollPosition:NSCollectionViewScrollPositionNone];
+        [self selectionDidChange];
+        return;
+    }
+}
+
+- (void)zoomThumbnailsBy:(CGFloat)points {
+    self.cellWidth = self.cellWidth + points;
 }
 
 - (void)setPlaceholder:(NSString *)placeholder {

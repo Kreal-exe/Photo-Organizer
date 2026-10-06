@@ -148,6 +148,18 @@ static NSString *const POSidebarScaleKey = @"sidebarScale";
 @interface POSidebarViewController () <NSTableViewDataSource, NSTableViewDelegate, NSMenuDelegate>
 @end
 
+/// The symbol of a type row by its Russian name (the key POTypeFolder returns before translation).
+static NSString *POTypeSymbol(NSString *key) {
+    static NSDictionary<NSString *, NSString *> *symbols;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        symbols = @{@"Записи экрана": @"record.circle", @"WhatsApp": @"message", @"Telegram": @"paperplane", @"Viber": @"phone",
+                    @"Instagram": @"camera", @"Анимации": @"livephoto", @"Панорамы": @"pano",
+                    @"RAW": @"camera.aperture", @"Картинки": @"photo.artframe", @"Коллажи": @"square.grid.2x2"};
+    });
+    return symbols[key] ?: @"square.grid.2x2";
+}
+
 @implementation POSidebarViewController {
     NSTableView *_tableView;
     NSArray<POSidebarRow *> *_rows;
@@ -195,7 +207,7 @@ static NSString *const POSidebarScaleKey = @"sidebarScale";
     _scale = saved >= 1 ? MIN(saved, 3) : 1;
     _scaleSlider = [NSSlider sliderWithValue:_scale minValue:1 maxValue:3 target:self action:@selector(scaleSliderChanged:)];
     _scaleSlider.controlSize = NSControlSizeMini;
-    _scaleSlider.toolTip = POL(@"Размер строк и лиц в боковой панели (⌘+ и ⌘−)");
+    _scaleSlider.toolTip = POL(@"Размер строк и лиц в боковой панели");
     _scaleSlider.translatesAutoresizingMaskIntoConstraints = NO;
 
     NSView *container = [NSView new];
@@ -221,7 +233,7 @@ static NSString *const POSidebarScaleKey = @"sidebarScale";
     if (plan) {
         [rows addObject:[POSidebarRow rowWithTitle:POL(@"Медиатека")
                                         symbolName:@"photo.on.rectangle"
-                                             count:plan.items.count
+                                             count:self.libraryCount
                                             filter:[POFilter filterWithKind:POFilterKindAll folder:nil]]];
         if (self.suggestedCount > 0) {
             [rows addObject:[POSidebarRow rowWithTitle:POL(@"Предполагаемые даты")
@@ -242,13 +254,28 @@ static NSString *const POSidebarScaleKey = @"sidebarScale";
                                         symbolName:@"map"
                                              count:self.locatedCount
                                             filter:[POFilter filterWithKind:POFilterKindMap folder:nil]]];
+        [rows addObject:[POSidebarRow headerWithTitle:POL(@"Типы") key:@"types"]];
+        [rows addObject:[POSidebarRow rowWithTitle:POL(@"Скриншоты")
+                                        symbolName:@"camera.viewfinder"
+                                             count:self.screenshotCount
+                                            filter:[POFilter filterWithKind:POFilterKindScreenshots folder:nil]]];
+        [rows addObject:[POSidebarRow rowWithTitle:POL(@"Видео")
+                                        symbolName:@"video"
+                                             count:self.videoCount
+                                            filter:[POFilter filterWithKind:POFilterKindVideos folder:nil]]];
+        for (NSDictionary *type in self.typeCounts) {
+            [rows addObject:[POSidebarRow rowWithTitle:type[@"name"]
+                                            symbolName:POTypeSymbol(type[@"key"])
+                                                 count:[type[@"count"] integerValue]
+                                                filter:[POFilter filterWithKind:POFilterKindType folder:type[@"name"]]]];
+        }
         if (self.people.count) {
             [rows addObject:[POSidebarRow headerWithTitle:POL(@"Люди") key:@"people"]];
             // The long tail of people seen in a handful of photos would bury everything below.
             for (POPerson *person in [self.people subarrayWithRange:NSMakeRange(0, MIN(self.people.count, 30))]) {
                 POSidebarRow *row = [POSidebarRow rowWithTitle:person.displayName
                                                     symbolName:person.isNamed ? @"person.crop.circle.fill" : @"person.crop.circle"
-                                                         count:person.items.count
+                                                         count:self.personCount ? self.personCount(person) : (NSInteger)person.items.count
                                                         filter:[POFilter filterWithKind:POFilterKindPerson folder:person.key]];
                 row.person = person;
                 [rows addObject:row];
@@ -270,11 +297,11 @@ static NSString *const POSidebarScaleKey = @"sidebarScale";
                                             filter:[POFilter filterWithKind:POFilterKindUndated folder:nil]]];
         [rows addObject:[POSidebarRow rowWithTitle:POL(@"Дубликаты")
                                         symbolName:@"square.on.square"
-                                             count:plan.duplicateItems.count + self.similarCopyCount
+                                             count:self.duplicateCount + self.similarCopyCount
                                             filter:[POFilter filterWithKind:POFilterKindDuplicates folder:nil]]];
         [rows addObject:[POSidebarRow rowWithTitle:POL(@"Миниатюры")
                                         symbolName:@"arrow.down.right.and.arrow.up.left"
-                                             count:plan.tinyItems.count
+                                             count:self.tinyCount
                                             filter:[POFilter filterWithKind:POFilterKindTiny folder:nil]]];
         if (self.nudityCount >= 0) {
             [rows addObject:[POSidebarRow rowWithTitle:POL(@"Откровенные")

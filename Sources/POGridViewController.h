@@ -32,6 +32,11 @@ NS_ASSUME_NONNULL_BEGIN
 /// Remembered between launches.
 @property (nonatomic) CGFloat cellWidth;
 
+/// Called when the size changes other than by the slider (⌘ and the scroll wheel).
+@property (nonatomic, copy, nullable) void (^onCellWidthChange)(CGFloat width);
+/// The smallest, largest and first size of a cell.
+@property (class, nonatomic, readonly) CGFloat minimumCellWidth, maximumCellWidth, defaultCellWidth;
+
 /// Called after files dragged out of the grid (to a Finder folder, say) are no longer where they were.
 @property (nonatomic, copy, nullable) void (^onFilesMovedAway)(void);
 
@@ -56,6 +61,11 @@ NS_ASSUME_NONNULL_BEGIN
 
 /// Selects `item` and scrolls it into view.
 - (void)revealItem:(POPhotoItem *)item;
+/// Selects `item` only: no scrolling, the keyboard focus stays where it is (the viewer's menu acts on the selection).
+- (void)selectItem:(POPhotoItem *)item;
+
+/// The menu of the selected files; in the viewer without "Открыть" and "Быстрый просмотр".
+- (NSMenu *)itemMenuForViewer:(BOOL)viewer;
 
 @end
 

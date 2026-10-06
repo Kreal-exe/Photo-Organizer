@@ -1,4 +1,4 @@
-// End-to-end check of the non-UI core against a temporary folder of generated images: `make test`.
+// End-to-end check of the non-UI core against a temporary folder of generated images: `./build.sh --test`.
 #import <Foundation/Foundation.h>
 #import <ImageIO/ImageIO.h>
 #import <AVFoundation/AVFoundation.h>
@@ -10,6 +10,12 @@
 #import "POVKAlbum.h"
 #import "POManualDates.h"
 #import "PODateSuggestions.h"
+#import "POPictureText.h"
+#import "POScreenshots.h"
+#import "POMediaTypes.h"
+#import "POStrings.h"
+#import <CoreText/CoreText.h>
+#import <Vision/Vision.h>
 #import <CommonCrypto/CommonDigest.h>
 
 static int failures = 0;
@@ -190,6 +196,18 @@ int main(void) {
         plan.scheme = POSchemeYear;
         plan.separateDuplicates = YES;
         plan.separateTiny = YES;
+        // Duplicates removed: no duplicates folder, one file fewer to move, and that one to go to the Trash.
+        plan.removesDuplicates = YES;
+        [plan rebuild];
+        folders = [plan.groups valueForKey:@"folder"];
+        CHECK(![folders containsObject:POPlan.defaultDuplicatesFolderName] && plan.pendingItems.count == 5 && plan.duplicatesToRemove.count == 1,
+              @"%@ %lu %lu", folders, (unsigned long)plan.pendingItems.count, (unsigned long)plan.duplicatesToRemove.count);
+        CHECK(plan.duplicatesToRemove.firstObject.duplicateOf != nil);   // the copy, never the original
+        plan.copiesFiles = YES;
+        [plan rebuild];
+        CHECK(plan.duplicatesToRemove.count == 0);   // copying removes nothing
+        plan.copiesFiles = NO;
+        plan.removesDuplicates = NO;
         [plan rebuild];
 
         // Apply
@@ -273,8 +291,27 @@ int main(void) {
                 NSString *got = [NSString stringWithFormat:@"%ld-%ld-%ld %ld:%ld:%ld", c.year, c.month, c.day, c.hour, c.minute, c.second];
                 CHECK([got isEqualToString:cases[name]], @"%@ → %@", name, got);
             }
-            for (NSString *name in @[@"IMG_0001.jpg", @"2019123456.jpg", @"20221309_101010.jpg", @"photo-2019-1231.jpg", @"20990101_000000.mp4"]) {
+            for (NSString *name in @[@"IMG_0001.jpg", @"2019123456.jpg", @"20221309_101010.jpg", @"photo-2019-1231.jpg", @"20990101_000000.mp4",
+                                     @"20230231_101010.jpg", @"IMG_20210431.jpg"]) {
                 CHECK(PODateFromFileName(name) == nil, @"%@", name);
+            }
+
+            // EXIF: a day the month doesn't have is no date; hour 24 stays on its day, at 23 (as on Windows).
+            {
+                NSURL *exif = [root URLByAppendingPathComponent:@"exif"];
+                WriteImage([exif URLByAppendingPathComponent:@"broken.jpg"], UTTypeJPEG, 400, 300, 0.3, @"2021:02:30 10:00:00");
+                WriteImage([exif URLByAppendingPathComponent:@"midnight.jpg"], UTTypeJPEG, 400, 300, 0.7, @"2021:06:15 24:00:00");
+                POPlan *exifPlan = Scan(exif);
+                for (POPhotoItem *item in exifPlan.items) {
+                    if ([item.url.lastPathComponent isEqualToString:@"broken.jpg"]) {
+                        CHECK(item.dateSource != PODateSourceEXIF, @"%@", item.date);
+                    } else {
+                        NSDateComponents *c = [calendar components:NSCalendarUnitDay | NSCalendarUnitHour fromDate:item.date];
+                        CHECK(item.dateSource == PODateSourceEXIF && c.day == 15 && c.hour == 23, @"%@", item.date);
+                    }
+                }
+                CHECK(exifPlan.items.count == 2);
+                [fm removeItemAtURL:exif error:NULL];
             }
 
             // A re-encoded video: metadata says 2024, the name says 2022 — the name wins. EXIF earlier than the name stays.
@@ -340,13 +377,15 @@ int main(void) {
                     CHECK(!item.isUndated && !best, @"%@", name);
                     continue;
                 }
+                if ([item.currentFolder isEqualToString:@"Photos from 2018"]) {
+                    // A Google Takeout year folder: Google Photos' own year, and only the year.
+                    CHECK(item.dateSource == PODateSourceTakeoutFolder && POItemDatePrecision(item) == PODatePrecisionYear
+                          && [calendar component:NSCalendarUnitYear fromDate:item.date] == 2018 && [item.destinationFolder isEqualToString:@"2018"],
+                          @"%@ %ld %@", name, (long)item.dateSource, item.destinationFolder);
+                    continue;
+                }
                 CHECK(item.isUndated && [item.destinationFolder isEqualToString:POPlan.undatedFolderName], @"%@ %@", name, item.destinationFolder);
-                NSDateComponents *c = best ? [calendar components:NSCalendarUnitYear | NSCalendarUnitMonth fromDate:best.date] : nil;
-                if ([name isEqualToString:@"IMG_2.png"]) {
-                    CHECK(best.kind == PODateSuggestionNeighbors && best.precision == PODatePrecisionYear && c.year == 2018, @"%@ %@", best.reason, best.date);
-                } else if ([name isEqualToString:@"z.png"]) {
-                    CHECK(best.kind == PODateSuggestionFolderName && best.precision == PODatePrecisionYear && c.year == 2018, @"%@", best.reason);
-                } else {
+                {
                     CHECK(!best && [suggester suggestionsForItem:item].lastObject.kind == PODateSuggestionFileDate, @"%@", best.reason);
                 }
             }
@@ -380,10 +419,21 @@ int main(void) {
             WriteImage([export URLByAppendingPathComponent:@"cam/IMG_0100.jpg"], UTTypeJPEG, 900, 700, 0.2, @"2016:03:02 10:00:00");
             WriteImage([export URLByAppendingPathComponent:@"cam/IMG_0101.png"], UTTypePNG, 900, 700, 0.3, nil);
             WriteImage([export URLByAppendingPathComponent:@"cam/IMG_0102.jpg"], UTTypeJPEG, 900, 700, 0.4, @"2016:03:25 10:00:00");
+            // No .json of their own: a name cut short, an edited copy, a numbered copy.
+            NSString *longJSON = @"{\"title\": \"Screenshot_2026-02-09-11-27-31-775_com.ftband.mono.png\", \"photoTakenTime\": {\"timestamp\": \"1526385600\"}}";
+            [longJSON writeToURL:[export URLByAppendingPathComponent:@"Photos from 2018/Screenshot_2026-02-09-11-27-31-775_com.ftband..json"] atomically:YES encoding:NSUTF8StringEncoding error:NULL];
+            WriteImage([export URLByAppendingPathComponent:@"Photos from 2018/Screenshot_2026-02-09-11-27-31-775_com.ftband.m.png"], UTTypePNG, 900, 700, 0.5, nil);
+            WriteImage([export URLByAppendingPathComponent:@"Photos from 2018/a-отредактировано.png"], UTTypePNG, 900, 700, 0.55, nil);
+            WriteImage([export URLByAppendingPathComponent:@"Photos from 2018/a-EFFECTS-edited(2).png"], UTTypePNG, 900, 700, 0.6, nil);
             POPlan *plan = Scan(export);
             plan.scheme = POSchemeYearMonthDay;
             [plan rebuild];
             for (POPhotoItem *item in plan.items) {
+                if ([item.relativePath containsString:@"ftband"] || [item.relativePath containsString:@"-отредактировано"] || [item.relativePath containsString:@"EFFECTS"]) {
+                    NSDateComponents *c = [calendar components:NSCalendarUnitYear | NSCalendarUnitMonth fromDate:item.date];
+                    CHECK(item.dateSource == PODateSourceTakeout && c.year == 2018 && c.month == 5, @"%@ %ld %@", item.relativePath, (long)item.dateSource, item.date);
+                    continue;
+                }
                 NSDateComponents *c = [calendar components:NSCalendarUnitYear | NSCalendarUnitMonth | NSCalendarUnitDay fromDate:item.date];
                 if ([item.relativePath hasSuffix:@"/a.png"]) {
                     CHECK(item.dateSource == PODateSourceTakeout && c.year == 2018 && c.month == 5, @"%@ %@", item.relativePath, item.date);
@@ -413,6 +463,20 @@ int main(void) {
             for (POPhotoItem *item in copies.items) {
                 CHECK([calendar component:NSCalendarUnitYear fromDate:item.date] == 2014, @"%@ %@", item.relativePath, item.date);
             }
+            // A date given by hand is the file's own: a copy never overwrites it.
+            for (POPhotoItem *item in copies.items) {
+                if (item.dateSource == PODateSourceEXIF) continue;
+                item.date = [NSDate dateWithTimeIntervalSince1970:1262347200];   // 2010
+                item.dateSource = PODateSourceManual;
+            }
+            CHECK([POSimilarCopies shareDatesInSets:[POSimilarCopies setsInItems:copies.items]] == 0);
+            for (POPhotoItem *item in copies.items) {
+                if (item.dateSource == PODateSourceManual) CHECK([calendar component:NSCalendarUnitYear fromDate:item.date] == 2010, @"%@", item.date);
+            }
+            // The same picture saved differently is found pixel by pixel (for "Разложить…" when copying).
+            POPhotoItem *best = nil, *other = nil;
+            for (POPhotoItem *item in copies.items) { if (item.pixelWidth == 2000) best = item; else other = item; }
+            CHECK(best && other && [POSimilarCopies isSamePictureAtURL:other.url asItem:best]);
             [fm removeItemAtURL:shared error:NULL];
         }
 
@@ -461,6 +525,92 @@ int main(void) {
             CHECK([POOrganizer revert:moved].count == 0);
             CHECK([Tree(pick) isEqualToArray:pickBefore], @"%@", Tree(pick));
             [fm removeItemAtURL:pick error:NULL];
+        }
+
+        // What the scanner takes in: one explicit list of formats (the same as on Windows), not the folders other systems
+        // keep on a drive; a photo turned by its EXIF orientation reports its size the way it is shown.
+        {
+            NSURL *kinds = [root URLByAppendingPathComponent:@"kinds"];
+            WriteImage([kinds URLByAppendingPathComponent:@"photo.jpg"], UTTypeJPEG, 400, 300, 0.3, @"2019:01:01 10:00:00");
+            WriteImage([kinds URLByAppendingPathComponent:@"@eaDir/photo.jpg"], UTTypeJPEG, 400, 300, 0.3, nil);
+            WriteImage([kinds URLByAppendingPathComponent:@"$RECYCLE.BIN/old.jpg"], UTTypeJPEG, 400, 300, 0.4, nil);
+            [@"export const x = 1;" writeToURL:[kinds URLByAppendingPathComponent:@"code.ts"] atomically:YES encoding:NSUTF8StringEncoding error:NULL];
+            CGColorSpaceRef space = CGColorSpaceCreateDeviceRGB();
+            CGContextRef context = CGBitmapContextCreate(NULL, 400, 300, 8, 0, space, (CGBitmapInfo)kCGImageAlphaNoneSkipLast);
+            CGImageRef image = CGBitmapContextCreateImage(context);
+            CGImageDestinationRef turned = CGImageDestinationCreateWithURL((__bridge CFURLRef)[kinds URLByAppendingPathComponent:@"turned.jpg"],
+                                                                          (__bridge CFStringRef)UTTypeJPEG.identifier, 1, NULL);
+            CGImageDestinationAddImage(turned, image, (__bridge CFDictionaryRef)@{(id)kCGImagePropertyOrientation: @6});
+            CGImageDestinationFinalize(turned);
+            CFRelease(turned);
+            CGImageRelease(image);
+            CGContextRelease(context);
+            CGColorSpaceRelease(space);
+            POPlan *plan = Scan(kinds);
+            CHECK(plan.items.count == 2, @"%@", [plan.items valueForKey:@"relativePath"]);
+            for (POPhotoItem *item in plan.items) {
+                if ([item.relativePath isEqualToString:@"turned.jpg"]) CHECK(item.pixelWidth == 300 && item.pixelHeight == 400, @"%ld×%ld", item.pixelWidth, item.pixelHeight);
+            }
+            CHECK(POMediaKindOfExtension(@"CR3") == POMediaFileKindImage && POMediaKindOfExtension(@"mef") == POMediaFileKindImage);
+            CHECK(POMediaKindOfExtension(@"MTS") == POMediaFileKindVideo && POMediaKindOfExtension(@"ts") == POMediaFileKindNone);
+            CHECK(POMediaKindOfExtension(@"json") == POMediaFileKindNone && POMediaKindOfExtension(@"") == POMediaFileKindNone);
+            [fm removeItemAtURL:kinds error:NULL];
+        }
+
+        // Undo removes the date folders it empties, and the redo of an undo moves the files once more.
+        {
+            NSURL *redo = [root URLByAppendingPathComponent:@"redo"];
+            WriteImage([redo URLByAppendingPathComponent:@"in/one.jpg"], UTTypeJPEG, 900, 700, 0.1, @"2017:07:01 10:00:00");
+            WriteImage([redo URLByAppendingPathComponent:@"in/two.jpg"], UTTypeJPEG, 900, 700, 0.2, @"2018:07:01 10:00:00");
+            NSArray<NSString *> *redoBefore = Tree(redo);
+            POPlan *plan = Scan(redo);
+            plan.scheme = POSchemeYearMonthDay;
+            [plan rebuild];
+            POOrganizeResult *organized = [POOrganizer applyPlan:plan progress:nil];
+            NSArray<NSString *> *organizedTree = Tree(redo);
+            NSArray<POMoveRecord *> *back = nil;
+            CHECK([POOrganizer revert:organized moves:&back].count == 0 && back.count == 2);
+            CHECK([Tree(redo) isEqualToArray:redoBefore], @"%@", Tree(redo));
+            CHECK([POOrganizer revert:[POOrganizeResult resultWithMoves:back] moves:&back].count == 0 && back.count == 2);
+            CHECK([Tree(redo) isEqualToArray:organizedTree], @"%@", Tree(redo));
+            // Undoing the redo: the "in" folder it emptied goes too, the library folder itself stays.
+            CHECK([POOrganizer revert:[POOrganizeResult resultWithMoves:back]].count == 0);
+            CHECK([Tree(redo) isEqualToArray:redoBefore], @"%@", Tree(redo));
+            [fm removeItemAtURL:redo error:NULL];
+        }
+
+        // "Разложить…" copying into an archive elsewhere: its year folders are filled up, and what is already there
+        // (the same contents under another name, the same picture saved differently next to it) is not copied again.
+        {
+            NSURL *library = [root URLByAppendingPathComponent:@"arrange"], *archive = [root URLByAppendingPathComponent:@"archive"];
+            WritePattern([library URLByAppendingPathComponent:@"best.jpg"], 1600, 1200, 21, 0.95, @"2015:05:05 10:00:00");
+            WritePattern([library URLByAppendingPathComponent:@"new.jpg"], 1600, 1200, 22, 0.9, @"2015:06:06 10:00:00");
+            WritePattern([library URLByAppendingPathComponent:@"old.jpg"], 1600, 1200, 23, 0.9, @"2016:06:06 10:00:00");
+            [fm createDirectoryAtURL:[archive URLByAppendingPathComponent:@"2015 год"] withIntermediateDirectories:YES attributes:nil error:NULL];
+            [fm createDirectoryAtURL:[archive URLByAppendingPathComponent:@"misc"] withIntermediateDirectories:YES attributes:nil error:NULL];
+            [fm copyItemAtURL:[library URLByAppendingPathComponent:@"old.jpg"] toURL:[archive URLByAppendingPathComponent:@"misc/renamed.jpg"] error:NULL];
+            // The same picture as best.jpg, saved again with other compression, under its name in its year.
+            WritePattern([archive URLByAppendingPathComponent:@"2015 год/best.jpg"], 1600, 1200, 21, 0.6, nil);
+            POPlan *plan = Scan(library);
+            NSString *(^years)(NSString *) = [POOrganizer existingYearFoldersIn:archive];
+            CHECK([years(@"2015") isEqualToString:@"2015 год"] && [years(@"2016/2016-06") isEqualToString:@"2016/2016-06"], @"%@", years(@"2015"));
+            POOrganizeResult *copied = [POOrganizer copyItems:plan.items rootURL:archive skipSameContent:YES progress:nil cancelled:nil
+                                                       folder:^NSString *(POPhotoItem *item) {
+                return years([plan folderForItem:item inFolder:@"" layout:POFolderLayoutYear]);
+            }];
+            CHECK(copied.errors.count == 0 && copied.records.count == 1 && copied.alreadyCopied == 2 && copied.copied,
+                  @"%@ %lu %lu", copied.errors, copied.records.count, copied.alreadyCopied);
+            CHECK([fm fileExistsAtPath:[archive URLByAppendingPathComponent:@"2015 год/new.jpg"].path]);
+            CHECK(![fm fileExistsAtPath:[archive URLByAppendingPathComponent:@"2015"].path]);
+            __block NSUInteger asked = 0;
+            POOrganizeResult *stopped = [POOrganizer copyItems:plan.items rootURL:[root URLByAppendingPathComponent:@"elsewhere"] skipSameContent:NO
+                                                      progress:nil cancelled:^BOOL { return ++asked > 1; }
+                                                        folder:^NSString *(POPhotoItem *item) { return @""; }];
+            CHECK(stopped.stopped && stopped.records.count == 1, @"%lu", stopped.records.count);
+            CHECK([POOrganizer revert:stopped].count == 0 && [POOrganizer revert:copied].count == 0);
+            [fm removeItemAtURL:library error:NULL];
+            [fm removeItemAtURL:archive error:NULL];
+            [fm removeItemAtURL:[root URLByAppendingPathComponent:@"elsewhere"] error:NULL];
         }
 
         // Look-alike copies: a resized and a recompressed version are found, the best one is kept; two different
@@ -520,10 +670,220 @@ int main(void) {
             CHECK([[POVKAlbum fileNameForIndex:12 ofCount:40 url:[NSURL URLWithString:@"https://x/a/b"]] isEqual:@"012.jpg"]);
         }
 
+        // Screenshots told by name and screen size; "Разложить…" into a kept folder, which organizing then leaves alone.
+        {
+            NSURL *shots = [root URLByAppendingPathComponent:@"shots"];
+            WriteImage([shots URLByAppendingPathComponent:@"Screenshot 2024-05-01 at 10.00.00.png"], UTTypePNG, 1440, 900, 0.1, nil);
+            WriteImage([shots URLByAppendingPathComponent:@"IMG_0405.PNG"], UTTypePNG, 1170, 2532, 0.2, nil);
+            WriteImage([shots URLByAppendingPathComponent:@"IMG_0406.JPG"], UTTypeJPEG, 1170, 2532, 0.3, @"2024:05:02 10:00:00");
+            WriteImage([shots URLByAppendingPathComponent:@"IMG_0407.JPG"], UTTypeJPEG, 4032, 3024, 0.4, @"2024:05:03 10:00:00");
+            POPlan *plan = Scan(shots);
+            NSArray<NSString *> *found = [[[plan.items filteredArrayUsingPredicate:[NSPredicate predicateWithBlock:^BOOL(POPhotoItem *item, NSDictionary *b) {
+                return POIsScreenshot(item);
+            }]] valueForKey:@"relativePath"] sortedArrayUsingSelector:@selector(compare:)];
+            CHECK([found isEqualToArray:(@[@"IMG_0405.PNG", @"Screenshot 2024-05-01 at 10.00.00.png"])], @"%@", found);
+            POPhotoItem *dated = [plan.items filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"relativePath == 'IMG_0406.JPG'"]].firstObject;
+            CHECK([[plan folderForItem:dated inFolder:@"Скриншоты" layout:POFolderLayoutYear] isEqualToString:@"Скриншоты/2024"]);
+            CHECK([[plan folderForItem:dated inFolder:@"Скриншоты" layout:POFolderLayoutFlat] isEqualToString:@"Скриншоты"]);
+            [plan keepFolder:@"Скриншоты"];
+            POOrganizeResult *moved = [POOrganizer moveItems:@[dated] rootURL:plan.rootURL progress:nil folder:^NSString *(POPhotoItem *item) {
+                return [plan folderForItem:item inFolder:@"Скриншоты" layout:POFolderLayoutYear];
+            }];
+            CHECK(moved.records.count == 1 && moved.errors.count == 0, @"%@", moved.errors);
+            POPlan *again = Scan(shots);
+            POPhotoItem *kept = [again.items filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"currentFolder BEGINSWITH 'Скриншоты'"]].firstObject;
+            CHECK(kept && !kept.needsMove, @"%@ → %@", kept.currentFolder, kept.destinationFolder);
+            [NSUserDefaults.standardUserDefaults removeObjectForKey:@"keptFolders"];
+            [fm removeItemAtURL:shots error:NULL];
+        }
+
+        // Several folders at once, organized into another one; undone back into each.
+        {
+            NSURL *a = [root URLByAppendingPathComponent:@"multi/A"], *b = [root URLByAppendingPathComponent:@"multi/B"];
+            NSURL *destination = [root URLByAppendingPathComponent:@"multi/Dest"];
+            [fm createDirectoryAtURL:destination withIntermediateDirectories:YES attributes:nil error:NULL];
+            WriteImage([a URLByAppendingPathComponent:@"one.jpg"], UTTypeJPEG, 900, 700, 0.1, @"2017:07:01 10:00:00");
+            WriteImage([a URLByAppendingPathComponent:@"sub/two.jpg"], UTTypeJPEG, 900, 700, 0.2, @"2018:07:01 10:00:00");
+            WriteImage([b URLByAppendingPathComponent:@"three.jpg"], UTTypeJPEG, 900, 700, 0.3, @"2019:07:01 10:00:00");
+            [fm copyItemAtURL:[a URLByAppendingPathComponent:@"one.jpg"] toURL:[b URLByAppendingPathComponent:@"one copy.jpg"] error:NULL];
+            POScanner *scanner = [[POScanner alloc] initWithRootURLs:@[a, b, [a URLByAppendingPathComponent:@"sub"]]];
+            CHECK(scanner.rootURLs.count == 2, @"%@", scanner.rootURLs);
+            NSArray<POPhotoItem *> *items = [scanner scanWithProgress:nil];
+            CHECK(items.count == 4 && [[items valueForKeyPath:@"@sum.duplicate"] integerValue] == 1, @"%lu", items.count);
+            POPlan *plan = [[POPlan alloc] initWithRootURL:scanner.rootURL items:items];
+            plan.sourceURLs = scanner.rootURLs;
+            [plan setDestinationURL:destination];
+            [plan rebuild];
+            CHECK(plan.pendingItems.count == 4, @"%lu", plan.pendingItems.count);
+            POOrganizeResult *moved = [POOrganizer applyPlan:plan progress:nil];
+            CHECK(moved.records.count == 4 && moved.errors.count == 0, @"%@", moved.errors);
+            [plan itemsMovedFrom:[moved.records valueForKey:@"from"] to:[moved.records valueForKey:@"to"]];
+            [plan rebuild];
+            CHECK(plan.pendingItems.count == 0, @"%lu", plan.pendingItems.count);
+            NSArray<POMoveRecord *> *back = nil;
+            CHECK([POOrganizer revert:moved moves:&back].count == 0 && back.count == 4);
+            [plan itemsMovedFrom:[back valueForKey:@"from"] to:[back valueForKey:@"to"]];
+            CHECK([fm fileExistsAtPath:[b URLByAppendingPathComponent:@"three.jpg"].path] && [fm fileExistsAtPath:[a URLByAppendingPathComponent:@"sub/two.jpg"].path]);
+            NSUInteger inB = 0;
+            for (POPhotoItem *item in plan.items) if ([item.rootURL.lastPathComponent isEqualToString:@"B"]) inB++;
+            CHECK(inB == 2, @"%lu", inB);
+            [fm removeItemAtURL:[root URLByAppendingPathComponent:@"multi"] error:NULL];
+        }
+
+        // Organizing by type, by format, by person, and screenshots to a folder of their own.
+        {
+            NSURL *kinds = [root URLByAppendingPathComponent:@"kinds"];
+            WriteImage([kinds URLByAppendingPathComponent:@"Screenshot 2024-05-01 at 10.00.00.png"], UTTypePNG, 1440, 900, 0.1, nil);
+            WriteImage([kinds URLByAppendingPathComponent:@"IMG-20240502-WA0001.jpg"], UTTypeJPEG, 800, 600, 0.2, @"2024:05:02 10:00:00");
+            WriteImage([kinds URLByAppendingPathComponent:@"IMG_0001.JPG"], UTTypeJPEG, 1200, 900, 0.3, @"2023:05:03 10:00:00");
+            WriteImage([kinds URLByAppendingPathComponent:@"PANO_0001.jpg"], UTTypeJPEG, 3000, 900, 0.4, @"2023:06:03 10:00:00");
+            WriteImage([kinds URLByAppendingPathComponent:@"wide.jpg"], UTTypeJPEG, 4344, 1368, 0.45, @"2023:06:04 10:00:00");
+            WriteImage([kinds URLByAppendingPathComponent:@"strip.jpg"], UTTypeJPEG, 309, 786, 0.47, @"2023:06:05 10:00:00");
+            WriteImage([kinds URLByAppendingPathComponent:@"IMG_20230704_101010-COLLAGE.jpg"], UTTypeJPEG, 1200, 1200, 0.5, @"2023:07:04 10:10:10");
+            WriteImage([kinds URLByAppendingPathComponent:@"IMG-20230705-WA0003-отредактировано.jpg"], UTTypeJPEG, 800, 600, 0.6, @"2023:07:05 10:00:00");
+            POPlan *plan = Scan(kinds);
+            NSString *(^folderOf)(NSString *) = ^NSString *(NSString *name) {
+                return [plan.items filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"relativePath == %@", name]].firstObject.destinationFolder;
+            };
+            plan.arrangement = POArrangementType;
+            [plan rebuild];
+            CHECK([folderOf(@"Screenshot 2024-05-01 at 10.00.00.png") isEqualToString:[POL(@"Скриншоты") stringByAppendingString:@"/2024"]], @"%@", folderOf(@"Screenshot 2024-05-01 at 10.00.00.png"));
+            CHECK([folderOf(@"IMG-20240502-WA0001.jpg") isEqualToString:@"WhatsApp/2024"], @"%@", folderOf(@"IMG-20240502-WA0001.jpg"));
+            CHECK([folderOf(@"IMG_0001.JPG") isEqualToString:[POL(@"Фото") stringByAppendingString:@"/2023"]], @"%@", folderOf(@"IMG_0001.JPG"));
+            CHECK([folderOf(@"PANO_0001.jpg") isEqualToString:[POL(@"Панорамы") stringByAppendingString:@"/2023"]], @"%@", folderOf(@"PANO_0001.jpg"));
+            CHECK([folderOf(@"wide.jpg") isEqualToString:[POL(@"Панорамы") stringByAppendingString:@"/2023"]], @"%@", folderOf(@"wide.jpg"));
+            CHECK([folderOf(@"strip.jpg") isEqualToString:[POL(@"Фото") stringByAppendingString:@"/2023"]], @"%@", folderOf(@"strip.jpg"));   // tall and narrow: not a panorama
+            CHECK([folderOf(@"IMG_20230704_101010-COLLAGE.jpg") isEqualToString:[POL(@"Коллажи") stringByAppendingString:@"/2023"]], @"%@", folderOf(@"IMG_20230704_101010-COLLAGE.jpg"));
+            // An edited copy is still a photo — here, one from WhatsApp.
+            CHECK([folderOf(@"IMG-20230705-WA0003-отредактировано.jpg") isEqualToString:@"WhatsApp/2023"], @"%@", folderOf(@"IMG-20230705-WA0003-отредактировано.jpg"));
+            {
+                NSUInteger creations = 0;
+                for (POPhotoItem *item in plan.items) if (POIsGooglePhotosCreation(item)) creations++;
+                CHECK(creations == 1, @"%lu", (unsigned long)creations);
+            }
+            // Only the real photos: pictures left where they are, and a postcard told by its labels joins them.
+            plan.organizesCollages = NO;
+            [plan rebuild];
+            CHECK([folderOf(@"IMG_20230704_101010-COLLAGE.jpg") isEqualToString:@""], @"%@", folderOf(@"IMG_20230704_101010-COLLAGE.jpg"));
+            CHECK([folderOf(@"IMG_0001.JPG") isEqualToString:[POL(@"Фото") stringByAppendingString:@"/2023"]], @"%@", folderOf(@"IMG_0001.JPG"));
+            POPhotoItem *postcard = [plan.items filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"relativePath == 'IMG-20240502-WA0001.jpg'"]].firstObject;
+            PODateSource source = postcard.dateSource;
+            postcard.dateSource = PODateSourceFile;
+            postcard.labels = @{@"illustrations": @0.9};
+            CHECK(POIsPicture(postcard));
+            postcard.labels = @{@"art": @0.9};
+            CHECK(!POIsPicture(postcard));   // a photo of a room with a painting on the wall gets "art" too
+            postcard.dateSource = source;
+            postcard.labels = @{@"illustrations": @0.9};
+            CHECK(!POIsPicture(postcard));   // what a camera took is a photo, whatever is in it
+            postcard.labels = nil;
+            plan.organizesCollages = YES;
+            plan.organizesVideos = NO;
+            [plan rebuild];
+            CHECK([folderOf(@"IMG_20230704_101010-COLLAGE.jpg") isEqualToString:[POL(@"Коллажи") stringByAppendingString:@"/2023"]]);
+            plan.organizesVideos = YES;
+            plan.organizesPhotos = NO;
+            [plan rebuild];
+            CHECK([folderOf(@"IMG_0001.JPG") isEqualToString:@""], @"%@", folderOf(@"IMG_0001.JPG"));
+            plan.organizesPhotos = YES;
+            [plan rebuild];
+            plan.datesInside = NO;
+            [plan rebuild];
+            CHECK([folderOf(@"IMG_0001.JPG") isEqualToString:POL(@"Фото")], @"%@", folderOf(@"IMG_0001.JPG"));
+            plan.arrangement = POArrangementFormat;
+            [plan rebuild];
+            CHECK([folderOf(@"Screenshot 2024-05-01 at 10.00.00.png") isEqualToString:@"PNG"] && [folderOf(@"IMG_0001.JPG") isEqualToString:@"JPEG"]);
+            plan.arrangement = POArrangementPerson;
+            NSMapTable *names = [NSMapTable strongToStrongObjectsMapTable];
+            for (POPhotoItem *item in plan.items) if ([item.relativePath isEqualToString:@"IMG_0001.JPG"]) [names setObject:@"Мама" forKey:item];
+            plan.personNames = names;
+            plan.datesInside = YES;
+            [plan rebuild];
+            CHECK([folderOf(@"IMG_0001.JPG") isEqualToString:@"Мама/2023"] && [folderOf(@"PANO_0001.jpg") isEqualToString:@"2023"], @"%@ %@", folderOf(@"IMG_0001.JPG"), folderOf(@"PANO_0001.jpg"));
+            plan.arrangement = POArrangementDate;
+            plan.separateScreenshots = YES;
+            [plan rebuild];
+            CHECK([folderOf(@"Screenshot 2024-05-01 at 10.00.00.png") isEqualToString:[POPlan.defaultScreenshotsFolderName stringByAppendingString:@"/2024"]]);
+            plan.screenshotsInEachDate = YES;
+            [plan rebuild];
+            CHECK([folderOf(@"Screenshot 2024-05-01 at 10.00.00.png") isEqualToString:[@"2024/" stringByAppendingString:POPlan.defaultScreenshotsFolderName]], @"%@", folderOf(@"Screenshot 2024-05-01 at 10.00.00.png"));
+            [fm removeItemAtURL:kinds error:NULL];
+        }
+
+        // Text in pictures: a screenshot-like picture with English and Russian lines is read and found.
+        {
+            CGColorSpaceRef space = CGColorSpaceCreateDeviceRGB();
+            CGContextRef context = CGBitmapContextCreate(NULL, 1170, 900, 8, 0, space, (CGBitmapInfo)kCGImageAlphaNoneSkipLast);
+            CGColorSpaceRelease(space);
+            CGContextSetRGBFillColor(context, 1, 1, 1, 1);
+            CGContextFillRect(context, CGRectMake(0, 0, 1170, 900));
+            CTFontRef font = CTFontCreateWithName(CFSTR("Helvetica"), 64, NULL);
+            NSArray<NSString *> *lines = @[@"Ethereum 495,28 US$", @"Tether USD", @"Перевод выполнен"];
+            for (NSUInteger i = 0; i < lines.count; i++) {
+                NSAttributedString *text = [[NSAttributedString alloc] initWithString:lines[i] attributes:@{(id)kCTFontAttributeName: (__bridge id)font,
+                                                                                                          (id)kCTForegroundColorFromContextAttributeName: @YES}];
+                CTLineRef line = CTLineCreateWithAttributedString((__bridge CFAttributedStringRef)text);
+                CGContextSetRGBFillColor(context, 0, 0, 0, 1);
+                CGContextSetTextPosition(context, 60, 700 - 220 * i);
+                CTLineDraw(line, context);
+                CFRelease(line);
+            }
+            CFRelease(font);
+            CGImageRef image = CGBitmapContextCreateImage(context);
+            CGContextRelease(context);
+            NSDate *started = NSDate.date;
+            NSString *read = POTextInImage(image);
+            for (int i = 0; i < 4; i++) POTextInImage(image);
+            NSLog(@"Text: %.0f ms a picture", -[started timeIntervalSinceNow] * 1000 / 5);
+            CGImageRelease(image);
+            NSLog(@"Text read: %@", [read stringByReplacingOccurrencesOfString:@"\n" withString:@" | "]);
+            CHECK([read containsString:@"ethereum"] && [read containsString:@"tether"], @"%@", read);
+            CHECK([read containsString:@"перевод"] || ![[[VNRecognizeTextRequest new] supportedRecognitionLanguagesAndReturnError:NULL] containsObject:@"ru-RU"],
+                  @"%@", read);
+        }
+
         // Cancellation
         POScanner *cancelled = [[POScanner alloc] initWithRootURL:root];
         [cancelled cancel];
         CHECK([cancelled scanWithProgress:nil] == nil);
+
+        // Copying onto a drive that already has year folders: the folders are filled up, nothing is overwritten,
+        // files already there are not copied twice, and the originals do not move.
+        {
+            NSURL *source = [root URLByAppendingPathComponent:@"copy-source"];
+            NSURL *drive = [root URLByAppendingPathComponent:@"copy-drive"];
+            [fm createDirectoryAtURL:[drive URLByAppendingPathComponent:@"2021"] withIntermediateDirectories:YES attributes:nil error:NULL];
+            WriteImage([source URLByAppendingPathComponent:@"one.jpg"], UTTypeJPEG, 640, 480, 0.3, @"2021:05:01 12:00:00");
+            WriteImage([source URLByAppendingPathComponent:@"two.jpg"], UTTypeJPEG, 640, 480, 0.5, @"2021:07:01 12:00:00");
+            WriteImage([source URLByAppendingPathComponent:@"three.jpg"], UTTypeJPEG, 640, 480, 0.7, @"2022:01:01 12:00:00");
+            // On the drive already: one.jpg copied before (same file), and another picture that happens to be called two.jpg.
+            [fm copyItemAtURL:[source URLByAppendingPathComponent:@"one.jpg"] toURL:[drive URLByAppendingPathComponent:@"2021/one.jpg"] error:NULL];
+            WriteImage([drive URLByAppendingPathComponent:@"2021/two.jpg"], UTTypeJPEG, 320, 240, 0.9, @"2019:01:01 12:00:00");
+            NSArray<NSString *> *sourceBefore = Tree(source);
+            NSArray<NSString *> *driveFingerprint = ContentFingerprint(drive);
+
+            POPlan *copying = Scan(source);
+            [copying setDestinationURL:drive];
+            copying.copiesFiles = YES;
+            copying.scheme = POSchemeYear;
+            [copying rebuild];
+            POOrganizeResult *copied = [POOrganizer applyPlan:copying progress:nil];
+            CHECK(copied.copied && copied.errors.count == 0, @"%@", copied.errors);
+            CHECK(copied.records.count == 2 && copied.alreadyCopied == 1, @"%lu copied, %lu already there", copied.records.count, copied.alreadyCopied);
+            CHECK([Tree(source) isEqualToArray:sourceBefore], @"%@", Tree(source));
+            NSArray<NSString *> *wanted = @[@"2021/", @"2021/one.jpg", @"2021/two (2).jpg", @"2021/two.jpg", @"2022/", @"2022/three.jpg"];
+            CHECK([Tree(drive) isEqualToArray:wanted], @"%@", Tree(drive));
+            NSMutableSet *driveNow = [NSMutableSet setWithArray:ContentFingerprint(drive)];
+            CHECK([[NSSet setWithArray:driveFingerprint] isSubsetOfSet:driveNow]);   // nothing that was there changed
+            NSDate *originalDate = [fm attributesOfItemAtPath:[source URLByAppendingPathComponent:@"three.jpg"].path error:NULL][NSFileModificationDate];
+            NSDate *copyDate = [fm attributesOfItemAtPath:[drive URLByAppendingPathComponent:@"2022/three.jpg"].path error:NULL][NSFileModificationDate];
+            CHECK([originalDate isEqualToDate:copyDate], @"%@ vs %@", originalDate, copyDate);
+
+            POOrganizeResult *again = [POOrganizer applyPlan:copying progress:nil];
+            CHECK(again.records.count == 0 && again.alreadyCopied == 3 && again.errors.count == 0,
+                  @"%lu copied, %lu already there, %@", again.records.count, again.alreadyCopied, again.errors);
+            CHECK([Tree(drive) isEqualToArray:wanted], @"%@", Tree(drive));
+        }
 
         [fm removeItemAtURL:root error:NULL];
         NSLog(@"%@", failures ? [NSString stringWithFormat:@"%d check(s) FAILED", failures] : @"All core checks passed");

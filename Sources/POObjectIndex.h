@@ -27,6 +27,8 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)setVectors:(NSData *)vectors forKey:(NSString *)key;
 /// Writes what was added since the last save.
 - (void)save;
+/// Forgets every print, on the disk too.
+- (void)removeAll;
 
 /// `items` ordered by how close their nearest print is to `query`, closest first, with at most `limit` results.
 /// `keys` gives each item's cache key (same order); items without prints are left out. `distances` receives the

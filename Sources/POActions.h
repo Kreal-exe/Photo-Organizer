@@ -6,11 +6,13 @@ NS_ASSUME_NONNULL_BEGIN
 /// MainWindowController implements all of them.
 @protocol POActions <NSObject>
 - (IBAction)openDocument:(nullable id)sender;
+- (IBAction)addFolder:(nullable id)sender;
+- (IBAction)removeFolder:(nullable id)sender;
 - (IBAction)rescan:(nullable id)sender;
 - (IBAction)organize:(nullable id)sender;
 - (IBAction)cancelScan:(nullable id)sender;
 - (IBAction)revealRootInFinder:(nullable id)sender;
-/// Sent by the quick-filter strip above the grid; the sender's selectedSegment is a POQuickFilter.
+/// Sent by the buttons of the strip above the grid; the sender's tag is the POQuickFilter to show.
 - (IBAction)selectQuickFilter:(nullable id)sender;
 /// Opens the selected file (or the first one) in the built-in viewer.
 - (IBAction)openSelectedItem:(nullable id)sender;
@@ -28,6 +30,14 @@ NS_ASSUME_NONNULL_BEGIN
 - (IBAction)showPhotoSearch:(nullable id)sender;
 /// Moves every duplicate to the Trash, keeping the original or best-quality file of each set.
 - (IBAction)removeDuplicates:(nullable id)sender;
+/// Exact copies cleaned up folder by folder: the folder that stays is chosen for each group of folders.
+- (IBAction)removeDuplicatesByFolder:(nullable id)sender;
+/// Finds the photos of the person whose face is in the selected photo.
+- (IBAction)findPersonInSelection:(nullable id)sender;
+/// Sent by the View menu's ⌘1 ⌘2 ⌘3; the sender's tag is the grouping (years, months, days).
+- (IBAction)chooseGrouping:(nullable id)sender;
+/// Puts the shown files into one folder ("Разложить…"), moved or copied.
+- (IBAction)arrangeShown:(nullable id)sender;
 /// Switches people's views between every photo of the person and only those where they are alone.
 - (IBAction)toggleSoloPerson:(nullable id)sender;
 /// Gives the selected files (or every file shown) a date by hand.
@@ -38,6 +48,10 @@ NS_ASSUME_NONNULL_BEGIN
 - (IBAction)backToMap:(nullable id)sender;
 /// Shows the selected file in the library, among the photos of its date.
 - (IBAction)showInLibrary:(nullable id)sender;
+/// Shows the original of a selected copy or thumbnail — the file it is a copy of, or its larger version — in the library.
+- (IBAction)showOriginal:(nullable id)sender;
+/// Sent by the checkboxes of the strip; the sender's tag is the POMediaKind to tick or untick.
+- (IBAction)toggleKindIncluded:(nullable id)sender;
 /// Marks an object on the selected photo and finds the photos where it appears.
 - (IBAction)findObjectInSelection:(nullable id)sender;
 /// Marks another object on the last example photo.

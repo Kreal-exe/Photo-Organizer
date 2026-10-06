@@ -35,8 +35,8 @@ public sealed class Model(string key, string repo, string[] files, string title,
 }
 
 /// <summary>
-/// Reads and fills the standard Hugging Face hub cache (%USERPROFILE%\.cache\huggingface\hub, or wherever HF_HUB_CACHE /
-/// HF_HOME point), in the layout huggingface_hub uses on Windows without symlinks, so models downloaded here are visible
+/// Reads and fills the standard Hugging Face hub cache (%USERPROFILE%\.cache\huggingface\hub, or wherever HF_HUB_CACHE,
+/// the older HUGGINGFACE_HUB_CACHE or HF_HOME point), in the layout huggingface_hub uses on Windows without symlinks, so models downloaded here are visible
 /// to other tools and vice versa.
 /// </summary>
 public static class HuggingFace
@@ -45,6 +45,7 @@ public static class HuggingFace
 
     public static string CacheDirectory =>
         Environment.GetEnvironmentVariable("HF_HUB_CACHE") is { Length: > 0 } cache ? cache
+        : Environment.GetEnvironmentVariable("HUGGINGFACE_HUB_CACHE") is { Length: > 0 } legacy ? legacy
         : Environment.GetEnvironmentVariable("HF_HOME") is { Length: > 0 } home ? Path.Combine(home, "hub")
         : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".cache", "huggingface", "hub");
 
@@ -86,14 +87,24 @@ public static class HuggingFace
     public static async Task<string> DownloadAsync(Model model, IProgress<(long Received, long Total)>? progress, CancellationToken token)
     {
         string commit;
-        using (var response = await Client.GetAsync($"{Endpoint}/api/models/{model.Repo}/revision/main", token))
+        // The sizes of the files, as the hub lists them: the progress runs to their sum, not to the catalogue's estimate.
+        var sizes = new Dictionary<string, long>();
+        using (var response = await Client.GetAsync($"{Endpoint}/api/models/{model.Repo}/revision/main?blobs=true", token))
         {
             response.EnsureSuccessStatusCode();
             using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync(token));
             commit = json.RootElement.GetProperty("sha").GetString()!;
+            if (json.RootElement.TryGetProperty("siblings", out var siblings) && siblings.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var sibling in siblings.EnumerateArray())
+                {
+                    if (sibling.TryGetProperty("rfilename", out var name) && sibling.TryGetProperty("size", out var size) && size.ValueKind == JsonValueKind.Number)
+                        sizes[name.GetString() ?? ""] = size.GetInt64();
+                }
+            }
         }
         string root = RepoDirectory(model.Repo), folder = Path.Combine(root, "snapshots", commit);
-        long received = 0, total = model.ByteSize;
+        long received = 0, total = model.Files.All(sizes.ContainsKey) ? model.Files.Sum(f => sizes[f]) : model.ByteSize;
         foreach (string name in model.Files)
         {
             string target = Path.Combine(folder, name.Replace('/', '\\'));
@@ -104,21 +115,31 @@ public static class HuggingFace
             }
             Directory.CreateDirectory(Path.GetDirectoryName(target)!);
             string partial = target + ".incomplete";
-            using (var response = await Client.GetAsync($"{Endpoint}/{model.Repo}/resolve/{commit}/{name}", HttpCompletionOption.ResponseHeadersRead, token))
+            try
             {
-                response.EnsureSuccessStatusCode();
-                await using var input = await response.Content.ReadAsStreamAsync(token);
-                await using var output = System.IO.File.Create(partial);
-                var buffer = new byte[1 << 16];
-                int read;
-                while ((read = await input.ReadAsync(buffer, token)) > 0)
+                using (var response = await Client.GetAsync($"{Endpoint}/{model.Repo}/resolve/{commit}/{name}", HttpCompletionOption.ResponseHeadersRead, token))
                 {
-                    await output.WriteAsync(buffer.AsMemory(0, read), token);
-                    received += read;
-                    progress?.Report((received, Math.Max(total, received)));
+                    response.EnsureSuccessStatusCode();
+                    await using var input = await response.Content.ReadAsStreamAsync(token);
+                    await using var output = System.IO.File.Create(partial);
+                    var buffer = new byte[1 << 16];
+                    int read;
+                    while ((read = await input.ReadAsync(buffer, token)) > 0)
+                    {
+                        await output.WriteAsync(buffer.AsMemory(0, read), token);
+                        received += read;
+                        progress?.Report((received, Math.Max(total, received)));
+                    }
                 }
+                System.IO.File.Move(partial, target, overwrite: true);
             }
-            System.IO.File.Move(partial, target, overwrite: true);
+            catch (Exception)
+            {
+                // Stopped or failed: no half-downloaded file is left behind in the shared cache.
+                try { System.IO.File.Delete(partial); }
+                catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
+                throw;
+            }
         }
         Directory.CreateDirectory(Path.Combine(root, "refs"));
         await System.IO.File.WriteAllTextAsync(Path.Combine(root, "refs", "main"), commit, token);

@@ -128,7 +128,7 @@ static NSStackView *POPane(NSArray<NSView *> *views) {
     }
     _statusLabel.stringValue = status;
     _statusLabel.textColor = color;
-    _downloadButton.title = busy ? POL(@"Отменить") : (downloaded ? POL(@"Установить MLX") : POL(@"Загрузить"));
+    _downloadButton.title = busy ? POL(@"Отмена") : (downloaded ? POL(@"Установить MLX") : POL(@"Загрузить"));
     _downloadButton.hidden = !model.isSupported || (!busy && downloaded && !needsRuntime);
     _downloadButton.enabled = !_installingRuntime;   // pip can't be interrupted half-way without leaving a mess
     _revealButton.hidden = !downloaded;

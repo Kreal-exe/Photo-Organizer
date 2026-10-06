@@ -16,6 +16,10 @@ FOUNDATION_EXPORT const NSInteger POFaceEmbeddingLength;
 /// One embedding per usable face, largest faces first; empty when there are none. Thread-safe.
 /// `peopleCount` receives the number of people in the picture (see +peopleCountInImage:).
 - (NSArray<NSData *> *)embeddingsForFacesInImage:(CGImageRef)image peopleCount:(nullable NSInteger *)peopleCount;
+/// Same; `boxes` receives where each face is: @[x, y, width, height] as fractions of the picture, from its top left
+/// (as on Windows) — the sidebar cuts a person's face from it.
+- (NSArray<NSData *> *)embeddingsForFacesInImage:(CGImageRef)image peopleCount:(nullable NSInteger *)peopleCount
+                                           boxes:(NSArray<NSArray<NSNumber *> *> *_Nullable *_Nullable)boxes;
 
 /// Every face Vision finds (also those too small or blurred to embed) or every human figure, whichever is more:
 /// people seen from the back or in the dark often have no detectable face.

@@ -4,6 +4,10 @@ using static PhotoOrganizer.Core.Strings;
 namespace PhotoOrganizer.Core;
 
 public enum Scheme { Year = 0, YearMonth = 1, YearMonthDay = 2 }       // 2024/ · 2024/2024-03/ · 2024/2024-03/2024-03-15/
+/// <summary>What the library is organized by: the date (2024/…), or a first level of folders by type, person or format.</summary>
+public enum Arrangement { Date = 0, Type = 1, Person = 2, Format = 3 }
+/// <summary>How "Разложить…" of a section (screenshots, a person…) arranges its files inside the section's folder.</summary>
+public enum FolderLayout { Flat = 0, Year = 1, YearMonth = 2, YearMonthDay = 3 }
 public enum YearStyle { Number = 0, Word = 1 }                          // 2024 · 2024 год
 public enum MonthStyle { Iso = 0, IsoName = 1, NumberName = 2, NameYear = 3 }   // 2024-03 · 2024-03 Март · 03 Март · Март 2024
 public enum DayStyle { Iso = 0, Number = 1, DayMonth = 2 }              // 2024-03-15 · 15 · 15 марта
@@ -26,19 +30,78 @@ public sealed partial class Plan
     readonly Dictionary<string, string> _customNames = [];   // generated folder → custom folder
     string _duplicatesFolderName = DefaultDuplicatesFolderName;
     string _tinyFolderName = DefaultTinyFolderName;
+    string _screenshotsFolderName = DefaultScreenshotsFolderName;
 
-    public Plan(string root, IEnumerable<PhotoItem> items)
+    public Plan(string root, IEnumerable<PhotoItem> items, IEnumerable<string>? sources = null)
     {
         Root = root;
+        Sources = (sources ?? [root]).ToList();
         Items = items.ToList();
         DuplicateItems = Items.Where(i => i.IsDuplicate).ToList();
+        KeptFolders = LoadKeptFolders(root);
+    }
+
+    static HashSet<string> LoadKeptFolders(string root) =>
+        new((Settings.Shared.GetObject<Dictionary<string, List<string>>>("keptFolders")?.GetValueOrDefault(root.ToLowerInvariant()) ?? [])
+            .Select(f => f.Normalize()), StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>The library's folders (several when more than one was opened).</summary>
+    public List<string> Sources { get; }
+
+    /// <summary>
+    /// Organizes into another folder than the first one of the library: files from all the library's folders are
+    /// moved there. Call Rebuild() afterwards.
+    /// </summary>
+    public void SetDestination(string root)
+    {
+        Root = Scanner.NormalizedRoot(root);
+        KeptFolders = LoadKeptFolders(Root);
+    }
+
+    /// <summary>
+    /// Top-level folders the user filled by hand ("Скриншоты", a person's name…, see "Разложить…" and "Переместить в
+    /// папку…"): their files stay where they are when the library is organized by date. Remembered per library.
+    /// </summary>
+    public HashSet<string> KeptFolders { get; private set; }
+
+    public void KeepFolder(string folder)
+    {
+        // Compared in composed form: a folder named on a Mac ("й" decomposed) is the same folder.
+        if (FirstComponent(folder)?.Normalize() is not { } top || !KeptFolders.Add(top)) return;
+        var all = Settings.Shared.GetObject<Dictionary<string, List<string>>>("keptFolders") ?? [];
+        all[Root.ToLowerInvariant()] = KeptFolders.ToList();
+        Settings.Shared.Set("keptFolders", all);
+    }
+
+    bool InKeptFolder(PhotoItem item) =>
+        KeptFolders.Count > 0 && item.CurrentFolder.Length > 0 && string.Equals(item.Root, Root, StringComparison.OrdinalIgnoreCase)
+        && KeptFolders.Contains(item.CurrentFolder.Split('/')[0].Normalize());
+
+    /// <summary>The folder a file goes to inside a section's folder: the folder itself, or its date folders below it.</summary>
+    public string SectionFolder(PhotoItem item, string folder, FolderLayout layout)
+    {
+        if (layout == FolderLayout.Flat) return folder;
+        if (item.Undated) return $"{folder}/{UndatedFolderName}";
+        var (scheme, nested) = (Scheme, Nested);
+        try
+        {
+            Scheme = (Scheme)((int)layout - 1);
+            Nested = true;
+            return $"{folder}/{DateFolder(item)}";
+        }
+        finally
+        {
+            (Scheme, Nested) = (scheme, nested);
+        }
     }
 
     public static string DefaultDuplicatesFolderName => L("Дубликаты");
     public static string DefaultTinyFolderName => L("Миниатюры");
+    public static string DefaultScreenshotsFolderName => L("Скриншоты");
     public static string UndatedFolderName => L("Без даты");
 
-    public string Root { get; }
+    /// <summary>The folder everything is organized into: the library's first folder, or another chosen one.</summary>
+    public string Root { get; private set; }
     public List<PhotoItem> Items { get; private set; }
     public List<PhotoItem> DuplicateItems { get; private set; }
     public List<PhotoItem> TinyItems => Items.Where(i => i.Tiny).ToList();
@@ -50,7 +113,38 @@ public sealed partial class Plan
     /// <summary>2024/2024-03/…; false: only the deepest level, directly in the root.</summary>
     public bool Nested = true;
     public bool SeparateDuplicates = true;
+    /// <summary>
+    /// Duplicates — exact copies and lesser versions of a picture, not thumbnails — go to the Recycle Bin when the files
+    /// are moved (when copied, they are not copied): only one file of each picture, the original or the best version,
+    /// is organized. Only a copy whose original stays is removed.
+    /// </summary>
+    public bool RemovesDuplicates = true;
+    /// <summary>What Rebuild found to go to the Recycle Bin with RemovesDuplicates (empty when the files are copied).</summary>
+    public List<PhotoItem> DuplicatesToRemove { get; private set; } = [];
+    /// <summary>
+    /// Which files are organized: photos, videos, pictures (postcards, memes, drawings, see Pictures) and collages
+    /// (what Google Photos made, see MediaTypes.IsGooglePhotosCreation). The kinds turned off stay where they are — e.g.
+    /// only the real photos go into the year folders, with or without the videos, or only the videos.
+    /// </summary>
+    public bool OrganizesPhotos = true, OrganizesVideos = true, OrganizesPictures = true, OrganizesCollages = true;
     public bool SeparateTiny = true;
+    /// <summary>Screenshots to a folder of their own (with date folders inside), whatever the rest is organized by.</summary>
+    public bool SeparateScreenshots;
+    /// <summary>
+    /// Where that folder is: false — one folder at the top with the date folders inside (Скриншоты/2024/…); true — one
+    /// inside every date folder, next to the photos of that date (2024/Скриншоты/…).
+    /// </summary>
+    public bool ScreenshotsInEachDate;
+    public Arrangement Arrangement = Arrangement.Date;
+    /// <summary>Copies the files into the folders instead of moving them; the originals stay where they are.</summary>
+    public bool CopiesFiles;
+    /// <summary>By type, person or format: date folders inside each of those folders (by the options above), or not.</summary>
+    public bool DatesInside = true;
+    /// <summary>
+    /// For organizing by person: the files in which exactly one named person was recognised, and that person's name.
+    /// Set by the window from the people found; files not in it are organized by date.
+    /// </summary>
+    public Dictionary<PhotoItem, string> PersonNames { get; set; } = [];
 
     public List<Group> Groups { get; private set; } = [];
     /// <summary>Files that are not yet in their destination folder.</summary>
@@ -107,6 +201,12 @@ public sealed partial class Plan
         set => _tinyFolderName = FirstComponent(value) ?? DefaultTinyFolderName;
     }
 
+    public string ScreenshotsFolderName
+    {
+        get => _screenshotsFolderName;
+        set => _screenshotsFolderName = FirstComponent(value) ?? DefaultScreenshotsFolderName;
+    }
+
     /// <summary>Renames one destination folder; null or an empty name restores the generated one.</summary>
     public void SetCustomName(string? name, Group group)
     {
@@ -143,7 +243,20 @@ public sealed partial class Plan
         DayStyle = Clamp<DayStyle>(s.Get("dayStyle", 0));
         Nested = s.Get("nested", true);
         SeparateDuplicates = s.Get("separateDuplicates", true);
+        RemovesDuplicates = s.Get("removesDuplicates", true);
+        OrganizesPhotos = s.Get("organizesPhotos", true);
+        OrganizesVideos = s.Get("organizesVideos", true);
+        // "Без картинок — не трогать" of the earlier pictures choice is pictures left alone.
+        OrganizesPictures = s.Get("organizesPictures", s.Get("picturesMode", 0) != 2);
+        OrganizesCollages = s.Get("organizesCollages", OrganizesPictures);
         SeparateTiny = s.Get("separateTiny", true);
+        Arrangement = Clamp<Arrangement>(s.Get("arrangement", 0));
+        SeparateScreenshots = s.Get("separateScreenshots", false);
+        ScreenshotsInEachDate = s.Get("screenshotsInEachDate", false);
+        string? screenshots = s.GetString("screenshotsFolderName");
+        ScreenshotsFolderName = screenshots is "Скриншоты" or "Screenshots" ? "" : screenshots ?? "";
+        DatesInside = s.Get("datesInside", true);
+        CopiesFiles = s.Get("organizeCopiesFiles", false);
         // A saved name that is just the default of another interface language is not a choice the user made.
         string? duplicates = s.GetString("duplicatesFolderName"), tiny = s.GetString("tinyFolderName");
         DuplicatesFolderName = duplicates is "Дубликаты" or "Duplicates" ? "" : duplicates ?? "";
@@ -159,7 +272,18 @@ public sealed partial class Plan
         s.Set("dayStyle", (int)DayStyle);
         s.Set("nested", Nested);
         s.Set("separateDuplicates", SeparateDuplicates);
+        s.Set("removesDuplicates", RemovesDuplicates);
+        s.Set("organizesPhotos", OrganizesPhotos);
+        s.Set("organizesVideos", OrganizesVideos);
+        s.Set("organizesPictures", OrganizesPictures);
+        s.Set("organizesCollages", OrganizesCollages);
         s.Set("separateTiny", SeparateTiny);
+        s.Set("arrangement", (int)Arrangement);
+        s.Set("separateScreenshots", SeparateScreenshots);
+        s.Set("screenshotsInEachDate", ScreenshotsInEachDate);
+        s.Set("screenshotsFolderName", ScreenshotsFolderName);
+        s.Set("datesInside", DatesInside);
+        s.Set("organizeCopiesFiles", CopiesFiles);
         s.Set("duplicatesFolderName", DuplicatesFolderName);
         s.Set("tinyFolderName", TinyFolderName);
     }
@@ -237,15 +361,33 @@ public sealed partial class Plan
     public void ItemsMoved(IEnumerable<(string From, string To)> moves)
     {
         var byPath = Items.GroupBy(i => i.Path, StringComparer.OrdinalIgnoreCase).ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
-        string rootPrefix = Root.TrimEnd('\\') + "\\";
+        // Into the destination, or (undone) back into one of the library's folders: the deepest that holds it.
+        var roots = Sources.Append(Root).Distinct(StringComparer.OrdinalIgnoreCase).OrderByDescending(r => r.Length).ToList();
         foreach (var (from, to) in moves)
         {
-            if (!byPath.TryGetValue(from, out var item) || !to.StartsWith(rootPrefix, StringComparison.OrdinalIgnoreCase)) continue;
-            item.MovedTo(to, Path.GetRelativePath(Root, to).Replace('\\', '/'));
+            if (!byPath.TryGetValue(from, out var item)) continue;
+            string? root = roots.FirstOrDefault(r => to.StartsWith(r.TrimEnd('\\') + "\\", StringComparison.OrdinalIgnoreCase));
+            if (root == null) continue;
+            item.MovedTo(to, root, Path.GetRelativePath(root, to).Replace('\\', '/'));
         }
     }
 
     public void SortItemsByDate() => Items.Sort(PhotoItem.ByDate);
+
+    /// <summary>The first-level folder of a file when the library is not organized by date; null for the date folders.</summary>
+    string? SectionOf(PhotoItem item) => SeparateScreenshots && Screenshots.IsScreenshot(item) ? ScreenshotsFolderName : Arrangement switch
+    {
+        Arrangement.Type => MediaTypes.TypeFolder(item),
+        Arrangement.Format => MediaTypes.FormatFolder(item),
+        Arrangement.Person => PersonNames.TryGetValue(item, out var name) ? SanitizedFolderPath(name)?.Replace('/', '-') : null,
+        _ => null,
+    };
+
+    /// <summary>Whether the kind of `item` is organized at all (photos, videos, pictures, collages).</summary>
+    bool Organizes(PhotoItem item) =>
+        MediaTypes.IsGooglePhotosCreation(item) ? OrganizesCollages
+        : item.IsPicture ? OrganizesPictures
+        : item.Video ? OrganizesVideos : OrganizesPhotos;
 
     public void Rebuild()
     {
@@ -260,13 +402,63 @@ public sealed partial class Plan
         tiny.GeneratedFolders.Add(tiny.Folder);
         duplicates.GeneratedFolders.Add(duplicates.Folder);
         var generatedFolders = new HashSet<string>();
+        var sectionGroups = new List<Group>();
         var pending = new List<PhotoItem>();
+        // Duplicates to remove: copies of the kinds organized whose original (or best version) stays — never the last
+        // file of a picture. They are left where they are until they go to the Recycle Bin.
+        var removed = new HashSet<PhotoItem>();
+        if (RemovesDuplicates)
+        {
+            var doomed = Items.Where(i => (i.IsDuplicate || i.BetterCopy != null) && !i.Tiny && Organizes(i)).ToHashSet();
+            foreach (var item in doomed)
+            {
+                var keeper = item.DuplicateOf ?? item.BetterCopy;
+                if (keeper != null && doomed.Contains(keeper)) keeper = keeper.BetterCopy is { } best && !doomed.Contains(best) ? best : null;
+                if (keeper != null) removed.Add(item);
+            }
+        }
+        DuplicatesToRemove = CopiesFiles ? [] : Items.Where(removed.Contains).ToList();
         foreach (var item in Items)
         {
+            item.DestinationRoot = Root;
+            // Left where they are: sorted by hand into a folder of their own, of a kind not to organize, or a duplicate
+            // to remove (or, when copying, not to copy).
+            bool copy = item.IsDuplicate || item.BetterCopy != null;
+            if (!Organizes(item) || InKeptFolder(item) || removed.Contains(item))
+            {
+                item.DestinationFolder = item.CurrentFolder;
+                continue;
+            }
             Group group;
             // Thumbnails first: an exact copy of a thumbnail is still a thumbnail.
             if (SeparateTiny && item.Tiny) group = tiny;
-            else if (SeparateDuplicates && (item.IsDuplicate || item.BetterCopy != null)) group = duplicates;
+            else if (SeparateDuplicates && copy) group = duplicates;
+            else if (SeparateScreenshots && ScreenshotsInEachDate && Screenshots.IsScreenshot(item))
+            {
+                // A screenshots folder inside the folder of its date (or of the undated files).
+                string generated = $"{(item.Undated ? undatedName : DateFolder(item))}/{ScreenshotsFolderName}";
+                string folder = _customNames.GetValueOrDefault(generated, generated);
+                if (!byFolder.TryGetValue(folder, out group!))
+                {
+                    group = byFolder[folder] = new Group(GroupKind.Date, folder);
+                    dateGroups.Add(group);
+                }
+                if (generatedFolders.Add(generated)) group.GeneratedFolders.Add(generated);
+            }
+            else if (SectionOf(item) is { } section)
+            {
+                // By type, person or format: that folder first, the date folders (or the undated one) inside. The
+                // screenshots folder always has its dates.
+                bool datesInside = DatesInside || Arrangement == Arrangement.Date;
+                string generated = !datesInside ? section : item.Undated ? $"{section}/{undatedName}" : $"{section}/{DateFolder(item)}";
+                string folder = _customNames.GetValueOrDefault(generated, generated);
+                if (!byFolder.TryGetValue(folder, out group!))
+                {
+                    group = byFolder[folder] = new Group(GroupKind.Date, folder);
+                    sectionGroups.Add(group);
+                }
+                if (generatedFolders.Add(generated)) group.GeneratedFolders.Add(generated);
+            }
             else if (item.Undated) group = undated;
             else
             {
@@ -288,6 +480,8 @@ public sealed partial class Plan
         {
             if (!generatedFolders.Contains(generated) && generated != undatedName) _customNames.Remove(generated);
         }
+        // The type, person or format folders by name (each in date order inside), before the date folders of the rest.
+        dateGroups.InsertRange(0, sectionGroups.OrderBy(g => g.Folder.Split('/')[0], NaturalComparer.Instance));   // stable
         foreach (var group in new[] { undated, tiny, duplicates }) if (group.Items.Count > 0) dateGroups.Add(group);
         Groups = dateGroups;
         PendingItems = pending;

@@ -20,6 +20,9 @@ public enum FilterKind
     Object,        // a saved object filter; Key holds its search words
     ObjectSearch,  // what the search by object found, on its own page
     Map,           // the files that know where they were taken, on a map
+    Screenshots,   // screenshots, told by name, folder and screen size (see Core/Screenshots)
+    Type,          // one of the other types (see MediaTypes.TypeFolder); Key holds its name
+    Videos,
 }
 
 public sealed record Filter(FilterKind Kind, string? Key = null);
@@ -36,8 +39,10 @@ public sealed class Sidebar : DockPanel
     readonly Dictionary<Person, Border> _faceHolders = [];
     List<Row> _model = [];
     Dictionary<string, long> _counts = [];
+    List<(string Name, long Count)> _types = [];
     List<Person> _people = [];
     List<(string Query, long Count)> _objectFilters = [];
+    Func<Person, long> _personCount = person => person.Items.Count;
     bool _hasLibrary;
 
     public Filter Selected { get; private set; } = new(FilterKind.All);
@@ -82,11 +87,17 @@ public sealed class Sidebar : DockPanel
 
     /// <summary>
     /// counts: library, suggested, undated, duplicates, tiny, similar (-1 when there was no search yet), located, nudity
-    /// (-1 hides the row: the feature is off). objectFilters: saved object filters with their counts.
+    /// (-1 hides the row: the feature is off). objectFilters: saved object filters with their counts. types: the other
+    /// types found (screen recordings, messengers, animations, panoramas, RAW, pictures, collages…), in display order.
     /// </summary>
     public void Rebuild(bool hasLibrary, Dictionary<string, long> counts, List<Person> people, Filter? selecting = null,
-                        List<(string Query, long Count)>? objectFilters = null)
+                        List<(string Query, long Count)>? objectFilters = null, Func<Person, long>? personCount = null,
+                        List<(string Name, long Count)>? types = null)
     {
+        if (types != null) _types = types;
+        // Kept for a rebuild of its own (a section folded): people are counted by what is shown.
+        if (personCount != null) _personCount = personCount;
+        personCount = _personCount;
         _hasLibrary = hasLibrary;
         _counts = counts;
         _people = people;
@@ -101,12 +112,16 @@ public sealed class Sidebar : DockPanel
             // Always there: selecting it is how the search by photo is found and started.
             rows.Add(new Row(L("Поиск по фото"), "photo-search", counts.GetValueOrDefault("similar", -1), new Filter(FilterKind.Similar)));
             rows.Add(new Row(L("Карта"), "map", counts.GetValueOrDefault("located"), new Filter(FilterKind.Map)));
+            rows.Add(new Row(L("Типы"), Section: "types"));
+            rows.Add(new Row(L("Скриншоты"), "screenshot", counts.GetValueOrDefault("screenshots"), new Filter(FilterKind.Screenshots)));
+            rows.Add(new Row(L("Видео"), "video", counts.GetValueOrDefault("videos"), new Filter(FilterKind.Videos)));
+            foreach (var (name, count) in _types) rows.Add(new Row(name, TypeGlyph(name), count, new Filter(FilterKind.Type, name)));
             if (people.Count > 0)
             {
                 rows.Add(new Row(L("Люди"), Section: "people"));
                 // The long tail of people seen in a handful of photos would bury everything below.
                 foreach (var person in people.Take(30))
-                    rows.Add(new Row(person.DisplayName, "person", person.Items.Count, new Filter(FilterKind.Person, person.Key), Person: person));
+                    rows.Add(new Row(person.DisplayName, person.Named ? "person" : "person-unnamed", personCount(person), new Filter(FilterKind.Person, person.Key), Person: person));
             }
             rows.Add(new Row(L("Объекты"), Section: "objects", AddButton: true));
             foreach (var (query, count) in _objectFilters) rows.Add(new Row(query, "tag", count, new Filter(FilterKind.Object, query)));
@@ -130,6 +145,18 @@ public sealed class Sidebar : DockPanel
         var target = selecting ?? Selected;
         Selected = visible.Any(r => r.Filter == target) ? target : new Filter(FilterKind.All);
         Render();
+    }
+
+    /// <summary>The symbol of a type row, as on the Mac (by the type's Russian name, translated).</summary>
+    static string TypeGlyph(string name)
+    {
+        foreach (var (key, glyph) in new[] { ("Записи экрана", "record"), ("WhatsApp", "message"), ("Telegram", "send"), ("Viber", "phone"),
+                                             ("Instagram", "camera"), ("Анимации", "slideshow"), ("Панорамы", "panorama"), ("RAW", "raw"),
+                                             ("Картинки", "picture"), ("Коллажи", "grid") })
+        {
+            if (L(key) == name) return glyph;
+        }
+        return "grid";
     }
 
     public void Select(Filter filter)

@@ -30,6 +30,7 @@ enum { POKeyLeft = 123, POKeyRight = 124, POKeyEscape = 53, POKeySpace = 49 };
 @protocol POViewerKeyHandling <NSObject>
 - (BOOL)handleKeyDown:(NSEvent *)event;
 - (void)handleDoubleClick:(NSEvent *)event;
+- (nullable NSMenu *)contextMenu;
 @end
 
 /// Root view: takes keyboard focus and sees every key press and click its subviews (the player, the scroll
@@ -44,6 +45,10 @@ enum { POKeyLeft = 123, POKeyRight = 124, POKeyEscape = 53, POKeySpace = 49 };
 
 - (void)keyDown:(NSEvent *)event {
     if (![self.keyHandler handleKeyDown:event]) [super keyDown:event];
+}
+
+- (NSMenu *)menuForEvent:(NSEvent *)event {
+    return [self.keyHandler contextMenu];
 }
 
 - (void)mouseDown:(NSEvent *)event {
@@ -78,8 +83,12 @@ enum { POKeyLeft = 123, POKeyRight = 124, POKeyEscape = 53, POKeySpace = 49 };
     NSImageView *_imageView;
     AVPlayerView *_playerView;
     NSTextField *_messageLabel;
+    NSButton *_openExternallyButton;   // under the message when a video can't be played
     NSProgressIndicator *_spinner;
+    AVPlayerItem *_observedItem;
 }
+
+static void *POPlayerItemStatusContext = &POPlayerItemStatusContext;
 
 static NSButton *POBarButton(NSString *symbol, NSString *toolTip, id target, SEL action) {
     NSButton *button = [NSButton buttonWithImage:[NSImage imageWithSystemSymbolName:symbol accessibilityDescription:toolTip] target:target action:action];
@@ -161,6 +170,9 @@ static NSButton *POBarButton(NSString *symbol, NSString *toolTip, id target, SEL
     _messageLabel = [NSTextField labelWithString:@""];
     _messageLabel.textColor = [NSColor colorWithWhite:1 alpha:0.7];
     _messageLabel.font = [NSFont systemFontOfSize:14];
+    _openExternallyButton = [NSButton buttonWithTitle:POL(@"Открыть в программе по умолчанию") target:self action:@selector(openExternally:)];
+    _openExternallyButton.appearance = [NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
+    _openExternallyButton.hidden = YES;
     _spinner = [NSProgressIndicator new];
     _spinner.style = NSProgressIndicatorStyleSpinning;
     _spinner.displayedWhenStopped = NO;
@@ -184,6 +196,12 @@ static NSButton *POBarButton(NSString *symbol, NSString *toolTip, id target, SEL
             [view.centerYAnchor constraintEqualToAnchor:_stage.centerYAnchor],
         ]];
     }
+    _openExternallyButton.translatesAutoresizingMaskIntoConstraints = NO;
+    [_stage addSubview:_openExternallyButton];
+    [NSLayoutConstraint activateConstraints:@[
+        [_openExternallyButton.centerXAnchor constraintEqualToAnchor:_stage.centerXAnchor],
+        [_openExternallyButton.topAnchor constraintEqualToAnchor:_messageLabel.bottomAnchor constant:14],
+    ]];
 
     [root addSubview:bar];
     [root addSubview:_stage];
@@ -202,6 +220,37 @@ static NSButton *POBarButton(NSString *symbol, NSString *toolTip, id target, SEL
 
 - (void)dealloc {
     [NSNotificationCenter.defaultCenter removeObserver:self];
+    [self observePlayerItem:nil];
+}
+
+/// A video AVFoundation can't play (an old codec, a damaged file) says so, with a way to open it in another player.
+- (void)observePlayerItem:(AVPlayerItem *)item {
+    if (_observedItem) [_observedItem removeObserver:self forKeyPath:@"status" context:POPlayerItemStatusContext];
+    _observedItem = item;
+    if (item) [item addObserver:self forKeyPath:@"status" options:NSKeyValueObservingOptionInitial context:POPlayerItemStatusContext];
+}
+
+- (void)observeValueForKeyPath:(NSString *)keyPath ofObject:(id)object change:(NSDictionary *)change context:(void *)context {
+    if (context != POPlayerItemStatusContext) {
+        [super observeValueForKeyPath:keyPath ofObject:object change:change context:context];
+        return;
+    }
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (object != self->_observedItem || self->_observedItem.status != AVPlayerItemStatusFailed) return;
+        self->_playerView.hidden = YES;
+        self->_messageLabel.stringValue = POL(@"Видео не воспроизводится");
+        self->_openExternallyButton.hidden = NO;
+    });
+}
+
+- (void)openExternally:(id)sender {
+    POPhotoItem *item = [self currentItem];
+    if (item) [NSWorkspace.sharedWorkspace openURL:item.url];
+}
+
+- (NSMenu *)contextMenu {
+    POPhotoItem *item = [self currentItem];
+    return item && self.menuProvider ? self.menuProvider(item) : nil;
 }
 
 - (void)viewDidLayout {
@@ -225,6 +274,8 @@ static NSButton *POBarButton(NSString *symbol, NSString *toolTip, id target, SEL
 
 - (void)stop {
     _loadGeneration++;
+    [self observePlayerItem:nil];
+    _openExternallyButton.hidden = YES;
     [_playerView.player pause];
     _playerView.player = nil;
     _imageView.image = nil;
@@ -254,6 +305,7 @@ static NSButton *POBarButton(NSString *symbol, NSString *toolTip, id target, SEL
     if (item.isVideo) {
         AVPlayer *player = [AVPlayer playerWithURL:item.url];
         _playerView.player = player;
+        [self observePlayerItem:player.currentItem];
         [player play];
     } else {
         [self loadImageForItem:item];

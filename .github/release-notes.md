@@ -1,4 +1,4 @@
-**macOS.** Download `PhotoOrganizer-….zip`, unzip it and drag `PhotoOrganizer.app` to *Applications*. The build is
+**macOS.** Download `PhotoOrganizer-macOS-….zip`, unzip it and drag `PhotoOrganizer.app` to *Applications*. The build is
 not notarized yet, so remove the quarantine flag before the first launch:
 
 ```bash
@@ -12,7 +12,7 @@ install. Windows 10 or 11, 64-bit. The app is not signed yet: if SmartScreen sto
 
 ---
 
-**macOS.** Скачайте `PhotoOrganizer-….zip`, распакуйте и перетащите `PhotoOrganizer.app` в «Программы». Сборка
+**macOS.** Скачайте `PhotoOrganizer-macOS-….zip`, распакуйте и перетащите `PhotoOrganizer.app` в «Программы». Сборка
 пока не нотаризована, поэтому перед первым запуском снимите карантинную пометку:
 
 ```bash

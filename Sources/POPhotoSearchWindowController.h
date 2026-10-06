@@ -8,8 +8,9 @@ NS_ASSUME_NONNULL_BEGIN
 
 @property (class, nonatomic, readonly) POPhotoSearchWindowController *sharedController;
 
-/// Called with the example and the chosen label identifiers when the user presses the search button.
-@property (nonatomic, copy, nullable) void (^onSearch)(CGImageRef image, NSArray<NSString *> *labels);
+/// Called with the example and the chosen label identifiers when the user presses the search button — or, when
+/// "Искать этого человека по лицу" is ticked, with the face found in the example (`face` nil otherwise).
+@property (nonatomic, copy, nullable) void (^onSearch)(CGImageRef image, NSArray<NSString *> *labels, NSData *_Nullable face);
 
 /// Shown under the button ("Сравниваем: 120 из 800", "Найдено 37").
 - (void)setStatus:(NSString *)status busy:(BOOL)busy;

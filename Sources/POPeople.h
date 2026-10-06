@@ -15,17 +15,23 @@ NS_ASSUME_NONNULL_BEGIN
 /// The files of `items` in which this person is the only one: every face found in them is theirs.
 @property (nonatomic, readonly, copy) NSArray<POPhotoItem *> *soloItems;
 @property (nonatomic, readonly) NSUInteger faceCount;
-/// The photo that shows this person most typically — preferably one where they are alone.
+/// The photo that shows this person most typically — preferably one where they are alone — and which of its faces
+/// is theirs (an index into its `faces`).
 @property (nonatomic, readonly, nullable) POPhotoItem *representativeItem;
+@property (nonatomic, readonly) NSUInteger representativeFace;
 @end
 
 /// Groups the faces found by the analyzer into people. Names given by the user are remembered together with
 /// what the face looks like, so the same person is recognised again in another folder or after a rescan.
 @interface POPeople : NSObject
 
-/// Blocking; call off the main thread. People with too few photos to be worth listing are left out; the result
-/// is sorted by number of files, named people first.
-+ (NSArray<POPerson *> *)peopleInItems:(NSArray<POPhotoItem *> *)items;
+/// Blocking; call off the main thread. People with too few photos to be worth listing are left out, and so are groups
+/// of faces too unlike each other to be one person; the result is sorted by number of files, named people first.
+/// `previous`: the people found before among the same files, whose numbers ("Человек 3") the same people keep.
++ (NSArray<POPerson *> *)peopleInItems:(NSArray<POPhotoItem *> *)items previous:(nullable NSArray<POPerson *> *)previous;
+
+/// Search by face: the files where someone looks like `embedding` (a face of POPhotoItem.faces), most alike first.
++ (NSArray<POPhotoItem *> *)itemsWithFace:(NSData *)embedding inItems:(NSArray<POPhotoItem *> *)items;
 
 /// A small square picture of the person's face, cut from their representative photo. `completion` is called
 /// on the main queue — at once when the picture is already known — with nil when no face could be cut out.

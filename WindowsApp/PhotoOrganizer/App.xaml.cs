@@ -14,7 +14,9 @@ public partial class App : Application
         var window = new UI.MainWindow();
         MainWindow = window;
         window.Show();
-        if ((e.Args.FirstOrDefault(Directory.Exists) ?? UI.MainWindow.UnfinishedFolder) is { } folder) window.LoadFolder(folder);
+        // A file given (opened with the app) stands for the folder it is in.
+        var folders = e.Args.Select(UI.MainWindow.FolderOf).OfType<string>().ToList();
+        window.LoadFolders(folders.Count > 0 ? folders : UI.MainWindow.UnfinishedFolders);
     }
 
     /// <summary>An error the app did not expect: written to crash.log and shown, instead of the window just vanishing.</summary>

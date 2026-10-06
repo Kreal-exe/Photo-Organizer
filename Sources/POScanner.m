@@ -1,5 +1,6 @@
 #import "POScanner.h"
 #import "POManualDates.h"
+#import "POMediaTypes.h"
 #import <ImageIO/ImageIO.h>
 #import <AVFoundation/AVFoundation.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
@@ -22,12 +23,15 @@ static NSDate *PODateFromEXIFString(id value) {
     tm.tm_year = year - 1900;
     tm.tm_mon = month - 1;
     tm.tm_mday = day;
-    tm.tm_hour = hour;
-    tm.tm_min = minute;
-    tm.tm_sec = second;
+    // Some cameras write midnight as "24:00:00": it stays on its day (hour 23), as on Windows, instead of rolling over.
+    tm.tm_hour = MIN(MAX(hour, 0), 23);
+    tm.tm_min = MIN(MAX(minute, 0), 59);
+    tm.tm_sec = MIN(MAX(second, 0), 59);
     tm.tm_isdst = -1;
     time_t time = mktime(&tm);
     if (time == (time_t)-1) return nil;
+    // A day the month doesn't have (31 April) is a broken date, not the 1st of the next month.
+    if (tm.tm_mday != day || tm.tm_mon != month - 1) return nil;
     return [NSDate dateWithTimeIntervalSince1970:time];
 }
 
@@ -58,8 +62,11 @@ NSDate *PODateFromFileName(NSString *name) {
             tm.tm_sec = [rest substringWithRange:[clock rangeAtIndex:3]].intValue;
         }
         tm.tm_isdst = -1;
+        int day = tm.tm_mday, month = tm.tm_mon;
         time_t seconds = mktime(&tm);
         if (seconds == (time_t)-1 || seconds > time(NULL) + 86400) continue;
+        // "20230231" is a number that only looks like a date: mktime would make it 3 March.
+        if (tm.tm_mday != day || tm.tm_mon != month) continue;
         return [NSDate dateWithTimeIntervalSince1970:seconds];
     }
     return nil;
@@ -164,6 +171,8 @@ static void POReadVideoMetadata(POPhotoItem *item) {
     return self;
 }
 
+static const NSInteger POMetadataVersion = 2;
+
 /// Size and modification time (to the nanosecond): when either changes, the file is read again.
 static NSString *POFileStamp(POPhotoItem *item) {
     struct stat info;
@@ -187,7 +196,8 @@ static NSString *POFileStamp(POPhotoItem *item) {
     @synchronized (self) {
         record = [[self currentRecordOf:item stamp:NULL] copy];
     }
-    if (![record[@"read"] boolValue]) return NO;
+    // Version 2: pixel sizes of photos turned by their EXIF orientation, and no impossible dates; older records are read again.
+    if (![record[@"read"] boolValue] || [record[@"v"] integerValue] < POMetadataVersion) return NO;
     NSArray<NSNumber *> *size = record[@"size"];
     if ([size isKindOfClass:NSArray.class] && size.count == 2) {
         item.pixelWidth = size[0].integerValue;
@@ -233,6 +243,7 @@ static NSString *POFileStamp(POPhotoItem *item) {
         NSMutableDictionary *record = [self recordToUpdateFor:item];
         if (!record) return;
         record[@"read"] = @YES;
+        record[@"v"] = @(POMetadataVersion);
         record[@"size"] = @[@(item.pixelWidth), @(item.pixelHeight)];
         if (item.duration > 0) record[@"duration"] = @(item.duration);
         if (item.dateSource == PODateSourceEXIF && item.date) record[@"date"] = item.date;
@@ -313,6 +324,13 @@ static void POReadEmbeddedMetadata(POPhotoItem *item) {
 
     item.pixelWidth = [properties[(id)kCGImagePropertyPixelWidth] integerValue];
     item.pixelHeight = [properties[(id)kCGImagePropertyPixelHeight] integerValue];
+    // Orientations 5–8 turn the picture by a quarter: it is shown, and compared with its copies, the other way round.
+    NSInteger orientation = [properties[(id)kCGImagePropertyOrientation] integerValue];
+    if (orientation >= 5 && orientation <= 8) {
+        NSInteger width = item.pixelWidth;
+        item.pixelWidth = item.pixelHeight;
+        item.pixelHeight = width;
+    }
 
     NSDictionary *gps = properties[(id)kCGImagePropertyGPSDictionary];
     NSNumber *latitude = gps[(id)kCGImagePropertyGPSLatitude], *longitude = gps[(id)kCGImagePropertyGPSLongitude];
@@ -355,6 +373,11 @@ static NSString *POHashFile(NSURL *url, atomic_bool *cancelled) {
     NSMutableString *hex = [NSMutableString stringWithCapacity:CC_SHA256_DIGEST_LENGTH * 2];
     for (int i = 0; i < CC_SHA256_DIGEST_LENGTH; i++) [hex appendFormat:@"%02x", digest[i]];
     return hex;
+}
+
+NSString *POContentHashOfFile(NSURL *url) {
+    atomic_bool never = false;
+    return POHashFile(url, &never);
 }
 
 /// Splits "IMG_0668" into the series name "IMG_" and the counter 668. NO for names that don't end in a number.
@@ -433,6 +456,78 @@ static void PODateFromNeighbors(NSArray<POPhotoItem *> *items) {
 /// ("photoTakenTime"), even when the photo itself has lost its metadata. Its name is the photo's, more or less
 /// ("IMG_1.JPG.json", "IMG_1.JPG.supplemental-metadata.json", cut short for long names, "IMG_1.JPG(1).json" for
 /// "IMG_1(1).JPG"), so the files are matched by the "title" written inside instead.
+///
+/// When no title is the file's own name, the file is one Takeout gave no .json of its own: its name cut to 47
+/// characters while the title is whole ("…_com.ftband.m.jpg" for "…_com.ftband.mono.jpg"), a numbered copy of a file
+/// that has one ("…(1).jpg"), an edited copy ("IMG_1-отредактировано.jpg", "IMG_1-EFFECTS.jpg") or the video of a Live
+/// Photo ("IMG_1.MP4" next to "IMG_1.HEIC"). It then takes the .json of that file — for a cut name, only when every
+/// title it could be the start of says the same.
+static NSString *POTakeoutKeyForPath(NSString *path, NSDictionary<NSString *, id> *known,
+                                     NSDictionary<NSString *, NSSet<NSString *> *> *titlesByFolder, BOOL video) {
+    static NSRegularExpression *copyNumber, *edit;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        copyNumber = [NSRegularExpression regularExpressionWithPattern:@"\\(\\d+\\)$" options:0 error:NULL];
+        edit = [NSRegularExpression regularExpressionWithPattern:@"-(edited|отредактировано|изменено|bearbeitet|modifié|editado|modificato|bewerkt|"
+                                                                 @"edytowane|redigeret|redigerad|muokattu|collage|photo_frame|animation|effects|mix|"
+                                                                 @"snippet|cinematic|stylized)$" options:NSRegularExpressionCaseInsensitive error:NULL];
+    });
+    NSString *key = path.lowercaseString.precomposedStringWithCanonicalMapping;
+    if (known[key]) return key;
+    NSString *folder = key.stringByDeletingLastPathComponent, *extension = key.pathExtension;
+    NSString *base = key.lastPathComponent.stringByDeletingPathExtension;
+    NSString *(^strip)(NSRegularExpression *, NSString *) = ^NSString *(NSRegularExpression *expression, NSString *text) {
+        return [expression stringByReplacingMatchesInString:text options:0 range:NSMakeRange(0, text.length) withTemplate:@""];
+    };
+    NSString *(^named)(NSString *) = ^NSString *(NSString *name) {
+        NSString *candidate = [folder stringByAppendingPathComponent:extension.length ? [name stringByAppendingPathExtension:extension] : name];
+        return known[candidate] ? candidate : nil;
+    };
+    base = strip(copyNumber, base);
+    if (named(base)) return named(base);
+    for (NSString *stripped = strip(edit, base); ![stripped isEqualToString:base]; stripped = strip(edit, base)) {
+        base = stripped;
+        if (named(base)) return named(base);
+    }
+    NSSet<NSString *> *titles = titlesByFolder[folder];
+    if (video) {
+        for (NSString *title in titles) {
+            if ([title.stringByDeletingPathExtension isEqualToString:base]) return [folder stringByAppendingPathComponent:title];
+        }
+    }
+    if (base.length >= 30) {
+        NSString *found = nil;
+        for (NSString *title in titles) {
+            if (![title.pathExtension isEqualToString:extension] || ![title hasPrefix:base]) continue;
+            NSString *candidate = [folder stringByAppendingPathComponent:title];
+            if (found && ![known[found] isEqual:known[candidate]]) return nil;
+            found = candidate;
+        }
+        return found;
+    }
+    return nil;
+}
+
+/// The year of the Google Takeout folder a file is in ("Фото 2023 г", "Photos from 2023") for a file nothing else
+/// dates: Takeout sorts by the date Google Photos gives a file, so the year is Google's own. Only the year — the file
+/// goes into that year's folder, not into a month — and a copy with a date of its own still wins (see POSimilarCopies).
+static void PODateFromTakeoutFolders(NSArray<POPhotoItem *> *items) {
+    NSRegularExpression *folder = [NSRegularExpression regularExpressionWithPattern:@"^(photos from|фото за|фото) (\\d{4})( ?г\\.?)?$"
+                                                                            options:NSRegularExpressionCaseInsensitive error:NULL];
+    NSCalendar *calendar = [[NSCalendar alloc] initWithCalendarIdentifier:NSCalendarIdentifierGregorian];
+    for (POPhotoItem *item in items) {
+        if (!item.isUndated) continue;
+        NSString *name = item.currentFolder.lastPathComponent.precomposedStringWithCanonicalMapping;
+        NSTextCheckingResult *match = name.length ? [folder firstMatchInString:name options:0 range:NSMakeRange(0, name.length)] : nil;
+        NSInteger year = match ? [name substringWithRange:[match rangeAtIndex:2]].integerValue : 0;
+        if (year < 1990 || year > 2100) continue;
+        NSDateComponents *components = [NSDateComponents new];
+        components.year = year; components.month = 7; components.day = 1; components.hour = 12;
+        item.date = [calendar dateFromComponents:components];
+        item.dateSource = PODateSourceTakeoutFolder;
+    }
+}
+
 static void PODateFromTakeoutSidecars(NSArray<POPhotoItem *> *items, NSArray<NSURL *> *sidecars) {
     if (!sidecars.count) return;
     NSRegularExpression *copyNumber = [NSRegularExpression regularExpressionWithPattern:@"\\((\\d+)\\)\\.json$" options:NSRegularExpressionCaseInsensitive error:NULL];
@@ -461,8 +556,15 @@ static void PODateFromTakeoutSidecars(NSArray<POPhotoItem *> *items, NSArray<NSU
         if (timestamp >= 631152000) dates[key] = [NSDate dateWithTimeIntervalSince1970:timestamp];
         if (hasPlace) places[key] = @[@(latitude), @(longitude)];
     }
+    NSMutableDictionary<NSString *, NSMutableSet<NSString *> *> *titlesByFolder = [NSMutableDictionary dictionary];
+    for (NSString *key in [dates.allKeys arrayByAddingObjectsFromArray:places.allKeys]) {
+        NSString *folder = key.stringByDeletingLastPathComponent;
+        if (!titlesByFolder[folder]) titlesByFolder[folder] = [NSMutableSet set];
+        [titlesByFolder[folder] addObject:key.lastPathComponent];
+    }
     for (POPhotoItem *item in items) {
-        NSString *key = item.url.path.lowercaseString.precomposedStringWithCanonicalMapping;
+        NSString *key = POTakeoutKeyForPath(item.url.path, dates, titlesByFolder, item.isVideo)
+                     ?: POTakeoutKeyForPath(item.url.path, places, titlesByFolder, item.isVideo) ?: @"";
         NSArray<NSNumber *> *place = places[key];
         if (place && !item.hasLocation) {
             item.latitude = place[0].doubleValue;
@@ -483,15 +585,37 @@ static void PODateFromTakeoutSidecars(NSArray<POPhotoItem *> *items, NSArray<NSU
     atomic_uint_fast64_t _done;
 }
 
-- (instancetype)initWithRootURL:(NSURL *)rootURL {
-    if ((self = [super init])) {
-        // The directory enumerator reports canonical paths (/private/var/… rather than /var/…), so the root
-        // has to be canonical too for relative paths to be computed correctly.
++ (NSArray<NSURL *> *)normalizedRootURLs:(NSArray<NSURL *> *)urls {
+    // The directory enumerator reports canonical paths (/private/var/… rather than /var/…), so the roots have to be
+    // canonical too for relative paths to be computed correctly.
+    NSMutableArray<NSURL *> *canonical = [NSMutableArray array];
+    for (NSURL *url in urls) {
+        NSURL *root = url;
         char resolved[PATH_MAX];
-        if (realpath(rootURL.fileSystemRepresentation, resolved)) {
-            rootURL = [NSURL fileURLWithFileSystemRepresentation:resolved isDirectory:YES relativeToURL:nil];
+        if (realpath(url.fileSystemRepresentation, resolved)) root = [NSURL fileURLWithFileSystemRepresentation:resolved isDirectory:YES relativeToURL:nil];
+        BOOL known = NO;
+        for (NSURL *other in canonical) known = known || [other.path isEqualToString:root.path];
+        if (!known) [canonical addObject:root];
+    }
+    NSMutableArray<NSURL *> *outer = [NSMutableArray array];
+    for (NSURL *root in canonical) {
+        BOOL inside = NO;
+        for (NSURL *other in canonical) {
+            if (other != root && [root.path hasPrefix:[other.path stringByAppendingString:@"/"]]) inside = YES;
         }
-        _rootURL = rootURL;
+        if (!inside) [outer addObject:root];
+    }
+    return outer;
+}
+
+- (instancetype)initWithRootURL:(NSURL *)rootURL {
+    return [self initWithRootURLs:@[rootURL]];
+}
+
+- (instancetype)initWithRootURLs:(NSArray<NSURL *> *)rootURLs {
+    if ((self = [super init])) {
+        _rootURLs = [POScanner normalizedRootURLs:rootURLs];
+        _rootURL = _rootURLs.firstObject;
         _sidecars = [NSMutableArray array];
         _deprioritizedFolders = @[];
     }
@@ -516,19 +640,22 @@ static void PODateFromTakeoutSidecars(NSArray<POPhotoItem *> *items, NSArray<NSU
     NSMutableArray<POPhotoItem *> *items = [self enumerateMediaWithProgress:progress];
     if (atomic_load(&_cancelled)) return nil;
 
-    POScanCache *cache = [[POScanCache alloc] initWithRootURL:self.rootURL];
+    // What earlier scans of these folders read is reused: a cache per folder.
+    NSMutableDictionary<NSString *, POScanCache *> *caches = [NSMutableDictionary dictionary];
+    for (NSURL *root in self.rootURLs) caches[root.path] = [[POScanCache alloc] initWithRootURL:root];
     [self forEach:items phase:POScanPhaseMetadata progress:progress work:^(POPhotoItem *item) {
-        POReadMetadata(item, cache);
+        POReadMetadata(item, caches[item.rootURL.path]);
     }];
-    [cache save];
+    for (POScanCache *cache in caches.allValues) [cache save];
     if (atomic_load(&_cancelled)) return nil;
 
     PODateFromTakeoutSidecars(items, _sidecars);
     PODateFromNeighbors(items);
+    PODateFromTakeoutFolders(items);
     [POManualDates applyToItems:items];
 
-    [self findDuplicatesIn:items cache:cache progress:progress];
-    [cache save];
+    [self findDuplicatesIn:items caches:caches progress:progress];
+    for (POScanCache *cache in caches.allValues) [cache save];
     if (atomic_load(&_cancelled)) return nil;
 
     [items sortUsingComparator:^NSComparisonResult(POPhotoItem *a, POPhotoItem *b) {
@@ -540,31 +667,48 @@ static void PODateFromTakeoutSidecars(NSArray<POPhotoItem *> *items, NSArray<NSU
 #pragma mark - Phases
 
 - (NSMutableArray<POPhotoItem *> *)enumerateMediaWithProgress:(POScanProgress)progress {
-    NSArray<NSURLResourceKey> *keys = @[NSURLIsRegularFileKey, NSURLContentTypeKey, NSURLFileSizeKey,
+    NSMutableArray<POPhotoItem *> *items = [NSMutableArray array];
+    [_sidecars removeAllObjects];
+    for (NSURL *root in self.rootURLs) {
+        if (atomic_load(&_cancelled)) break;
+        [self enumerateRoot:root into:items progress:progress];
+    }
+    return items;
+}
+
+- (void)enumerateRoot:(NSURL *)rootURL into:(NSMutableArray<POPhotoItem *> *)items progress:(POScanProgress)progress {
+    NSArray<NSURLResourceKey> *keys = @[NSURLIsRegularFileKey, NSURLFileSizeKey,
                                         NSURLCreationDateKey, NSURLContentModificationDateKey];
     NSDirectoryEnumerator<NSURL *> *enumerator =
-        [NSFileManager.defaultManager enumeratorAtURL:self.rootURL
+        [NSFileManager.defaultManager enumeratorAtURL:rootURL
                            includingPropertiesForKeys:keys
                                               options:NSDirectoryEnumerationSkipsHiddenFiles | NSDirectoryEnumerationSkipsPackageDescendants
                                          errorHandler:^BOOL(NSURL *url, NSError *error) { return YES; }];
-    NSString *rootPrefix = [self.rootURL.path stringByAppendingString:@"/"];
-    NSMutableArray<POPhotoItem *> *items = [NSMutableArray array];
-    [_sidecars removeAllObjects];
+    NSString *rootPrefix = [rootURL.path stringByAppendingString:@"/"];
+    // What other systems keep on a drive: Windows' Recycle Bin and restore points, a Synology's thumbnails (the same
+    // list as on Windows; hidden folders such as .thumbnails are skipped anyway).
+    static NSSet<NSString *> *skipped;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ skipped = [NSSet setWithArray:@[@"$recycle.bin", @"system volume information", @"@eadir", @".thumbnails"]]; });
     for (NSURL *url in enumerator) {
         if (atomic_load(&_cancelled)) break;
         NSDictionary<NSURLResourceKey, id> *values = [url resourceValuesForKeys:keys error:NULL];
-        if (![values[NSURLIsRegularFileKey] boolValue]) continue;
-        UTType *type = values[NSURLContentTypeKey];
-        BOOL isVideo = [type conformsToType:UTTypeMovie];
+        if (![values[NSURLIsRegularFileKey] boolValue]) {
+            if ([skipped containsObject:url.lastPathComponent.lowercaseString]) [enumerator skipDescendants];
+            continue;
+        }
         if ([url.pathExtension caseInsensitiveCompare:@"json"] == NSOrderedSame) {
             [_sidecars addObject:url];
             continue;
         }
-        if (!isVideo && ![type conformsToType:UTTypeImage]) continue;
+        // One list of formats, the same as on Windows (see POMediaKindOfExtension).
+        POMediaFileKind kind = POMediaKindOfExtension(url.pathExtension);
+        if (kind == POMediaFileKindNone) continue;
+        BOOL isVideo = kind == POMediaFileKindVideo;
 
         NSString *path = url.path;
         if (![path hasPrefix:rootPrefix]) continue;
-        POPhotoItem *item = [[POPhotoItem alloc] initWithURL:url relativePath:[path substringFromIndex:rootPrefix.length]];
+        POPhotoItem *item = [[POPhotoItem alloc] initWithURL:url relativePath:[path substringFromIndex:rootPrefix.length] rootURL:rootURL];
         item.video = isVideo;
         struct stat info;
         item.cloudOnly = lstat(url.fileSystemRepresentation, &info) == 0 && (info.st_flags & SF_DATALESS) != 0;
@@ -576,7 +720,6 @@ static void PODateFromTakeoutSidecars(NSArray<POPhotoItem *> *items, NSArray<NSU
         [items addObject:item];
         if (progress && items.count % 50 == 0) progress(POScanPhaseEnumerating, items.count, 0);
     }
-    return items;
 }
 
 - (void)forEach:(NSArray<POPhotoItem *> *)items phase:(POScanPhase)phase progress:(POScanProgress)progress work:(void (^)(POPhotoItem *item))work {
@@ -594,7 +737,7 @@ static void PODateFromTakeoutSidecars(NSArray<POPhotoItem *> *items, NSArray<NSU
     });
 }
 
-- (void)findDuplicatesIn:(NSArray<POPhotoItem *> *)items cache:(POScanCache *)cache progress:(POScanProgress)progress {
+- (void)findDuplicatesIn:(NSArray<POPhotoItem *> *)items caches:(NSDictionary<NSString *, POScanCache *> *)caches progress:(POScanProgress)progress {
     // Only files that share their size with another file can be identical, so only those get hashed.
     NSMutableDictionary<NSNumber *, NSMutableArray<POPhotoItem *> *> *bySize = [NSMutableDictionary dictionary];
     for (POPhotoItem *item in items) {
@@ -610,6 +753,7 @@ static void PODateFromTakeoutSidecars(NSArray<POPhotoItem *> *items, NSArray<NSU
     }
 
     [self forEach:candidates phase:POScanPhaseDuplicates progress:progress work:^(POPhotoItem *item) {
+        POScanCache *cache = caches[item.rootURL.path];
         item.contentHash = [cache hashOfItem:item];
         if (item.contentHash) return;
         item.contentHash = POHashFile(item.url, &self->_cancelled);

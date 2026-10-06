@@ -130,6 +130,9 @@ public static class Theme
         ["pause"] = "", ["back"] = "", ["forward"] = "", ["zoom-in"] = "", ["zoom-out"] = "",
         ["photo"] = "", ["video"] = "",
         ["object-search"] = "", ["photo-search"] = "", ["map"] = "", ["tag"] = "", ["explicit"] = "",
-        ["add"] = "", ["viewfinder"] = "", ["download"] = "",
+        ["screenshot"] = "\uE7F4", ["picture"] = "\uE790", ["folder-add"] = "\uE8F4", ["add"] = "", ["viewfinder"] = "", ["download"] = "",
+        ["similar"] = "\uE8A9", ["person-unnamed"] = "\uE9CE", ["sidebar"] = "\uE90C", ["record"] = "\uE7C8", ["message"] = "\uE8BD",
+        ["send"] = "\uE724", ["phone"] = "\uE717", ["camera"] = "\uE722", ["slideshow"] = "\uE786", ["panorama"] = "\uE740",
+        ["raw"] = "\uE8B9", ["grid"] = "\uF0E2",
     };
 }
