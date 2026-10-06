@@ -32,6 +32,8 @@ static NSString *const POMediaKindKey = @"mediaKind";     // a POQuickFilter
 @interface MainWindowController () <NSToolbarDelegate, NSWindowDelegate, NSDraggingDestination, POSidebarDelegate, NSSearchFieldDelegate>
 @end
 
+NSString *const POUnfinishedFolderKey = @"POUnfinishedFolder";
+
 @implementation MainWindowController {
     NSSplitViewItem *_sidebarItem;
     POSidebarViewController *_sidebar;
@@ -275,6 +277,9 @@ static NSString *const POMediaKindKey = @"mediaKind";     // a POQuickFilter
     _similarItems = nil;   // its files may be about to move
     _objectResults = nil;
     [_scanner cancel];
+    // Until the scan and the recognition after it are through, the folder is opened again at the next launch, and
+    // both go on from where they stopped (the scan cache and the analysis cache).
+    [NSUserDefaults.standardUserDefaults setObject:_rootURL.path forKey:POUnfinishedFolderKey];
     POScanner *scanner = [[POScanner alloc] initWithRootURL:_rootURL];
     scanner.deprioritizedFolders = @[POPlan.savedDuplicatesFolderName];
     _scanner = scanner;
@@ -324,6 +329,7 @@ static NSString *const POMediaKindKey = @"mediaKind";     // a POQuickFilter
     if (!_scanner) return;
     [_scanner cancel];
     _scanner = nil;
+    [NSUserDefaults.standardUserDefaults removeObjectForKey:POUnfinishedFolderKey];
     if (!_plan) _rootURL = nil;
     [self updateUI];
 }
@@ -1368,7 +1374,10 @@ static NSString *const POObjectFiltersKey = @"objectFilters";
 /// the saved results, so this is quick on a folder that was opened before.
 - (void)startAnalysis {
     [self stopAnalysis];
-    if (!_plan.items.count) return;
+    if (!_plan.items.count) {
+        [NSUserDefaults.standardUserDefaults removeObjectForKey:POUnfinishedFolderKey];
+        return;
+    }
     BOOL detectsNudity = POSettings.detectsNudity;
     POAnalyzer *analyzer = [[POAnalyzer alloc] initWithItems:_plan.items];
     _analyzer = analyzer;
@@ -1384,6 +1393,7 @@ static NSString *const POObjectFiltersKey = @"objectFilters";
         typeof(self) me = weakSelf;
         if (!me || me->_analyzer != analyzer) return;
         me->_analyzer = nil;
+        [NSUserDefaults.standardUserDefaults removeObjectForKey:POUnfinishedFolderKey];
         [me analysisDidFinishWithMessage:errorMessage ?: notReady];
     }];
 }

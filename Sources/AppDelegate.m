@@ -19,6 +19,13 @@
     if (_pendingURL) {
         [_windowController loadFolder:_pendingURL];
         _pendingURL = nil;
+        return;
+    }
+    // The app quit while a folder was still being scanned or recognised: it goes on from where it stopped.
+    NSString *unfinished = [NSUserDefaults.standardUserDefaults stringForKey:POUnfinishedFolderKey];
+    BOOL isDirectory = NO;
+    if (unfinished && [NSFileManager.defaultManager fileExistsAtPath:unfinished isDirectory:&isDirectory] && isDirectory) {
+        [_windowController loadFolder:[NSURL fileURLWithPath:unfinished isDirectory:YES]];
     }
 }
 

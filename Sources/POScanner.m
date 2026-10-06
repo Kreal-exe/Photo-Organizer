@@ -116,11 +116,169 @@ static void POReadVideoMetadata(POPhotoItem *item) {
     }
 }
 
+#pragma mark - Scan cache
+
+/// What the scanner has read from each file of a folder — its metadata and content hash — kept in
+/// ~/Library/Application Support/Photo Organizer/Scans, one file per folder. It is saved while the scan runs, so a
+/// scan cut short (the app quit, the Mac turned off) goes on where it stopped, and a rescan reads only the files that
+/// are new or changed (another size or modification time).
+@interface POScanCache : NSObject
+- (instancetype)initWithRootURL:(NSURL *)rootURL;
+/// Puts what was read before into the item; NO when the file is new or has changed since.
+- (BOOL)restoreMetadataOfItem:(POPhotoItem *)item;
+- (NSString *)hashOfItem:(POPhotoItem *)item;
+/// Call right after the embedded metadata was read, before the file and name dates are applied.
+- (void)rememberMetadataOfItem:(POPhotoItem *)item;
+- (void)rememberHash:(NSString *)hash ofItem:(POPhotoItem *)item;
+- (void)save;
+@end
+
+@implementation POScanCache {
+    NSURL *_fileURL;
+    NSMutableDictionary<NSString *, NSMutableDictionary *> *_records;   // relative path → record
+    NSUInteger _unsaved;
+    CFAbsoluteTime _lastSave;
+}
+
+- (instancetype)initWithRootURL:(NSURL *)rootURL {
+    if ((self = [super init])) {
+        NSURL *support = [NSFileManager.defaultManager URLForDirectory:NSApplicationSupportDirectory inDomain:NSUserDomainMask
+                                                     appropriateForURL:nil create:YES error:NULL];
+        NSURL *folder = [support URLByAppendingPathComponent:@"Photo Organizer/Scans" isDirectory:YES];
+        [NSFileManager.defaultManager createDirectoryAtURL:folder withIntermediateDirectories:YES attributes:nil error:NULL];
+        NSData *path = [rootURL.path.precomposedStringWithCanonicalMapping dataUsingEncoding:NSUTF8StringEncoding];
+        unsigned char digest[CC_SHA256_DIGEST_LENGTH];
+        CC_SHA256(path.bytes, (CC_LONG)path.length, digest);
+        NSMutableString *name = [NSMutableString string];
+        for (int i = 0; i < 8; i++) [name appendFormat:@"%02x", digest[i]];
+        _fileURL = [folder URLByAppendingPathComponent:[name stringByAppendingString:@".plist"]];
+        _records = [NSMutableDictionary dictionary];
+        NSDictionary *saved = [NSDictionary dictionaryWithContentsOfURL:_fileURL];
+        if ([saved isKindOfClass:NSDictionary.class] && [saved[@"version"] isEqual:@1] && [saved[@"files"] isKindOfClass:NSDictionary.class]) {
+            [saved[@"files"] enumerateKeysAndObjectsUsingBlock:^(NSString *key, NSDictionary *record, BOOL *stop) {
+                if ([record isKindOfClass:NSDictionary.class]) self->_records[key] = [record mutableCopy];
+            }];
+        }
+        _lastSave = CFAbsoluteTimeGetCurrent();
+    }
+    return self;
+}
+
+/// Size and modification time (to the nanosecond): when either changes, the file is read again.
+static NSString *POFileStamp(POPhotoItem *item) {
+    struct stat info;
+    if (stat(item.url.fileSystemRepresentation, &info) != 0) return nil;
+    return [NSString stringWithFormat:@"%lld-%ld.%09ld", (long long)info.st_size, (long)info.st_mtimespec.tv_sec, (long)info.st_mtimespec.tv_nsec];
+}
+
+/// The record of the file when it has not changed since it was made, or nil.
+- (NSMutableDictionary *)currentRecordOf:(POPhotoItem *)item stamp:(NSString **)stampOut {
+    NSString *stamp = POFileStamp(item);
+    if (stampOut) *stampOut = stamp;
+    if (!stamp) return nil;
+    @synchronized (self) {
+        NSMutableDictionary *record = _records[item.relativePath];
+        return [record[@"stamp"] isEqual:stamp] ? record : nil;
+    }
+}
+
+- (BOOL)restoreMetadataOfItem:(POPhotoItem *)item {
+    NSDictionary *record;
+    @synchronized (self) {
+        record = [[self currentRecordOf:item stamp:NULL] copy];
+    }
+    if (![record[@"read"] boolValue]) return NO;
+    NSArray<NSNumber *> *size = record[@"size"];
+    if ([size isKindOfClass:NSArray.class] && size.count == 2) {
+        item.pixelWidth = size[0].integerValue;
+        item.pixelHeight = size[1].integerValue;
+    }
+    item.duration = [record[@"duration"] doubleValue];
+    NSDate *date = record[@"date"];
+    if ([date isKindOfClass:NSDate.class]) {
+        item.date = date;
+        item.dateSource = PODateSourceEXIF;
+    }
+    NSArray<NSNumber *> *place = record[@"place"];
+    if ([place isKindOfClass:NSArray.class] && place.count == 2) {
+        item.latitude = place[0].doubleValue;
+        item.longitude = place[1].doubleValue;
+        item.hasLocation = YES;
+    }
+    return YES;
+}
+
+- (NSString *)hashOfItem:(POPhotoItem *)item {
+    @synchronized (self) {
+        NSString *hash = [self currentRecordOf:item stamp:NULL][@"hash"];
+        return [hash isKindOfClass:NSString.class] ? hash : nil;
+    }
+}
+
+/// Call while holding the lock.
+- (NSMutableDictionary *)recordToUpdateFor:(POPhotoItem *)item {
+    NSString *stamp;
+    NSMutableDictionary *record = [self currentRecordOf:item stamp:&stamp];
+    if (!stamp) return nil;
+    if (!record) {
+        record = [NSMutableDictionary dictionaryWithObject:stamp forKey:@"stamp"];
+        _records[item.relativePath] = record;
+    }
+    return record;
+}
+
+- (void)rememberMetadataOfItem:(POPhotoItem *)item {
+    if (item.isCloudOnly) return;
+    @synchronized (self) {
+        NSMutableDictionary *record = [self recordToUpdateFor:item];
+        if (!record) return;
+        record[@"read"] = @YES;
+        record[@"size"] = @[@(item.pixelWidth), @(item.pixelHeight)];
+        if (item.duration > 0) record[@"duration"] = @(item.duration);
+        if (item.dateSource == PODateSourceEXIF && item.date) record[@"date"] = item.date;
+        if (item.hasLocation) record[@"place"] = @[@(item.latitude), @(item.longitude)];
+        [self didChange];
+    }
+}
+
+- (void)rememberHash:(NSString *)hash ofItem:(POPhotoItem *)item {
+    if (!hash) return;
+    @synchronized (self) {
+        NSMutableDictionary *record = [self recordToUpdateFor:item];
+        if (!record) return;
+        record[@"hash"] = hash;
+        [self didChange];
+    }
+}
+
+/// Saved every few seconds while the scan runs, so quitting loses little. Call while holding the lock.
+- (void)didChange {
+    _unsaved++;
+    if (_unsaved >= 200 && CFAbsoluteTimeGetCurrent() - _lastSave > 5) [self save];
+}
+
+- (void)save {
+    @synchronized (self) {
+        if (!_unsaved) return;
+        NSDictionary *plist = @{@"version": @1, @"files": _records};
+        NSData *data = [NSPropertyListSerialization dataWithPropertyList:plist format:NSPropertyListBinaryFormat_v1_0 options:0 error:NULL];
+        [data writeToURL:_fileURL atomically:YES];
+        _unsaved = 0;
+        _lastSave = CFAbsoluteTimeGetCurrent();
+    }
+}
+
+@end
+
 static void POReadEmbeddedMetadata(POPhotoItem *item);
 
-static void POReadMetadata(POPhotoItem *item) {
+static void POReadMetadata(POPhotoItem *item, POScanCache *cache) {
     NSDate *fileDate = item.date;   // the earlier of the file system's creation and modification dates
-    POReadEmbeddedMetadata(item);
+    // What an earlier scan read from an unchanged file is not read again.
+    if (item.isCloudOnly || ![cache restoreMetadataOfItem:item]) {
+        POReadEmbeddedMetadata(item);
+        [cache rememberMetadataOfItem:item];
+    }
     // A file can't have been shot after it was created. Re-encoding, rotating or exporting a video stamps the
     // container with the time of the export while the file often keeps its original creation date — so an
     // embedded date more than a day later than the file's own is an editing date, and the file date is closer.
@@ -358,16 +516,19 @@ static void PODateFromTakeoutSidecars(NSArray<POPhotoItem *> *items, NSArray<NSU
     NSMutableArray<POPhotoItem *> *items = [self enumerateMediaWithProgress:progress];
     if (atomic_load(&_cancelled)) return nil;
 
+    POScanCache *cache = [[POScanCache alloc] initWithRootURL:self.rootURL];
     [self forEach:items phase:POScanPhaseMetadata progress:progress work:^(POPhotoItem *item) {
-        POReadMetadata(item);
+        POReadMetadata(item, cache);
     }];
+    [cache save];
     if (atomic_load(&_cancelled)) return nil;
 
     PODateFromTakeoutSidecars(items, _sidecars);
     PODateFromNeighbors(items);
     [POManualDates applyToItems:items];
 
-    [self findDuplicatesIn:items progress:progress];
+    [self findDuplicatesIn:items cache:cache progress:progress];
+    [cache save];
     if (atomic_load(&_cancelled)) return nil;
 
     [items sortUsingComparator:^NSComparisonResult(POPhotoItem *a, POPhotoItem *b) {
@@ -433,7 +594,7 @@ static void PODateFromTakeoutSidecars(NSArray<POPhotoItem *> *items, NSArray<NSU
     });
 }
 
-- (void)findDuplicatesIn:(NSArray<POPhotoItem *> *)items progress:(POScanProgress)progress {
+- (void)findDuplicatesIn:(NSArray<POPhotoItem *> *)items cache:(POScanCache *)cache progress:(POScanProgress)progress {
     // Only files that share their size with another file can be identical, so only those get hashed.
     NSMutableDictionary<NSNumber *, NSMutableArray<POPhotoItem *> *> *bySize = [NSMutableDictionary dictionary];
     for (POPhotoItem *item in items) {
@@ -449,7 +610,10 @@ static void PODateFromTakeoutSidecars(NSArray<POPhotoItem *> *items, NSArray<NSU
     }
 
     [self forEach:candidates phase:POScanPhaseDuplicates progress:progress work:^(POPhotoItem *item) {
+        item.contentHash = [cache hashOfItem:item];
+        if (item.contentHash) return;
         item.contentHash = POHashFile(item.url, &self->_cancelled);
+        [cache rememberHash:item.contentHash ofItem:item];
     }];
     if (atomic_load(&_cancelled)) return;
 
