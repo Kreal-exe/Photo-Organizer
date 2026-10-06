@@ -1,4 +1,6 @@
 #import "POPlan.h"
+#import "POMediaTypes.h"
+#import "POScreenshots.h"
 #import "POStrings.h"
 
 static NSString *const PODefaultsScheme = @"scheme";
@@ -7,9 +9,21 @@ static NSString *const PODefaultsMonthStyle = @"monthStyle";
 static NSString *const PODefaultsDayStyle = @"dayStyle";
 static NSString *const PODefaultsNested = @"nested";
 static NSString *const PODefaultsSeparateDuplicates = @"separateDuplicates";
+static NSString *const PODefaultsSkipDuplicates = @"skipDuplicates";
 static NSString *const PODefaultsSeparateTiny = @"separateTiny";
 static NSString *const PODefaultsDuplicatesFolder = @"duplicatesFolderName";
 static NSString *const PODefaultsTinyFolder = @"tinyFolderName";
+static NSString *const PODefaultsCopiesFiles = @"organizeCopiesFiles";
+static NSString *const PODefaultsArrangement = @"arrangement";
+static NSString *const PODefaultsDatesInside = @"datesInside";
+static NSString *const PODefaultsSeparateScreenshots = @"separateScreenshots";
+static NSString *const PODefaultsScreenshotsInEachDate = @"screenshotsInEachDate";
+static NSString *const PODefaultsScreenshotsFolder = @"screenshotsFolderName";
+static NSString *const PODefaultsOrganizesPhotos = @"organizesPhotos";
+static NSString *const PODefaultsOrganizesVideos = @"organizesVideos";
+static NSString *const PODefaultsOrganizesPictures = @"organizesPictures";
+static NSString *const PODefaultsOrganizesCollages = @"organizesCollages";
+static NSString *const PODefaultsKeptFolders = @"keptFolders";   // library path (lower case) → [top-level folder]
 
 @interface POGroup ()
 - (instancetype)initWithKind:(POGroupKind)kind folder:(NSString *)folder;
@@ -37,6 +51,7 @@ static NSString *const PODefaultsTinyFolder = @"tinyFolderName";
 @implementation POPlan {
     NSCalendar *_calendar;
     NSMutableDictionary<NSString *, NSString *> *_customNames;   // generated folder → custom folder
+    NSMutableSet<NSString *> *_keptFolders;                       // lower-cased
 }
 
 + (void)initialize {
@@ -46,11 +61,30 @@ static NSString *const PODefaultsTinyFolder = @"tinyFolderName";
         PODefaultsNested: @YES,
         PODefaultsSeparateDuplicates: @YES,
         PODefaultsSeparateTiny: @YES,
+        PODefaultsDatesInside: @YES,
+        PODefaultsOrganizesPhotos: @YES,
+        PODefaultsOrganizesVideos: @YES,
+        PODefaultsOrganizesPictures: @YES,
+        PODefaultsOrganizesCollages: @YES,
     }];
+}
+
++ (NSString *)keyForKind:(NSInteger)kind {
+    NSArray<NSString *> *keys = @[PODefaultsOrganizesPhotos, PODefaultsOrganizesVideos, PODefaultsOrganizesPictures, PODefaultsOrganizesCollages];
+    return keys[MIN(MAX(kind, 0), 3)];
+}
+
++ (BOOL)organizesKind:(NSInteger)kind {
+    return [NSUserDefaults.standardUserDefaults boolForKey:[self keyForKind:kind]];
+}
+
++ (void)setOrganizes:(BOOL)organizes kind:(NSInteger)kind {
+    [NSUserDefaults.standardUserDefaults setBool:organizes forKey:[self keyForKind:kind]];
 }
 
 + (NSString *)defaultDuplicatesFolderName { return POL(@"Дубликаты"); }
 + (NSString *)defaultTinyFolderName { return POL(@"Миниатюры"); }
++ (NSString *)defaultScreenshotsFolderName { return POL(@"Скриншоты"); }
 + (NSString *)undatedFolderName { return POL(@"Без даты"); }
 
 + (NSString *)savedDuplicatesFolderName {
@@ -74,6 +108,7 @@ static NSString *const PODefaultsTinyFolder = @"tinyFolderName";
 - (instancetype)initWithRootURL:(NSURL *)rootURL items:(NSArray<POPhotoItem *> *)items {
     if ((self = [super init])) {
         _rootURL = rootURL;
+        _sourceURLs = @[rootURL];
         _items = [items copy];
         _duplicateItems = [items filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"duplicate == YES"]];
         _nested = YES;
@@ -81,7 +116,12 @@ static NSString *const PODefaultsTinyFolder = @"tinyFolderName";
         _separateTiny = YES;
         _duplicatesFolderName = POPlan.defaultDuplicatesFolderName;
         _tinyFolderName = POPlan.defaultTinyFolderName;
+        _screenshotsFolderName = POPlan.defaultScreenshotsFolderName;
+        _datesInside = YES;
+        _organizesPhotos = _organizesVideos = _organizesPictures = _organizesCollages = YES;
         _customNames = [NSMutableDictionary dictionary];
+        NSArray *kept = [[NSUserDefaults.standardUserDefaults dictionaryForKey:PODefaultsKeptFolders] objectForKey:rootURL.path.lowercaseString];
+        _keptFolders = [NSMutableSet setWithArray:[kept isKindOfClass:NSArray.class] ? kept : @[]];
         _groups = @[];
         _pendingItems = @[];
         // Folder names must not depend on the user's calendar (Buddhist, Japanese, …).
@@ -92,8 +132,68 @@ static NSString *const PODefaultsTinyFolder = @"tinyFolderName";
 
 #pragma mark - Options
 
+- (void)setDestinationURL:(NSURL *)url {
+    char resolved[PATH_MAX];
+    if (realpath(url.fileSystemRepresentation, resolved)) url = [NSURL fileURLWithFileSystemRepresentation:resolved isDirectory:YES relativeToURL:nil];
+    _rootURL = url;
+    NSArray *kept = [[NSUserDefaults.standardUserDefaults dictionaryForKey:PODefaultsKeptFolders] objectForKey:url.path.lowercaseString];
+    _keptFolders = [NSMutableSet setWithArray:[kept isKindOfClass:NSArray.class] ? kept : @[]];
+}
+
+- (NSSet<NSString *> *)keptFolders {
+    return [_keptFolders copy];
+}
+
+- (void)keepFolder:(NSString *)folder {
+    NSString *top = [POPlan sanitizedFolderPath:folder ?: @""].pathComponents.firstObject.lowercaseString.precomposedStringWithCanonicalMapping;
+    if (!top.length || [_keptFolders containsObject:top]) return;
+    [_keptFolders addObject:top];
+    NSMutableDictionary *all = [[NSUserDefaults.standardUserDefaults dictionaryForKey:PODefaultsKeptFolders] mutableCopy] ?: [NSMutableDictionary dictionary];
+    all[self.rootURL.path.lowercaseString] = _keptFolders.allObjects;
+    [NSUserDefaults.standardUserDefaults setObject:all forKey:PODefaultsKeptFolders];
+}
+
+- (BOOL)isInKeptFolder:(POPhotoItem *)item {
+    if (!_keptFolders.count || !item.currentFolder.length) return NO;
+    if (item.rootURL && ![item.rootURL.path isEqualToString:self.rootURL.path]) return NO;
+    NSString *top = [item.currentFolder componentsSeparatedByString:@"/"].firstObject.lowercaseString.precomposedStringWithCanonicalMapping;
+    return [_keptFolders containsObject:top];
+}
+
+/// The first-level folder of a file when the library is not organized by date; nil for the date folders.
+- (NSString *)sectionOfItem:(POPhotoItem *)item {
+    if (self.separateScreenshots && POIsScreenshot(item)) return self.screenshotsFolderName;
+    switch (self.arrangement) {
+        case POArrangementType: return POTypeFolder(item);
+        case POArrangementFormat: return POFormatFolder(item);
+        case POArrangementPerson: {
+            NSString *name = [self.personNames objectForKey:item];
+            return name ? [[POPlan sanitizedFolderPath:name] stringByReplacingOccurrencesOfString:@"/" withString:@"-"] : nil;
+        }
+        case POArrangementDate: return nil;
+    }
+    return nil;
+}
+
+- (NSString *)folderForItem:(POPhotoItem *)item inFolder:(NSString *)folder layout:(POFolderLayout)layout {
+    if (layout == POFolderLayoutFlat) return folder;
+    if (item.isUndated) return [folder stringByAppendingPathComponent:POPlan.undatedFolderName];
+    POScheme scheme = self.scheme;
+    BOOL nested = self.nested;
+    self.scheme = (POScheme)(layout - 1);
+    self.nested = YES;
+    NSString *dated = [folder stringByAppendingPathComponent:[self dateFolderForItem:item]];
+    self.scheme = scheme;
+    self.nested = nested;
+    return dated;
+}
+
 - (void)setDuplicatesFolderName:(NSString *)name {
     _duplicatesFolderName = [[POPlan sanitizedFolderPath:name ?: @""].pathComponents.firstObject ?: POPlan.defaultDuplicatesFolderName copy];
+}
+
+- (void)setScreenshotsFolderName:(NSString *)name {
+    _screenshotsFolderName = [[POPlan sanitizedFolderPath:name ?: @""].pathComponents.firstObject ?: POPlan.defaultScreenshotsFolderName copy];
 }
 
 - (void)setTinyFolderName:(NSString *)name {
@@ -134,7 +234,20 @@ static NSString *const PODefaultsTinyFolder = @"tinyFolderName";
     self.dayStyle = MIN(MAX([defaults integerForKey:PODefaultsDayStyle], PODayStyleISO), PODayStyleDayMonth);
     self.nested = [defaults boolForKey:PODefaultsNested];
     self.separateDuplicates = [defaults boolForKey:PODefaultsSeparateDuplicates];
+    self.skipDuplicates = [defaults boolForKey:PODefaultsSkipDuplicates];
     self.separateTiny = [defaults boolForKey:PODefaultsSeparateTiny];
+    self.copiesFiles = [defaults boolForKey:PODefaultsCopiesFiles];
+    self.arrangement = MIN(MAX([defaults integerForKey:PODefaultsArrangement], POArrangementDate), POArrangementFormat);
+    self.datesInside = [defaults boolForKey:PODefaultsDatesInside];
+    self.organizesPhotos = [defaults boolForKey:PODefaultsOrganizesPhotos];
+    self.organizesVideos = [defaults boolForKey:PODefaultsOrganizesVideos];
+    self.organizesPictures = [defaults boolForKey:PODefaultsOrganizesPictures];
+    self.organizesCollages = [defaults boolForKey:PODefaultsOrganizesCollages];
+    self.separateScreenshots = [defaults boolForKey:PODefaultsSeparateScreenshots];
+    self.screenshotsInEachDate = [defaults boolForKey:PODefaultsScreenshotsInEachDate];
+    NSString *screenshots = [defaults stringForKey:PODefaultsScreenshotsFolder];
+    if ([@[@"Скриншоты", @"Screenshots"] containsObject:screenshots ?: @""]) screenshots = nil;
+    self.screenshotsFolderName = screenshots ?: @"";
     // A saved name that is just the default of another interface language is not a choice the user made.
     NSString *duplicates = [defaults stringForKey:PODefaultsDuplicatesFolder], *tiny = [defaults stringForKey:PODefaultsTinyFolder];
     if ([@[@"Дубликаты", @"Duplicates"] containsObject:duplicates ?: @""]) duplicates = nil;
@@ -151,7 +264,18 @@ static NSString *const PODefaultsTinyFolder = @"tinyFolderName";
     [defaults setInteger:self.dayStyle forKey:PODefaultsDayStyle];
     [defaults setBool:self.nested forKey:PODefaultsNested];
     [defaults setBool:self.separateDuplicates forKey:PODefaultsSeparateDuplicates];
+    [defaults setBool:self.skipDuplicates forKey:PODefaultsSkipDuplicates];
     [defaults setBool:self.separateTiny forKey:PODefaultsSeparateTiny];
+    [defaults setBool:self.copiesFiles forKey:PODefaultsCopiesFiles];
+    [defaults setInteger:self.arrangement forKey:PODefaultsArrangement];
+    [defaults setBool:self.datesInside forKey:PODefaultsDatesInside];
+    [defaults setBool:self.organizesPhotos forKey:PODefaultsOrganizesPhotos];
+    [defaults setBool:self.organizesVideos forKey:PODefaultsOrganizesVideos];
+    [defaults setBool:self.organizesPictures forKey:PODefaultsOrganizesPictures];
+    [defaults setBool:self.organizesCollages forKey:PODefaultsOrganizesCollages];
+    [defaults setBool:self.separateScreenshots forKey:PODefaultsSeparateScreenshots];
+    [defaults setBool:self.screenshotsInEachDate forKey:PODefaultsScreenshotsInEachDate];
+    [defaults setObject:self.screenshotsFolderName forKey:PODefaultsScreenshotsFolder];
     [defaults setObject:self.duplicatesFolderName forKey:PODefaultsDuplicatesFolder];
     [defaults setObject:self.tinyFolderName forKey:PODefaultsTinyFolder];
 }
@@ -232,12 +356,20 @@ static NSString *const PODefaultsTinyFolder = @"tinyFolderName";
 - (void)itemsMovedFrom:(NSArray<NSURL *> *)from to:(NSArray<NSURL *> *)to {
     NSMutableDictionary<NSString *, POPhotoItem *> *byPath = [NSMutableDictionary dictionaryWithCapacity:_items.count];
     for (POPhotoItem *item in _items) byPath[item.url.path] = item;
-    NSString *rootPrefix = [self.rootURL.path stringByAppendingString:@"/"];
+    // Into the destination, or (undone) back into one of the library's folders: the deepest that holds it.
+    NSMutableArray<NSURL *> *roots = [self.sourceURLs mutableCopy];
+    [roots addObject:self.rootURL];
+    [roots sortUsingComparator:^NSComparisonResult(NSURL *a, NSURL *b) { return a.path.length > b.path.length ? NSOrderedAscending : NSOrderedDescending; }];
     for (NSUInteger i = 0; i < MIN(from.count, to.count); i++) {
         POPhotoItem *item = byPath[from[i].path];
         NSString *path = to[i].path;
-        if (!item || ![path hasPrefix:rootPrefix]) continue;
-        [item movedToURL:to[i] relativePath:[path substringFromIndex:rootPrefix.length]];
+        if (!item) continue;
+        for (NSURL *root in roots) {
+            NSString *prefix = [root.path stringByAppendingString:@"/"];
+            if (![path hasPrefix:prefix]) continue;
+            [item movedToURL:to[i] rootURL:root relativePath:[path substringFromIndex:prefix.length]];
+            break;
+        }
     }
 }
 
@@ -263,14 +395,53 @@ static NSString *const PODefaultsTinyFolder = @"tinyFolderName";
     [duplicates.mutableGeneratedFolders addObject:duplicates.folder];
     NSMutableSet<NSString *> *generatedFolders = [NSMutableSet set];
     NSMutableArray<POPhotoItem *> *pending = [NSMutableArray array];
+    NSMutableArray<POGroup *> *sectionGroups = [NSMutableArray array];
+    // A generated folder → its group (under its custom name), added to `list` the first time.
+    POGroup *(^groupFor)(NSString *, NSMutableArray<POGroup *> *) = ^POGroup *(NSString *generated, NSMutableArray<POGroup *> *list) {
+        NSString *folder = self->_customNames[generated] ?: generated;
+        POGroup *group = byFolder[folder];
+        if (!group) {
+            group = [[POGroup alloc] initWithKind:POGroupKindDate folder:folder];
+            byFolder[folder] = group;
+            [list addObject:group];
+        }
+        if (![generatedFolders containsObject:generated]) {
+            [generatedFolders addObject:generated];
+            [group.mutableGeneratedFolders addObject:generated];
+        }
+        return group;
+    };
 
     for (POPhotoItem *item in self.items) {
+        item.destinationRootURL = self.rootURL;
+        // Left where they are: sorted by hand into a folder of their own, of a kind not to organize, or a copy not
+        // wanted ("Не переносить дубликаты").
+        BOOL wanted = POIsGooglePhotosCreation(item) ? self.organizesCollages
+                    : POIsPicture(item) ? self.organizesPictures
+                    : item.isVideo ? self.organizesVideos : self.organizesPhotos;
+        BOOL copy = item.isDuplicate || item.betterCopy;
+        if (!wanted || (self.skipDuplicates && copy) || [self isInKeptFolder:item]) {
+            item.destinationFolder = item.currentFolder;
+            continue;
+        }
         POGroup *group;
         // Thumbnails first: an exact copy of a thumbnail is still a thumbnail.
         if (self.separateTiny && item.isTiny) {
             group = tiny;
         } else if (self.separateDuplicates && (item.isDuplicate || item.betterCopy)) {
             group = duplicates;
+        } else if (self.separateScreenshots && self.screenshotsInEachDate && POIsScreenshot(item)) {
+            // A screenshots folder inside the folder of its date (or of the undated files).
+            NSString *date = item.isUndated ? POPlan.undatedFolderName : [self dateFolderForItem:item];
+            group = groupFor([date stringByAppendingPathComponent:self.screenshotsFolderName], dateGroups);
+        } else if ([self sectionOfItem:item]) {
+            // By type, person or format: that folder first, the date folders (or the undated one) inside. The
+            // screenshots folder always has its dates.
+            NSString *section = [self sectionOfItem:item];
+            BOOL datesInside = self.datesInside || self.arrangement == POArrangementDate;
+            NSString *generated = !datesInside ? section
+                : [section stringByAppendingPathComponent:item.isUndated ? POPlan.undatedFolderName : [self dateFolderForItem:item]];
+            group = groupFor(generated, sectionGroups);
         } else if (item.isUndated) {
             group = undated;
         } else {
@@ -297,6 +468,11 @@ static NSString *const PODefaultsTinyFolder = @"tinyFolderName";
         if (![generatedFolders containsObject:generated] && ![generated isEqualToString:POPlan.undatedFolderName]) _customNames[generated] = nil;
     }
 
+    // The type, person or format folders by name (each in date order inside), before the date folders of the rest.
+    NSArray<POGroup *> *sections = [sectionGroups sortedArrayWithOptions:NSSortStable usingComparator:^NSComparisonResult(POGroup *a, POGroup *b) {
+        return [a.folder.pathComponents.firstObject localizedStandardCompare:b.folder.pathComponents.firstObject];
+    }];
+    [dateGroups insertObjects:sections atIndexes:[NSIndexSet indexSetWithIndexesInRange:NSMakeRange(0, sections.count)]];
     if (undated.items.count) [dateGroups addObject:undated];
     if (tiny.items.count) [dateGroups addObject:tiny];
     if (duplicates.items.count) [dateGroups addObject:duplicates];

@@ -3,12 +3,22 @@
 #import "POViewerViewController.h"
 #import "POMapViewController.h"
 
-/// Segments of the quick-filter strip above the grid, in display order.
-/// The media-type strip above the grid narrows whatever the sidebar shows.
+/// The kinds of file, in the order of the strip above the grid (see POMediaKindOfItem): each with a checkbox — ticked,
+/// it is in the library and gets organized — and a button that shows that kind alone.
+typedef NS_ENUM(NSInteger, POMediaKind) {
+    POMediaKindPhotos,
+    POMediaKindVideos,
+    POMediaKindPictures,   // postcards, memes, drawings, documents (see POIsPicture)
+    POMediaKindCollages,   // what Google Photos made: collages, frames, animations, movies, effects
+};
+
+/// What the strip shows: "Медиа" — every ticked kind — or one kind alone (POQuickFilterAll + 1 + a POMediaKind).
 typedef NS_ENUM(NSInteger, POQuickFilter) {
     POQuickFilterAll,
     POQuickFilterPhotos,
     POQuickFilterVideos,
+    POQuickFilterPictures,
+    POQuickFilterCollages,
 };
 
 NS_ASSUME_NONNULL_BEGIN
@@ -33,8 +43,9 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)showResults;
 
 - (void)setStatusText:(NSString *)text canOrganize:(BOOL)canOrganize;
-/// All / photos / videos in what the sidebar shows; segments with nothing in them are disabled.
-- (void)setQuickFilterCounts:(NSArray<NSNumber *> *)counts selected:(POQuickFilter)selected;
+/// The count of each POMediaKind in what the sidebar shows, which kinds are ticked, and what is shown. A kind with
+/// nothing in it is hidden, unless it is shown or unticked.
+- (void)setKindCounts:(NSArray<NSNumber *> *)counts included:(NSArray<NSNumber *> *)included selected:(POQuickFilter)selected;
 /// Shows "Задать дату…" and "Принять подсказки…" next to the strip (in the undated list).
 - (void)setShowsDateButtons:(BOOL)shows canAcceptSuggestions:(BOOL)canAccept;
 /// A general button next to the strip that sends `action` down the responder chain; nil title hides it.

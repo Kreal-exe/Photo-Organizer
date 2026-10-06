@@ -17,6 +17,9 @@ typedef NS_ENUM(NSInteger, POFilterKind) {
     POFilterKindObject,       // a saved object filter; `folder` holds its search words
     POFilterKindObjectSearch, // what the search field finds, on its own page
     POFilterKindMap,          // the files that know where they were taken, on a map
+    POFilterKindScreenshots,  // screenshots, told by name, folder and screen size (see POScreenshots)
+    POFilterKindVideos,
+    POFilterKindType,         // one of the other types (see POTypeFolder); `folder` holds its name
 };
 
 /// What the grid should show; identifies a sidebar row across plan rebuilds.
@@ -55,6 +58,18 @@ typedef NS_ENUM(NSInteger, POFilterKind) {
 @property (nonatomic) NSInteger suggestedCount;
 /// Number of files that know where they were taken.
 @property (nonatomic) NSInteger locatedCount;
+/// Numbers counted among the ticked kinds of file (see the strip above the grid): the library, its duplicates and
+/// thumbnails, and each person's photos (nil: all of them).
+@property (nonatomic) NSInteger libraryCount;
+@property (nonatomic) NSInteger duplicateCount;
+@property (nonatomic) NSInteger tinyCount;
+@property (nonatomic, copy, nullable) NSInteger (^personCount)(POPerson *person);
+/// Numbers of screenshots and of videos, for the Types section.
+@property (nonatomic) NSInteger screenshotCount;
+@property (nonatomic) NSInteger videoCount;
+/// The other types found — screen recordings, messengers, animations, panoramas, RAW, pictures, collages… — as
+/// @{@"name": NSString, @"count": NSNumber}, in display order; types with nothing in them are left out.
+@property (nonatomic, copy) NSArray<NSDictionary *> *typeCounts;
 
 /// Number of files flagged by the nudity model; a negative value hides the row (the feature is off).
 /// Takes effect with the next -setPlan:selecting:.

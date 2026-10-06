@@ -8,19 +8,23 @@ namespace PhotoOrganizer.UI;
 
 /// <summary>
 /// Joined buttons, one of which is selected ("По годам | По месяцам | По дням"). Segments may carry a count
-/// ("Все 4 239") in bolder text; a segment with a count of 0 can't be chosen.
+/// ("Все 4 239") in bolder text; a segment with a count of 0 can't be chosen. From `checkableFrom` on, each segment
+/// also has a checkbox of its own, which ticks it without choosing it ("☑ Фото 10 073").
 /// </summary>
 public sealed class SegmentedControl : Border
 {
     readonly StackPanel _panel = new() { Orientation = Orientation.Horizontal };
     readonly List<Border> _segments = [];
     readonly List<(TextBlock Title, TextBlock Count)> _texts = [];
+    readonly List<CheckBox?> _boxes = [];
     int _selected;
     bool[] _enabled = [];
 
     public event Action<int>? Changed;
+    /// <summary>A segment's checkbox was ticked or unticked.</summary>
+    public event Action<int, bool>? Ticked;
 
-    public SegmentedControl(string[] titles, double height = 30)
+    public SegmentedControl(string[] titles, double height = 30, int checkableFrom = -1)
     {
         Height = height;
         CornerRadius = new CornerRadius(7);
@@ -34,6 +38,15 @@ public sealed class SegmentedControl : Border
             var title = new TextBlock { Text = titles[i], VerticalAlignment = VerticalAlignment.Center };
             var count = new TextBlock { FontWeight = FontWeights.SemiBold, Margin = new Thickness(6, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center, Visibility = Visibility.Collapsed };
             var content = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Center };
+            CheckBox? box = null;
+            if (checkableFrom >= 0 && i >= checkableFrom)
+            {
+                // The checkbox handles its own click, so ticking doesn't also choose the segment.
+                box = new CheckBox { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 4, 0) };
+                box.Click += (_, _) => Ticked?.Invoke(index, box.IsChecked == true);
+                content.Children.Add(box);
+            }
+            _boxes.Add(box);
             content.Children.Add(title);
             content.Children.Add(count);
             var segment = new Border { Padding = new Thickness(12, 0, 12, 0), CornerRadius = new CornerRadius(5.5), Child = content, Cursor = Cursors.Hand, Background = Brushes.Transparent };
@@ -57,13 +70,23 @@ public sealed class SegmentedControl : Border
         }
     }
 
+    /// <summary>Ticks or unticks the segments' checkboxes, by segment.</summary>
+    public void SetTicked(bool[] ticked)
+    {
+        for (int i = 0; i < ticked.Length && i < _boxes.Count; i++)
+        {
+            if (_boxes[i] is { } box) box.IsChecked = ticked[i];
+        }
+    }
+
     public void SetCounts(long[] counts)
     {
         for (int i = 0; i < counts.Length && i < _texts.Count; i++)
         {
             _texts[i].Count.Text = Strings.Number(counts[i]);
             _texts[i].Count.Visibility = Visibility.Visible;
-            _enabled[i] = counts[i] > 0 || i == _selected;
+            // An unticked kind stays reachable: its checkbox is how it comes back.
+            _enabled[i] = counts[i] > 0 || i == _selected || _boxes[i]?.IsChecked == false;
         }
         Paint();
     }

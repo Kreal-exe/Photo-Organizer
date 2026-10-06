@@ -172,7 +172,10 @@ public static class Labels
     public static string[] SearchTokens(string query) =>
         Normalize(query).Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
 
-    /// <summary>True when every token begins a word of one of the item's labels (Russian or English) or occurs in its path.</summary>
+    /// <summary>
+    /// True when every token begins a word of one of the item's labels (Russian or English), or occurs in the text
+    /// written in the picture or in its path.
+    /// </summary>
     public static bool Matches(PhotoItem item, string[] tokens)
     {
         var labels = item.Labels;
@@ -180,6 +183,7 @@ public static class Labels
         foreach (string token in tokens)
         {
             bool found = labels != null && labels.Keys.Any(label => WordsFor(label).Any(word => word.StartsWith(token, StringComparison.Ordinal)));
+            if (!found && item.Text is { Length: > 0 } text) found = text.Contains(token, StringComparison.Ordinal);
             if (!found)
             {
                 path ??= Normalize(item.RelativePath).Normalize(NormalizationForm.FormC);
@@ -211,6 +215,30 @@ public static class Labels
             _vectors = (names, vectors, dimension);
             return _vectors.Value;
         }
+    }
+
+    /// <summary>Labels of things drawn, printed or written rather than photographed.</summary>
+    static readonly HashSet<string> GraphicLabels =
+    [
+        "illustrations", "painting", "art", "abstract", "pattern", "texture", "document", "printed_page", "handwriting",
+        "chart", "diagram", "map", "graffiti", "newspaper", "screenshot", "receipt", "whiteboard",
+    ];
+
+    /// <summary>
+    /// How much more a picture looks drawn, printed or written than photographed: its similarity to the closest graphic
+    /// label minus that to the closest other one (positive: graphic).
+    /// </summary>
+    public static float GraphicScore(ReadOnlySpan<float> embedding)
+    {
+        var (names, vectors, dimension) = Vectors;
+        float graphic = -1, other = -1;
+        for (int i = 0; i < names.Length; i++)
+        {
+            float similarity = System.Numerics.Tensors.TensorPrimitives.Dot(vectors.AsSpan(i * dimension, dimension), embedding);
+            if (GraphicLabels.Contains(names[i])) graphic = Math.Max(graphic, similarity);
+            else other = Math.Max(other, similarity);
+        }
+        return graphic - other;
     }
 
     /// <summary>Below this a label is noise: CLIP's similarity of a picture with a text that has nothing to do with it.</summary>

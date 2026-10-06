@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
@@ -14,7 +13,11 @@ namespace PhotoOrganizer.UI;
 /// <summary>The main window: the toolbar, the sidebar, the grid (or the viewer) and the bar with "Organize into Folders".</summary>
 public sealed class MainWindow : Window
 {
-    const int MediaAll = 0, MediaPhotos = 1, MediaVideos = 2;
+    /// <summary>What the strip shows: everything ticked, or one kind alone (MediaAll + 1 + a kind).</summary>
+    const int MediaAll = 0;
+    /// <summary>The kinds of file, in the order of the strip: each ticked — in the library and organized — or not.</summary>
+    const int KindPhotos = 0, KindVideos = 1, KindPictures = 2, KindCollages = 3;
+    static readonly string[] KindKeys = ["organizesPhotos", "organizesVideos", "organizesPictures", "organizesCollages"];
 
     readonly Thumbnails _thumbnails;
     readonly Sidebar _sidebar;
@@ -24,13 +27,24 @@ public sealed class MainWindow : Window
     readonly ContentControl _pages = new();
     readonly TextBlock _title = new() { FontSize = 17, FontWeight = FontWeights.SemiBold, TextTrimming = TextTrimming.CharacterEllipsis };
     readonly TextBlock _path = new() { FontSize = 12, TextTrimming = TextTrimming.CharacterEllipsis };
-    readonly Button _openButton, _rescanButton, _revealButton, _settingsButton;
+    readonly Button _openButton, _addFolderButton, _rescanButton, _revealButton, _settingsButton;
     readonly SegmentedControl _grouping, _media;
     readonly TextBox _search = new() { Height = 30, MinWidth = 120, MaxWidth = 300, Padding = new Thickness(26, 0, 6, 0) };
     // The grid follows the search field once typing pauses, not on every key: a library can hold ~100,000 files.
     readonly DispatcherTimer _searchTimer = new() { Interval = TimeSpan.FromMilliseconds(250) };
     readonly CheckBox _solo = new();
-    readonly Button _setDate, _accept, _cleanup, _pickAnother, _backToMap;
+    /// <summary>The kind of a file in the strip — the same one organizing goes by (see Plan).</summary>
+    static int KindOf(PhotoItem item) =>
+        MediaTypes.IsGooglePhotosCreation(item) ? KindCollages : item.IsPicture ? KindPictures : item.Video ? KindVideos : KindPhotos;
+
+    /// <summary>Which kinds are ticked: in the library under "Все", and organized. Shared with organizing (Plan).</summary>
+    static bool[] Included() => KindKeys.Select(key => Settings.Shared.Get(key, true)).ToArray();
+
+    bool[] _included = Included();
+
+    /// <summary>Whether a file is shown and counted: only the ticked kinds.</summary>
+    bool Shown(PhotoItem item) => _included[KindOf(item)];
+    readonly Button _setDate, _accept, _cleanup, _byFolders, _pickAnother, _backToMap, _arrange;
     readonly TextBlock _analysis = new() { TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = VerticalAlignment.Center, MaxWidth = 280 };
     readonly TextBlock _status = new() { TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = VerticalAlignment.Center };
     readonly Slider _size = new() { Minimum = 110, Maximum = 420, Width = 150, VerticalAlignment = VerticalAlignment.Center };
@@ -40,9 +54,15 @@ public sealed class MainWindow : Window
     readonly TextBlock _progressText = new() { HorizontalAlignment = HorizontalAlignment.Center };
     readonly ProgressBar _progressBar = new() { Width = 380, Margin = new Thickness(0, 12, 0, 12) };
     readonly Button _progressCancel;
+    /// <summary>Stops a copy run between two files ("Остановить" on the progress page); what was copied stays, undoable.</summary>
+    CancellationTokenSource? _copyCancel;
     readonly DispatcherTimer _regroupTimer = new() { Interval = TimeSpan.FromSeconds(8) };
 
-    string? _root;
+    // The library's folders: one, or several organized together. The first is where things go unless another
+    // destination is chosen when organizing (_destination).
+    List<string> _roots = [];
+    string? _destination;
+    string? _root => _roots.Count > 0 ? _roots[0] : null;
     Plan? _plan;
     Scanner? _scanner;
     Analyzer? _analyzer;
@@ -91,6 +111,7 @@ public sealed class MainWindow : Window
 
         // Toolbar: the folder, its buttons, the grouping and the search.
         _openButton = Ui.IconButton("folder", L("Открыть папку") + " (Ctrl+O)", OpenFolder);
+        _addFolderButton = Ui.IconButton("folder-add", L("Добавить ещё папку — разобрать несколько папок вместе") + " (Ctrl+Shift+O)", AddFolder);
         _rescanButton = Ui.IconButton("refresh", L("Пересканировать") + " (F5)", Rescan);
         _revealButton = Ui.IconButton("open-external", L("Показать папку в Проводнике"), RevealRoot);
         _settingsButton = Ui.IconButton("settings", L("Настройки"), ShowSettings);
@@ -140,7 +161,12 @@ public sealed class MainWindow : Window
         toolbarGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star), MaxWidth = 310 });
         toolbarGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 14, 0) };
-        foreach (var button in new[] { _openButton, _rescanButton, _revealButton }) buttons.Children.Add(button);
+        foreach (var button in new[] { _openButton, _addFolderButton, _rescanButton, _revealButton }) buttons.Children.Add(button);
+        // A click on the title lists the library's folders, to show one or take it out.
+        _title.Cursor = Cursors.Hand;
+        _title.MouseLeftButtonUp += (_, _) => FoldersMenu();
+        _path.Cursor = Cursors.Hand;
+        _path.MouseLeftButtonUp += (_, _) => FoldersMenu();
         Place(toolbarGrid, titles, 0);
         Place(toolbarGrid, buttons, 1);
         Place(toolbarGrid, _grouping, 2);
@@ -151,8 +177,30 @@ public sealed class MainWindow : Window
         toolbar.Child = toolbarGrid;
 
         // Strip: what kind of files, and the controls of the current view.
-        _media = new SegmentedControl([L("Все"), L("Фото"), L("Видео")], 28) { Selected = Settings.Shared.Get("mediaKind", 0) };
+        // "Все", then each kind with its checkbox: ticked, it is in the library and organized; clicked, it is shown alone.
+        _media = new SegmentedControl([L("Медиа"), L("Фото"), L("Видео"), L("Картинки"), L("Коллажи")], 28, checkableFrom: 1)
+        {
+            Selected = Math.Clamp(Settings.Shared.Get("mediaKind", 0), 0, 4),
+            ToolTip = L("Отмечено — в медиатеке и раскладывается; без галочки — скрыто и остаётся на месте"),
+        };
         _media.Changed += index => { Settings.Shared.Set("mediaKind", index); UpdateGrid(); };
+        _media.Ticked += (index, on) =>
+        {
+            int kind = index - 1;
+            Settings.Shared.Set(KindKeys[kind], on);
+            _included = Included();
+            if (_plan != null)
+            {
+                _plan.OrganizesPhotos = _included[KindPhotos];
+                _plan.OrganizesVideos = _included[KindVideos];
+                _plan.OrganizesPictures = _included[KindPictures];
+                _plan.OrganizesCollages = _included[KindCollages];
+                _plan.Rebuild();
+            }
+            _objectFilterCounts.Clear();
+            ReloadSidebar();
+            UpdateGrid();
+        };
         _solo.Content = L("Без других людей");
         _solo.ToolTip = L("Показывать только фото, на которых нет никого, кроме этого человека");
         _solo.Click += (_, _) => { Settings.Shared.Set("personAloneOnly", _solo.IsChecked == true); UpdateGrid(); };
@@ -161,6 +209,10 @@ public sealed class MainWindow : Window
         _accept = Ui.TextButton(L("Принять подсказки…"), AcceptSuggestions);
         _accept.ToolTip = L("Дать каждому файлу дату по лучшей подсказке: соседние файлы, имя файла, название папки");
         _cleanup = Ui.TextButton(L("Удалить дубликаты…"), RemoveDuplicates);
+        _byFolders = Ui.TextButton(L("Дубликаты по папкам…"), RemoveDuplicatesByFolder);
+        _byFolders.ToolTip = L("Для одинаковых фото в разных папках выбрать, какая папка останется");
+        _arrange = Ui.TextButton(L("Разложить…"), ArrangeShown);
+        _arrange.ToolTip = L("Сложить показанные файлы в одну папку — всё вместе или по годам, месяцам, дням");
         _pickAnother = Ui.TextButton(L("Выделить другой предмет…"), () => { if (_objectExample != null) FindObjectIn(_objectExample); });
         _backToMap = Ui.TextButton(L("К карте"), () => { _placeItems = null; UpdateGrid(); });
         _analysis.SetResourceReference(TextBlock.ForegroundProperty, "Secondary");
@@ -168,7 +220,7 @@ public sealed class MainWindow : Window
         _media.Margin = new Thickness(0, 0, 12, 0);
         DockPanel.SetDock(_media, Dock.Left);
         strip.Children.Add(_media);
-        foreach (var control in new FrameworkElement[] { _backToMap, _solo, _setDate, _accept, _cleanup, _pickAnother })
+        foreach (var control in new FrameworkElement[] { _backToMap, _solo, _setDate, _accept, _cleanup, _byFolders, _pickAnother, _arrange })
         {
             control.Margin = new Thickness(0, 0, 10, 0);
             control.VerticalAlignment = VerticalAlignment.Center;
@@ -208,6 +260,7 @@ public sealed class MainWindow : Window
         };
         _grid.ZoomRequested += size => _size.Value = size;
         _viewer.Closed += CloseViewer;
+        _viewer.DeletePressed += TrashSelection;
         _viewer.ContextMenuRequested += position =>
         {
             if (_viewer.Current is not { } current) return;
@@ -248,7 +301,11 @@ public sealed class MainWindow : Window
         _library = library;
 
         _welcome = WelcomePage();
-        _progressCancel = Ui.TextButton(L("Отменить"), () => _scanner?.Cancel());
+        _progressCancel = Ui.TextButton(L("Отменить"), () =>
+        {
+            _scanner?.Cancel();
+            _copyCancel?.Cancel();
+        });
         var progress = new StackPanel { VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Center };
         _progressText.SetResourceReference(TextBlock.ForegroundProperty, "Secondary");
         progress.Children.Add(_progressText);
@@ -281,6 +338,7 @@ public sealed class MainWindow : Window
         Closing += (_, _) =>
         {
             _closing = true;
+            _viewer.Stop();   // Windows' player runs outside the window: without this its sound outlives it
             SavePlacement();
             StopAnalysis();
             _scanner?.Cancel();
@@ -351,6 +409,7 @@ public sealed class MainWindow : Window
             InputBindings.Add(new KeyBinding(command, key, modifiers));
         }
         Bind(Key.O, ModifierKeys.Control, OpenFolder);
+        Bind(Key.O, ModifierKeys.Control | ModifierKeys.Shift, AddFolder);
         Bind(Key.F5, ModifierKeys.None, Rescan);
         Bind(Key.R, ModifierKeys.Control, Rescan);
         Bind(Key.Enter, ModifierKeys.Control, Organize);
@@ -410,26 +469,89 @@ public sealed class MainWindow : Window
         if (_busy) return;
         var dialog = new Microsoft.Win32.OpenFolderDialog
         {
-            Title = L("Выберите папку с фото и видео"),
+            Title = L("Выберите папку с фото и видео (можно несколько)"),
             InitialDirectory = _root ?? Settings.Shared.GetString("lastFolder") ?? Environment.GetFolderPath(Environment.SpecialFolder.MyPictures),
+            Multiselect = true,
         };
-        if (dialog.ShowDialog(this) == true) LoadFolder(dialog.FolderName);
+        if (dialog.ShowDialog(this) == true) LoadFolders(dialog.FolderNames);
     }
 
-    /// <summary>The folder whose scan or recognition was still running when the app was closed last time.</summary>
-    public static string? UnfinishedFolder => Settings.Shared.GetString("unfinishedFolder") is { } folder && Directory.Exists(folder) ? folder : null;
+    /// <summary>Another folder into the library: several folders are scanned and organized together.</summary>
+    void AddFolder()
+    {
+        if (_busy) return;
+        if (_roots.Count == 0)
+        {
+            OpenFolder();
+            return;
+        }
+        var dialog = new Microsoft.Win32.OpenFolderDialog
+        {
+            Title = L("Добавить папку к разбору"),
+            InitialDirectory = Path.GetDirectoryName(_roots[^1]) ?? _roots[^1],
+            Multiselect = true,
+        };
+        if (dialog.ShowDialog(this) == true) LoadFolders(_roots.Concat(dialog.FolderNames), keepDestination: true);
+    }
+
+    /// <summary>The library's folders, with "show" and "take out of the library" for each.</summary>
+    void FoldersMenu()
+    {
+        if (_roots.Count == 0 || _busy) return;
+        var menu = new ContextMenu { PlacementTarget = _title, Placement = PlacementMode.Bottom };
+        foreach (string root in _roots)
+        {
+            var item = new MenuItem { Header = DisplayPath(root) };
+            var reveal = new MenuItem { Header = L("Показать в Проводнике") };
+            string target = root;
+            reveal.Click += (_, _) => Process.Start(new ProcessStartInfo("explorer.exe", $"\"{target}\"") { UseShellExecute = true });
+            item.Items.Add(reveal);
+            if (_roots.Count > 1)
+            {
+                var remove = new MenuItem { Header = L("Убрать из разбора") };
+                remove.Click += (_, _) => LoadFolders(_roots.Where(r => r != target).ToList(), keepDestination: true);
+                item.Items.Add(remove);
+            }
+            menu.Items.Add(item);
+        }
+        menu.Items.Add(new Separator());
+        var add = new MenuItem { Header = L("Добавить папку…") };
+        add.Click += (_, _) => AddFolder();
+        menu.Items.Add(add);
+        menu.IsOpen = true;
+    }
+
+    static string DisplayPath(string path)
+    {
+        string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        return path.StartsWith(home + "\\", StringComparison.OrdinalIgnoreCase) ? "~" + path[home.Length..] : path;
+    }
+
+    /// <summary>The folders whose scan or recognition was still running when the app was closed last time.</summary>
+    public static List<string> UnfinishedFolders =>
+        (Settings.Shared.GetObject<List<string>>("unfinishedFolders") ?? (Settings.Shared.GetString("unfinishedFolder") is { } one ? [one] : []))
+        .Where(Directory.Exists).ToList();
 
     public void LoadFolder(string? folder)
     {
-        if (folder == null || !Directory.Exists(folder) || _busy) return;
+        if (folder != null) LoadFolders([folder]);
+    }
+
+    /// <summary>Opens a library of one or more folders (folders inside another one of them are left out).</summary>
+    public void LoadFolders(IEnumerable<string> folders, bool keepDestination = false)
+    {
+        var roots = Scanner.Normalized(folders.Where(Directory.Exists));
+        if (roots.Count == 0 || _busy) return;
         StopAnalysis();
-        _root = Path.GetFullPath(folder);
-        Settings.Shared.Set("lastFolder", _root);
-        string name = Path.GetFileName(_root.TrimEnd('\\'));
-        _title.Text = name.Length > 0 ? name : _root;
-        string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        _path.Text = _root.StartsWith(home + "\\", StringComparison.OrdinalIgnoreCase) ? "~" + _root[home.Length..] : _root;
-        _path.ToolTip = _root;
+        _roots = roots;
+        if (!keepDestination || (_destination != null && !Directory.Exists(_destination))) _destination = null;
+        Settings.Shared.Set("lastFolder", _roots[0]);
+        Settings.Shared.Set("lastFolders", _roots);
+        string name = Path.GetFileName(_roots[0].TrimEnd('\\'));
+        if (name.Length == 0) name = _roots[0];
+        _title.Text = _roots.Count == 1 ? name : F("%@ и ещё %@", name, Count(_roots.Count - 1, L("папка"), L("папки"), L("папок")));
+        _path.Text = string.Join("  ·  ", _roots.Select(DisplayPath));
+        _path.ToolTip = string.Join("\n", _roots) + "\n\n" + L("Щёлкните, чтобы показать папки или убрать одну из разбора");
         Title = $"{_title.Text} — Photo Organizer";
         _undo.Clear();
         _redo.Clear();
@@ -451,7 +573,8 @@ public sealed class MainWindow : Window
 
     void RevealRoot()
     {
-        if (_root != null) Process.Start(new ProcessStartInfo("explorer.exe", $"\"{_root}\"") { UseShellExecute = true });
+        string? folder = _plan?.Root ?? _root;
+        if (folder != null) Process.Start(new ProcessStartInfo("explorer.exe", $"\"{folder}\"") { UseShellExecute = true });
     }
 
     void ShowProgress(string text, bool cancellable)
@@ -459,6 +582,7 @@ public sealed class MainWindow : Window
         _progressText.Text = text;
         _progressBar.IsIndeterminate = true;
         _progressCancel.Visibility = cancellable ? Visibility.Visible : Visibility.Collapsed;
+        _progressCancel.Content = L("Отменить");
         _pages.Content = _progressPage;
     }
 
@@ -469,8 +593,8 @@ public sealed class MainWindow : Window
         ShowProgress(L("Поиск фото и видео…"), cancellable: true);
         // Until the scan and the recognition after it are through, the folder is opened again at the next start, and
         // both go on from where they stopped (ScanCache, RecognitionStore).
-        Settings.Shared.Set("unfinishedFolder", _root);
-        var scanner = new Scanner(_root!) { DeprioritizedFolders = [Plan.SavedDuplicatesFolderName, Plan.DefaultTinyFolderName] };
+        Settings.Shared.Set("unfinishedFolders", _roots);
+        var scanner = new Scanner(_roots) { DeprioritizedFolders = [Plan.SavedDuplicatesFolderName, Plan.DefaultTinyFolderName] };
         _scanner = scanner;
         UpdateUi();
         Task.Run(() => scanner.Scan((phase, done, total) => Dispatcher.BeginInvoke(() => ScanProgress(scanner, phase, done, total))))
@@ -499,18 +623,20 @@ public sealed class MainWindow : Window
         if (items == null)   // cancelled
         {
             if (_closing) return;
+            Settings.Shared.Set("unfinishedFolders", null);
             Settings.Shared.Set("unfinishedFolder", null);
             if (_plan != null) _pages.Content = _library;
             else
             {
-                _root = null;
+                _roots = [];
                 ShowWelcome();
             }
             UpdateUi();
             return;
         }
         _objectFilterCounts.Clear();
-        var plan = new Plan(_root!, items);
+        var plan = new Plan(scanner.Root, items, scanner.Roots);
+        if (_destination != null) plan.SetDestination(_destination);
         plan.LoadOptions();
         plan.Rebuild();
         _plan = plan;
@@ -550,7 +676,11 @@ public sealed class MainWindow : Window
             {
                 if (analyzer == _analyzer && total > 0) _analysis.Text = F("Распознавание: %@ из %@", Number(done), Number(total)) + (analyzer.Device is { } device ? $" · {device}" : "");
             })))
-            .ContinueWith(_ => AnalysisDone(analyzer), TaskScheduler.FromCurrentSynchronizationContext());
+            .ContinueWith(task =>
+            {
+                if (task.Exception?.GetBaseException() is { } e) analyzer.Error ??= e.Message;
+                AnalysisDone(analyzer);
+            }, TaskScheduler.FromCurrentSynchronizationContext());
         if (withFaces) _regroupTimer.Start();
     }
 
@@ -595,27 +725,78 @@ public sealed class MainWindow : Window
         if (analyzer != _analyzer || _closing) return;
         _analyzer = null;
         _regroupTimer.Stop();
+        Settings.Shared.Set("unfinishedFolders", null);
         Settings.Shared.Set("unfinishedFolder", null);
         _objectFilterCounts.Clear();   // the labels are complete now
         _analysis.Text = SettingsDialog.GroupsFaces && !FaceEngine.ModelsReady ? L("Модель лиц не загружена — «Настройки»")
             : NudityClassifier.Enabled && !NudityClassifier.Selected.Model.Ready ? L("Модель наготы не загружена — «Настройки»")
             : analyzer.Error ?? "";
         if (_plan == null) return;
-        _copySets = SimilarCopies.FindSets(_plan.Items);
-        if (SimilarCopies.ShareDates(_copySets) > 0)
-        {
-            _plan.SortItemsByDate();
-            _suggester = null;
-        }
-        _plan.Rebuild();
         ReloadSidebar();
         UpdateGrid();
+        FindCopiesInBackground();
         RegroupPeopleInBackground();
+        ClassifyPicturesInBackground();
+    }
+
+    /// <summary>Pictures told from photographs with what the analysis stored (see Pictures): a second or two, on a worker.</summary>
+    async void ClassifyPicturesInBackground()
+    {
+        var plan = _plan;
+        if (plan == null) return;
+        var items = plan.Items.ToList();
+        HashSet<PhotoItem> pictures;
+        try
+        {
+            pictures = await Task.Run(() => Pictures.Find(items));
+        }
+        catch (Exception e) when (e is IOException or InvalidOperationException or InvalidDataException)
+        {
+            return;
+        }
+        if (plan != _plan || _closing || _busy) return;
+        Pictures.Apply(plan.Items, pictures);
+        plan.Rebuild();
+        ReloadSidebar();
+        UpdateGrid();
+    }
+
+    /// <summary>
+    /// Resized and recompressed copies: the candidates are compared pixel by pixel, which reads the files, so it runs
+    /// on a worker; the result is applied here.
+    /// </summary>
+    async void FindCopiesInBackground()
+    {
+        var plan = _plan!;
+        var items = plan.Items.ToList();
+        string status = _analysis.Text;
+        _analysis.Text = L("Поиск похожих копий…");
+        List<List<PhotoItem>> sets;
+        try
+        {
+            sets = await Task.Run(() => SimilarCopies.FindSets(items));
+        }
+        catch (Exception)
+        {
+            sets = [];
+        }
+        if (plan != _plan || _closing || _busy) return;
+        if (_analysis.Text == L("Поиск похожих копий…")) _analysis.Text = status;
+        SimilarCopies.Mark(plan.Items, sets);
+        _copySets = sets;
+        if (SimilarCopies.ShareDates(_copySets) > 0)
+        {
+            plan.SortItemsByDate();
+            _suggester = null;
+        }
+        plan.Rebuild();
+        ReloadSidebar();
+        UpdateGrid();
     }
 
     void RegroupPeople(bool update = true)
     {
-        _people = _plan != null && SettingsDialog.GroupsFaces ? People.PeopleIn(_plan.Items) : [];
+        _people = _plan != null && SettingsDialog.GroupsFaces ? People.PeopleIn(_plan.Items, _people) : [];
         if (!update) return;
         ReloadSidebar();
         if (_sidebar.Selected.Kind == FilterKind.Person) UpdateGrid();
@@ -642,10 +823,11 @@ public sealed class MainWindow : Window
         _regrouping = true;
         var plan = _plan;
         var items = plan.Items.ToList();
+        var previous = _people;
         List<Person> people;
         try
         {
-            people = await Task.Run(() => People.PeopleIn(items));
+            people = await Task.Run(() => People.PeopleIn(items, previous));
         }
         finally
         {
@@ -673,21 +855,30 @@ public sealed class MainWindow : Window
             _sidebar.Rebuild(false, [], []);
             return;
         }
+        // Counted as shown: only the ticked kinds (the library and the type rows count everything).
+        _included = Included();
+        var shown = _plan.Items.Where(Shown).ToList();
         long suggested = 0, undated = 0;
-        foreach (var item in _plan.Items.Where(i => i.Undated))
+        foreach (var item in shown.Where(i => i.Undated))
         {
             if (Suggester.Best(item) != null) suggested++; else undated++;
         }
-        long lesser = _plan.Items.Count(i => i.BetterCopy != null && !i.Tiny);
+        long lesser = shown.Count(i => i.BetterCopy != null && !i.Tiny);
         var counts = new Dictionary<string, long>
         {
             ["library"] = _plan.Items.Count, ["suggested"] = suggested, ["undated"] = undated,
-            ["duplicates"] = _plan.DuplicateItems.Count + lesser, ["tiny"] = _plan.TinyItems.Count,
-            ["similar"] = _similarItems?.Count ?? -1, ["located"] = _plan.Items.Count(i => i.HasLocation),
-            ["nudity"] = NudityClassifier.Enabled ? ExplicitItems().Count : -1,
+            ["duplicates"] = _plan.DuplicateItems.Count(Shown) + lesser, ["tiny"] = _plan.TinyItems.Count(Shown),
+            ["similar"] = _similarItems?.Count(Shown) ?? -1, ["located"] = shown.Count(i => i.HasLocation),
+            ["screenshots"] = shown.Count(Screenshots.IsScreenshot), ["videos"] = shown.Count(i => i.Video),
+            ["nudity"] = NudityClassifier.Enabled ? ExplicitItems().Count(Shown) : -1,
         };
         var objectFilters = SavedObjectFilters.Select(q => (q, ObjectFilterCount(q))).ToList();
-        _sidebar.Rebuild(true, counts, SettingsDialog.GroupsFaces ? _people : [], objectFilters: objectFilters);
+        // Every other type found gets a row of its own.
+        var found = _plan.Items.GroupBy(MediaTypes.TypeFolder).ToDictionary(g => g.Key, g => (long)g.Count());
+        var types = new[] { "Записи экрана", "WhatsApp", "Telegram", "Viber", "Instagram", "Анимации", "Панорамы", "RAW", "Картинки", "Коллажи" }
+            .Select(key => L(key)).Where(found.ContainsKey).Select(name => (name, found[name])).ToList();
+        _sidebar.Rebuild(true, counts, SettingsDialog.GroupsFaces ? _people : [], objectFilters: objectFilters,
+                         personCount: person => person.Items.Count(Shown), types: types);
     }
 
     static int Grouping => Math.Clamp(Settings.Shared.Get("gridGrouping", 1), 0, 2);
@@ -709,7 +900,7 @@ public sealed class MainWindow : Window
             _objectFilterCounts.Clear();
             _objectFilterItems = _plan.Items.Count;
         }
-        if (!_objectFilterCounts.TryGetValue(query, out long count)) _objectFilterCounts[query] = count = ItemsMatching(_plan.Items, query).Count;
+        if (!_objectFilterCounts.TryGetValue(query, out long count)) _objectFilterCounts[query] = count = ItemsMatching(_plan.Items.Where(Shown), query).Count;
         return count;
     }
 
@@ -737,6 +928,9 @@ public sealed class MainWindow : Window
         FilterKind.ObjectSearch => _objectResults ?? [],
         FilterKind.Object => ItemsMatching(_plan!.Items, filter.Key ?? ""),
         FilterKind.Map => _placeItems ?? _plan!.Items.Where(i => i.HasLocation).ToList(),
+        FilterKind.Screenshots => _plan!.Items.Where(Screenshots.IsScreenshot).ToList(),
+        FilterKind.Videos => _plan!.Items.Where(i => i.Video).ToList(),
+        FilterKind.Type => _plan!.Items.Where(i => MediaTypes.TypeFolder(i) == filter.Key).ToList(),
         FilterKind.Nudity => ExplicitItems(),
         FilterKind.Tiny => _plan!.TinyItems,
         _ => null,
@@ -830,17 +1024,12 @@ public sealed class MainWindow : Window
             return;
         }
         var filter = _sidebar.Selected;
+        // "Все": the ticked kinds; one kind: that kind alone, ticked or not. A type row of the sidebar shows all of its type.
         int media = _media.Selected;
-        List<PhotoItem> Narrow(IEnumerable<PhotoItem> list)
-        {
-            var found = Searched(list);
-            return media switch
-            {
-                MediaPhotos => found.Where(i => !i.Video).ToList(),
-                MediaVideos => found.Where(i => i.Video).ToList(),
-                _ => found,
-            };
-        }
+        _included = Included();
+        bool[] included = filter.Kind == FilterKind.Type ? [true, true, true, true] : _included;
+        List<PhotoItem> Narrow(IEnumerable<PhotoItem> list) =>
+            Searched(list).Where(i => media == MediaAll ? included[KindOf(i)] : KindOf(i) == media - 1).ToList();
         var baseItems = ItemsFor(filter);
         var items = baseItems != null ? Narrow(baseItems) : [];
         var sections = new List<Section>();
@@ -851,6 +1040,9 @@ public sealed class MainWindow : Window
             case FilterKind.Person:
             case FilterKind.Object:
             case FilterKind.Map:
+            case FilterKind.Screenshots:
+            case FilterKind.Type:
+            case FilterKind.Videos:
                 sections = SectionsByDate(items);
                 if (filter.Kind == FilterKind.All && _plan.Items.Count == 0) placeholder = L("В этой папке нет фото и видео");
                 break;
@@ -927,14 +1119,20 @@ public sealed class MainWindow : Window
         _accept.Visibility = undatedView && items.Any(i => Suggester.Best(i) != null) ? Visibility.Visible : Visibility.Collapsed;
         _cleanup.Visibility = filter.Kind is FilterKind.Duplicates or FilterKind.Tiny && items.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
         _cleanup.Content = filter.Kind == FilterKind.Tiny ? L("Удалить миниатюры…") : L("Удалить дубликаты…");
+        _byFolders.Visibility = filter.Kind == FilterKind.Duplicates && _plan.Items.Any(i => i.Duplicates is { Count: > 0 })
+            ? Visibility.Visible : Visibility.Collapsed;
+        _arrange.Visibility = filter.Kind is FilterKind.Screenshots or FilterKind.Type or FilterKind.Videos or FilterKind.Person or FilterKind.Object && items.Count > 0
+            ? Visibility.Visible : Visibility.Collapsed;
 
-        string gridKey = $"{filter}|{media}|{Grouping}|{string.Join(" ", _searchTokens)}";
+        string gridKey = $"{filter}|{media}|{string.Concat(_included.Select(on => on ? '1' : '0'))}|{Grouping}|{string.Join(" ", _searchTokens)}";
         _grid.SetSections(sections, filter.Kind == FilterKind.Duplicates, gridKey == _lastGridKey);
         _lastGridKey = gridKey;
         // The strip counts within the selection (and the search), so "Видео 3" means three videos of this view.
         var searched = Searched(baseItems ?? []);
-        long videos = searched.Count(i => i.Video);
-        _media.SetCounts([searched.Count, searched.Count - videos, videos]);
+        var kinds = new long[4];
+        foreach (var item in searched) kinds[KindOf(item)]++;
+        _media.SetTicked([false, .. _included]);
+        _media.SetCounts([Enumerable.Range(0, 4).Where(k => included[k]).Sum(k => kinds[k]), .. kinds]);
         UpdateUi();
     }
 
@@ -947,7 +1145,8 @@ public sealed class MainWindow : Window
         _organize.IsEnabled = hasPlan && pending > 0;
         _status.Text = _plan == null ? ""
             : _plan.Items.Count == 0 ? L("В этой папке нет фото и видео")
-            : _lastMessage ?? (pending > 0 ? F("Будет перемещено %@ из %@", Number(pending), Number(_plan.Items.Count)) : L("Все файлы уже лежат на своих местах"));
+            : _lastMessage ?? (pending > 0 ? F(_plan.CopiesFiles ? "Будет скопировано %@ из %@" : "Будет перемещено %@ из %@", Number(pending), Number(_plan.Items.Count))
+                                           : L("Все файлы уже лежат на своих местах"));
     }
 
     // --- Viewer -------------------------------------------------------------------------------------------------
@@ -997,6 +1196,8 @@ public sealed class MainWindow : Window
             Add(L("Показать в Проводнике"), () => Process.Start(new ProcessStartInfo("explorer.exe", $"/select,\"{selected[0].Path}\"") { UseShellExecute = true }));
             Add(L("Скопировать путь"), () => Clipboard.SetText(string.Join(Environment.NewLine, selected.Select(i => i.Path))));
             menu.Items.Add(new Separator());
+            // Only for a copy or a thumbnail: other files have no original to show.
+            if (selected.Count == 1 && OriginalOf(selected[0]) is { } original) Add(L("Показать оригинал"), () => { CloseViewer(); ShowInLibrary(original); });
             if (_sidebar.Selected.Kind != FilterKind.All || inViewer) Add(L("Показать в медиатеке по дате"), () => { CloseViewer(); ShowInLibrary(selected[0]); });
             Add(L("Задать дату…"), SetDateForSelection);
             Add(L("Найти похожие"), () => SearchByPhoto(selected[0].Path, searchWhenReady: true), !selected[0].Video);
@@ -1005,7 +1206,7 @@ public sealed class MainWindow : Window
             menu.Items.Add(new Separator());
             // Files that move away leave the viewer for the grid.
             Add(L("Переместить в папку…"), () => { CloseViewer(); MoveSelectionToFolder(); });
-            Add(L("Переместить в Корзину"), () => { CloseViewer(); TrashSelection(); });
+            Add(L("Переместить в Корзину"), TrashSelection);
         }
         else
         {
@@ -1020,6 +1221,17 @@ public sealed class MainWindow : Window
     }
 
     /// <summary>Leaves a search or a person for the library, scrolled to the file among the others of its date.</summary>
+    /// <summary>
+    /// The file `item` is a copy of: the original of an exact copy, the best version of a look-alike (for a thumbnail,
+    /// its larger version); null for anything else.
+    /// </summary>
+    static PhotoItem? OriginalOf(PhotoItem item)
+    {
+        var original = item.DuplicateOf ?? item.BetterCopy;
+        // An exact copy of a lesser copy: the best version, not the lesser one.
+        return original?.BetterCopy ?? original;
+    }
+
     void ShowInLibrary(PhotoItem item)
     {
         if (_searchTokens.Length > 0)
@@ -1027,8 +1239,10 @@ public sealed class MainWindow : Window
             _search.Text = "";
             _searchTokens = [];
         }
-        _media.Selected = MediaAll;
-        Settings.Shared.Set("mediaKind", MediaAll);
+        // Under "Все" if its kind is ticked, else among its own kind.
+        int kind = KindOf(item);
+        _media.Selected = Included()[kind] ? MediaAll : MediaAll + 1 + kind;
+        Settings.Shared.Set("mediaKind", _media.Selected);
         _sidebar.Select(new Filter(FilterKind.All));
         UpdateGrid();
         Dispatcher.BeginInvoke(() => _grid.Reveal(item), DispatcherPriority.Loaded);
@@ -1092,9 +1306,29 @@ public sealed class MainWindow : Window
 
     void Organize()
     {
-        if (_plan == null || _busy || _plan.PendingItems.Count == 0) return;
+        if (_plan == null || _busy) return;
+        // For organizing by person: files in which exactly one named person was recognised.
+        var names = new Dictionary<PhotoItem, string>();
+        var crowded = new HashSet<PhotoItem>();
+        foreach (var person in _people.Where(p => p.Named))
+        {
+            foreach (var item in person.Items)
+            {
+                if (crowded.Contains(item)) continue;
+                if (!names.TryAdd(item, person.DisplayName))
+                {
+                    names.Remove(item);
+                    crowded.Add(item);
+                }
+            }
+        }
+        _plan.PersonNames = names;
+        _plan.Rebuild();
         var dialog = new OrganizeDialog(this, _plan, () => { _lastMessage = null; ReloadSidebar(); UpdateGrid(); });
-        if (dialog.ShowDialog() == true) RunMoves(progress => Organizer.ApplyPlan(_plan, progress));
+        bool confirmed = dialog.ShowDialog() == true;
+        // The destination chosen stays for this library (until another folder set is opened).
+        _destination = string.Equals(_plan.Root, _root, StringComparison.OrdinalIgnoreCase) ? null : _plan.Root;
+        if (confirmed) RunMoves(progress => Organizer.ApplyPlan(_plan, progress), copying: _plan.CopiesFiles);
     }
 
     string? AskFolder(List<PhotoItem> items)
@@ -1112,20 +1346,64 @@ public sealed class MainWindow : Window
     {
         if (_busy || _plan == null || items.Count == 0) return;
         if (AskFolder(items) is not { } folder) return;
+        // Put there by hand: organizing by date leaves the folder alone from now on.
+        _plan.KeepFolder(folder);
         RunMoves(progress => Organizer.MoveItemsToFolder(items, folder, _plan.Root, progress));
     }
 
-    void RunMoves(Func<Action<int, int>, OrganizeResult> work)
+    /// <summary>
+    /// "Разложить…" of a section — screenshots, videos, a person, an object: everything shown into one folder named
+    /// after it, together or by year, month or day inside. The folder is kept out of organizing by date afterwards.
+    /// </summary>
+    void ArrangeShown()
+    {
+        if (_busy || _plan == null) return;
+        var items = _grid.ShownItems.ToList();
+        if (items.Count == 0) return;
+        var filter = _sidebar.Selected;
+        string name = filter.Kind switch
+        {
+            FilterKind.Screenshots => L("Скриншоты"),
+            FilterKind.Type => filter.Key ?? "",
+            FilterKind.Videos => L("Видео"),
+            FilterKind.Person => PersonWithKey(filter.Key)?.DisplayName ?? "",
+            _ => filter.Key ?? "",
+        };
+        var dialog = new ArrangeDialog(this, items, name, _plan.Root);
+        if (dialog.ShowDialog() != true) return;
+        var layout = dialog.Layout;
+        var plan = _plan;
+        if (dialog.Copies)
+        {
+            // Into any folder, an archive by years elsewhere included: its folders are filled up, nothing is replaced.
+            string destination = dialog.Destination;
+            string folder = Plan.SanitizedFolderPath(dialog.FolderName) ?? "";
+            if (folder.Length > 0 && string.Equals(destination.TrimEnd('\\'), plan.Root.TrimEnd('\\'), StringComparison.OrdinalIgnoreCase)) plan.KeepFolder(folder);
+            var existing = Organizer.IntoExistingYearFolders(destination);
+            bool skip = dialog.SkipCopies;
+            var cancel = _copyCancel = new CancellationTokenSource();
+            RunMoves(progress => Organizer.CopyItems(items, destination,
+                                                     item => existing(plan.SectionFolder(item, folder, layout).Trim('/')), progress, skip, cancel.Token),
+                     copying: true, stoppable: true);
+            return;
+        }
+        if (Plan.SanitizedFolderPath(dialog.FolderName) is not { } kept) return;
+        plan.KeepFolder(kept);
+        RunMoves(progress => Organizer.MoveItems(items, plan.Root, item => plan.SectionFolder(item, kept, layout), progress));
+    }
+
+    void RunMoves(Func<Action<int, int>, OrganizeResult> work, bool copying = false, bool stoppable = false)
     {
         _busy = true;
         StopAnalysis();
         CloseViewer();
-        ShowProgress(L("Перемещение файлов…"), cancellable: false);
+        ShowProgress(copying ? L("Копирование файлов…") : L("Перемещение файлов…"), cancellable: stoppable);
+        _progressCancel.Content = stoppable ? L("Остановить") : L("Отменить");
         UpdateUi();
         string root = _plan!.Root;
         Task.Run(() => work((done, total) => Dispatcher.BeginInvoke(() =>
             {
-                _progressText.Text = F("Перемещение файлов: %@ из %@", Number(done), Number(total));
+                _progressText.Text = F(copying ? "Копирование файлов: %@ из %@" : "Перемещение файлов: %@ из %@", Number(done), Number(total));
                 _progressBar.IsIndeterminate = false;
                 _progressBar.Maximum = Math.Max(total, 1);
                 _progressBar.Value = done;
@@ -1141,10 +1419,19 @@ public sealed class MainWindow : Window
         _plan.Rebuild();
     }
 
+    /// <summary>Whether `path` lies in one of the library's folders (so that a rescan finds it).</summary>
+    bool InLibrary(string path) =>
+        _roots.Any(r => path.StartsWith(r.TrimEnd('\\') + "\\", StringComparison.OrdinalIgnoreCase));
+
     void MoveDone(OrganizeResult result, string root)
     {
         _busy = false;
         Organizer.WriteJournal(result, root);
+        if (result.IsCopy)
+        {
+            CopyDone(result);
+            return;
+        }
         ApplyMoves(result.Records);
         if (result.Records.Count > 0)
         {
@@ -1157,6 +1444,33 @@ public sealed class MainWindow : Window
         ReloadSidebar();
         UpdateGrid();
         ShowErrors(result.Errors, L("Не все файлы удалось переместить"));
+        StartAnalysis();
+    }
+
+    /// <summary>
+    /// The originals did not move, so the library in memory stays as it is; copies made inside the library's folders
+    /// are picked up by a rescan.
+    /// </summary>
+    void CopyDone(OrganizeResult result)
+    {
+        _copyCancel = null;
+        if (result.Records.Count > 0)
+        {
+            _undo.Push(result);
+            _redo.Clear();
+        }
+        int n = result.Records.Count;
+        _lastMessage = F("Готово: %@ %@. Отменить — ⌘Z", Plural(n, L("скопирован"), L("скопировано"), L("скопировано")), Count(n, L("файл"), L("файла"), L("файлов"))).Replace("⌘Z", "Ctrl+Z");
+        if (result.AlreadyCopied > 0) _lastMessage += ". " + F("Пропущено — уже есть в папке назначения или это другой вариант того же снимка: %@.", Number(result.AlreadyCopied));
+        if (result.Stopped) _lastMessage = L("Копирование остановлено.") + " " + _lastMessage;
+        _pages.Content = _library;
+        ShowErrors(result.Errors, L("Не все файлы удалось скопировать"));
+        if (result.Records.Any(r => InLibrary(r.To)))
+        {
+            Rescan();
+            return;
+        }
+        UpdateUi();
         StartAnalysis();
     }
 
@@ -1175,7 +1489,22 @@ public sealed class MainWindow : Window
         Task.Run(() => Organizer.Revert(result)).ContinueWith(task =>
         {
             _busy = false;
-            var (errors, moves) = task.Result;
+            var (errors, moves, recycled) = task.Result;
+            if (result.IsCopy)
+            {
+                // Copies went to the Recycle Bin, the originals were never touched: nothing to redo.
+                _lastMessage = F("Копии перемещены в Корзину: %@.", Count(recycled, L("файл"), L("файла"), L("файлов")));
+                _pages.Content = _library;
+                ShowErrors(errors, L("Не все копии удалось убрать"));
+                if (result.Records.Any(r => InLibrary(r.To)))
+                {
+                    Rescan();
+                    return;
+                }
+                UpdateUi();
+                StartAnalysis();
+                return;
+            }
             ApplyMoves(moves);
             if (moves.Count > 0) target.Push(new OrganizeResult { Records = moves });
             _lastMessage = F("Готово: %@ %@.", Plural(moves.Count, L("перемещён"), L("перемещено"), L("перемещено")), Count(moves.Count, L("файл"), L("файла"), L("файлов")));
@@ -1197,67 +1526,68 @@ public sealed class MainWindow : Window
 
     // --- Recycle Bin --------------------------------------------------------------------------------------------
 
-    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-    struct ShFileOperation
-    {
-        public IntPtr Window;
-        public uint Function;
-        public string From;
-        public string? To;
-        public ushort Flags;
-        public bool Aborted;
-        public IntPtr NameMappings;
-        public string? ProgressTitle;
-    }
+    static void Recycle(IEnumerable<string> paths) => Organizer.Recycle(paths);
 
-    [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
-    static extern int SHFileOperation(ref ShFileOperation operation);
-
-    /// <summary>Moves files to the Recycle Bin, where they can be restored from; one shell call for the lot.</summary>
-    static void Recycle(IEnumerable<string> paths)
-    {
-        var operation = new ShFileOperation
-        {
-            Function = 3,                       // FO_DELETE
-            From = string.Join("\0", paths) + "\0\0",
-            Flags = 0x40 | 0x10 | 0x400 | 0x4,  // FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_NOERRORUI | FOF_SILENT
-        };
-        SHFileOperation(ref operation);
-    }
-
+    /// <summary>
+    /// The selected files to the Recycle Bin, without asking, as on the Mac: they can be restored from there. In the
+    /// viewer it is the file on screen, and the viewer goes on to the next one.
+    /// </summary>
     void TrashSelection()
     {
-        var items = _grid.SelectedItems;
-        if (items.Count == 0 || _busy) return;
-        if (MessageBox.Show(this, F("Переместить %@ в Корзину?", Count(items.Count, L("файл"), L("файла"), L("файлов"))), L("Переместить в Корзину"),
-                            MessageBoxButton.OKCancel, MessageBoxImage.Question) == MessageBoxResult.OK) Trash(items);
+        if (_busy || _plan == null) return;
+        if (_results.Content == _viewer)
+        {
+            if (_viewer.Current is { } current) Trash([current]);
+            return;
+        }
+        Trash(_grid.SelectedItems);
     }
 
-    /// <summary>Thousands of duplicates go to the Recycle Bin on a worker, a hundred per shell call, with progress.</summary>
-    void Trash(List<PhotoItem> items)
+    /// <summary>
+    /// A few files go to the Recycle Bin at once; thousands of duplicates on a worker, a hundred per shell call. The
+    /// library stays on screen meanwhile, with the progress in the status line.
+    /// </summary>
+    void Trash(List<PhotoItem> items, List<string>? folders = null)
     {
         if (_plan == null || items.Count == 0) return;
+        // More than the Recycle Bin holds: Windows would delete the rest for good without asking — said first.
+        foreach (var disk in items.GroupBy(i => Path.GetPathRoot(i.Path) ?? "", StringComparer.OrdinalIgnoreCase))
+        {
+            long size = disk.Sum(i => i.FileSize);
+            if (Organizer.RecycleBinRoom(disk.Key) is { } room && size > room
+                && MessageBox.Show(this, F("В Корзине диска %@ осталось места на %@, а удаляется %@. То, что не поместится, Windows удалит навсегда — вернуть это из Корзины будет нельзя (или вытеснит из Корзины удалённое раньше).\n\nПродолжить? Можно отменить и удалять частями, очищая Корзину между ними.",
+                                     disk.Key.TrimEnd('\\'), Strings.Size(room), Strings.Size(size)),
+                                   L("Корзина переполнится"), MessageBoxButton.OKCancel, MessageBoxImage.Warning) != MessageBoxResult.OK)
+            {
+                return;
+            }
+        }
+        // Folders that go whole take the files inside them along.
+        folders ??= [];
+        var paths = folders.Concat(items.Select(i => i.Path)
+                                        .Where(path => !folders.Any(f => path.StartsWith(f.TrimEnd('\\') + "\\", StringComparison.OrdinalIgnoreCase))))
+                           .ToList();
+        if (paths.Count <= 20)
+        {
+            Mouse.OverrideCursor = Cursors.Wait;
+            try { Recycle(paths); }
+            finally { Mouse.OverrideCursor = null; }
+            TrashDone(items, items.Select(i => !File.Exists(i.Path)).ToList());
+            return;
+        }
         _busy = true;
-        CloseViewer();
-        ShowProgress(L("Перемещение в Корзину…"), cancellable: false);
         UpdateUi();
-        var paths = items.Select(i => i.Path).ToList();
+        _status.Text = L("Перемещение в Корзину…");
         Task.Run(() =>
         {
             for (int start = 0; start < paths.Count; start += 100)
             {
                 Recycle(paths.Skip(start).Take(100));
                 int done = Math.Min(start + 100, paths.Count);
-                Dispatcher.BeginInvoke(() =>
-                {
-                    _progressText.Text = F("Перемещение в Корзину: %@ из %@", Number(done), Number(paths.Count));
-                    _progressBar.IsIndeterminate = false;
-                    _progressBar.Maximum = paths.Count;
-                    _progressBar.Value = done;
-                });
+                Dispatcher.BeginInvoke(() => _status.Text = F("Перемещение в Корзину: %@ из %@", Number(done), Number(paths.Count)));
             }
             // What is no longer there went to the Recycle Bin; the rest could not be moved.
-            return paths.Select(path => !File.Exists(path)).ToList();
+            return items.Select(i => !File.Exists(i.Path)).ToList();
         }).ContinueWith(task => TrashDone(items, task.IsFaulted ? items.Select(_ => false).ToList() : task.Result),
                         TaskScheduler.FromCurrentSynchronizationContext());
     }
@@ -1265,7 +1595,8 @@ public sealed class MainWindow : Window
     void TrashDone(List<PhotoItem> items, List<bool> removed)
     {
         _busy = false;
-        _pages.Content = _library;
+        // The viewer stays where it was: on the file that came after the one that went to the Recycle Bin.
+        int viewerIndex = _results.Content == _viewer && _viewer.Current is { } shown ? _grid.ShownItems.IndexOf(shown) : -1;
         var trashed = new List<PhotoItem>();
         var errors = new List<string>();
         for (int i = 0; i < items.Count; i++)
@@ -1284,6 +1615,12 @@ public sealed class MainWindow : Window
         _lastMessage = F("В Корзине: %@. Вернуть можно из Корзины.", Count(trashed.Count, L("файл"), L("файла"), L("файлов")));
         ReloadSidebar();
         UpdateGrid();
+        if (viewerIndex >= 0)
+        {
+            var left = _grid.ShownItems;
+            if (left.Count == 0) CloseViewer();
+            else if (trashed.Count > 0) _viewer.Show(left, Math.Min(viewerIndex, left.Count - 1));
+        }
         ShowErrors(errors, L("Не все файлы удалось переместить в Корзину"));
     }
 
@@ -1319,6 +1656,15 @@ public sealed class MainWindow : Window
         var victims = tinyView
             ? _plan.TinyItems.Where(i => i.BetterCopy != null || i.DuplicateOf != null).ToList()
             : _plan.Items.Where(i => i.DuplicateOf != null || (i.BetterCopy != null && !i.Tiny)).ToList();
+        // Never the last copy of anything: a file whose better version is itself going away stays, and so does one
+        // whose original is no longer on the disk.
+        var doomed = victims.ToHashSet();
+        victims = victims.Where(i =>
+        {
+            var keeper = i.DuplicateOf ?? i.BetterCopy;
+            if (keeper != null && doomed.Contains(keeper)) keeper = keeper.BetterCopy is { } best && !doomed.Contains(best) ? best : null;
+            return keeper != null && File.Exists(keeper.Path);
+        }).ToList();
         if (victims.Count == 0) return;
         string freed = Strings.Size(victims.Sum(i => i.FileSize));
         string title = tinyView
@@ -1328,6 +1674,16 @@ public sealed class MainWindow : Window
             ? F("У каждой миниатюры в папке есть оригинал большего размера — он останется. Освободится %@.", freed)
             : F("В каждом наборе останется один файл: оригинал у точных копий и версия с наибольшим разрешением у пережатых. Освободится %@.", freed);
         if (MessageBox.Show(this, title + "\n\n" + text, L("Переместить в Корзину"), MessageBoxButton.OKCancel, MessageBoxImage.Question) == MessageBoxResult.OK) Trash(victims);
+    }
+
+    /// <summary>Exact copies cleaned up folder by folder: for each group of folders the user picks the one that stays.</summary>
+    void RemoveDuplicatesByFolder()
+    {
+        if (_plan == null || _busy) return;
+        var sets = _plan.Items.Where(i => i.Duplicates is { Count: > 0 }).Select(i => new List<PhotoItem> { i }.Concat(i.Duplicates!).ToList()).ToList();
+        if (sets.Count == 0) return;
+        var dialog = new FolderDuplicatesDialog(this, sets);
+        if (dialog.ShowDialog() == true && dialog.Victims() is { Count: > 0 } victims) Trash(victims, dialog.FoldersToRemove());
     }
 
     // --- People and search by face ------------------------------------------------------------------------------
@@ -1575,21 +1931,22 @@ public sealed class MainWindow : Window
         base.OnPreviewKeyDown(e);
     }
 
-    static string? DroppedFolder(DragEventArgs e) =>
-        e.Data.GetDataPresent(DataFormats.FileDrop) ? (e.Data.GetData(DataFormats.FileDrop) as string[])?.FirstOrDefault(Directory.Exists) : null;
+    static List<string> DroppedFolders(DragEventArgs e) =>
+        e.Data.GetDataPresent(DataFormats.FileDrop) ? ((e.Data.GetData(DataFormats.FileDrop) as string[]) ?? []).Where(Directory.Exists).ToList() : [];
 
     protected override void OnDragOver(DragEventArgs e)
     {
-        e.Effects = DroppedFolder(e) != null && !_busy ? DragDropEffects.Link : DragDropEffects.None;
+        e.Effects = DroppedFolders(e).Count > 0 && !_busy ? DragDropEffects.Link : DragDropEffects.None;
         e.Handled = true;
     }
 
+    /// <summary>Folders dropped on the window: opened together, or — onto an open library — added to it.</summary>
     protected override void OnDrop(DragEventArgs e)
     {
-        if (DroppedFolder(e) is { } folder)
-        {
-            e.Handled = true;
-            LoadFolder(folder);
-        }
+        var folders = DroppedFolders(e);
+        if (folders.Count == 0) return;
+        e.Handled = true;
+        if (_plan != null && _roots.Count > 0) LoadFolders(_roots.Concat(folders), keepDestination: true);
+        else LoadFolders(folders);
     }
 }

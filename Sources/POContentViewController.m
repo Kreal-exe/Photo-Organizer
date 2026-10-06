@@ -82,7 +82,9 @@ static NSStackView *POCenteredStack(NSArray<NSView *> *views, NSView *container)
     NSTextField *_progressLabel;
     NSButton *_cancelButton;
     NSView *_resultsView;
-    NSSegmentedControl *_filterControl;
+    NSStackView *_filterControl;
+    NSButton *_allButton;
+    NSArray<NSButton *> *_kindButtons, *_kindBoxes;   // by POMediaKind
     NSButton *_cleanupButton;
     NSButton *_soloCheckbox;
     NSStackView *_stripExtras;
@@ -171,12 +173,36 @@ static NSStackView *POCenteredStack(NSArray<NSView *> *views, NSView *container)
     NSView *gridView = _grid.view;
     gridView.translatesAutoresizingMaskIntoConstraints = NO;
 
-    _filterControl = [NSSegmentedControl segmentedControlWithLabels:@[POL(@"Все"), POL(@"Фото"), POL(@"Видео")]
-                                                       trackingMode:NSSegmentSwitchTrackingSelectOne
-                                                             target:nil
-                                                             action:@selector(selectQuickFilter:)];
-    _filterControl.segmentStyle = NSSegmentStyleRounded;
-    _filterControl.segmentDistribution = NSSegmentDistributionFit;
+    // "Медиа", then each kind: its checkbox (in the library and organized, or not) and a button showing it alone.
+    NSButton *(^tab)(NSString *, NSInteger) = ^NSButton *(NSString *title, NSInteger tag) {
+        NSButton *button = [NSButton buttonWithTitle:title target:nil action:@selector(selectQuickFilter:)];
+        button.bezelStyle = NSBezelStyleRecessed;
+        [button setButtonType:NSButtonTypePushOnPushOff];
+        button.tag = tag;
+        return button;
+    };
+    _allButton = tab(POL(@"Медиа"), POQuickFilterAll);
+    _allButton.toolTip = POL(@"Все отмеченные виды файлов");
+    NSMutableArray<NSView *> *strip = [NSMutableArray arrayWithObject:_allButton];
+    NSMutableArray<NSButton *> *buttons = [NSMutableArray array], *boxes = [NSMutableArray array];
+    NSArray<NSString *> *tips = @[POL(@"Фотографии"), POL(@"Видео"), POL(@"Открытки, мемы, рисунки, документы — то, что не фотография"),
+                                  POL(@"Коллажи, рамки, анимации, фильмы и эффекты, которые сделал Google Фото")];
+    for (NSInteger kind = POMediaKindPhotos; kind <= POMediaKindCollages; kind++) {
+        NSButton *box = [NSButton checkboxWithTitle:@"" target:nil action:@selector(toggleKindIncluded:)];
+        box.tag = kind;
+        box.toolTip = POL(@"Отмечено — в медиатеке и раскладывается; без галочки — скрыто и остаётся на месте");
+        NSButton *button = tab(@"", POQuickFilterAll + 1 + kind);
+        button.toolTip = tips[kind];
+        NSStackView *pair = [NSStackView stackViewWithViews:@[box, button]];
+        pair.spacing = 2;
+        [strip addObject:pair];
+        [boxes addObject:box];
+        [buttons addObject:button];
+    }
+    _kindBoxes = boxes;
+    _kindButtons = buttons;
+    _filterControl = [NSStackView stackViewWithViews:strip];
+    _filterControl.spacing = 12;
     _filterControl.translatesAutoresizingMaskIntoConstraints = NO;
 
     _cleanupButton = [NSButton buttonWithTitle:POL(@"Удалить дубликаты…") target:nil action:@selector(removeDuplicates:)];
@@ -329,15 +355,25 @@ static NSStackView *POCenteredStack(NSArray<NSView *> *views, NSView *container)
     _organizeButton.enabled = canOrganize;
 }
 
-- (void)setQuickFilterCounts:(NSArray<NSNumber *> *)counts selected:(POQuickFilter)selected {
+- (void)setKindCounts:(NSArray<NSNumber *> *)counts included:(NSArray<NSNumber *> *)included selected:(POQuickFilter)selected {
     (void)self.view;
-    NSArray<NSString *> *titles = @[POL(@"Все"), POL(@"Фото"), POL(@"Видео")];
-    for (NSInteger segment = 0; segment < 3; segment++) {
-        NSInteger count = segment < (NSInteger)counts.count ? counts[segment].integerValue : 0;
-        [_filterControl setLabel:[NSString stringWithFormat:@"%@  %@", titles[segment], PONumber(count)] forSegment:segment];
-        [_filterControl setEnabled:count > 0 || segment == POQuickFilterAll || segment == selected forSegment:segment];
+    NSArray<NSString *> *titles = @[POL(@"Фото"), POL(@"Видео"), POL(@"Картинки"), POL(@"Коллажи")];
+    _allButton.state = selected == POQuickFilterAll ? NSControlStateValueOn : NSControlStateValueOff;
+    // "Медиа" counts what the ticked kinds add up to.
+    NSInteger ticked = 0;
+    for (NSInteger kind = POMediaKindPhotos; kind <= POMediaKindCollages && kind < (NSInteger)counts.count; kind++) {
+        if (kind < (NSInteger)included.count && included[kind].boolValue) ticked += counts[kind].integerValue;
     }
-    _filterControl.selectedSegment = selected;
+    _allButton.title = [NSString stringWithFormat:@"%@  %@", POL(@"Медиа"), PONumber(ticked)];
+    for (NSInteger kind = POMediaKindPhotos; kind <= POMediaKindCollages; kind++) {
+        NSInteger count = kind < (NSInteger)counts.count ? counts[kind].integerValue : 0;
+        BOOL ticked = kind < (NSInteger)included.count && included[kind].boolValue;
+        BOOL shown = selected == POQuickFilterAll + 1 + kind;
+        _kindButtons[kind].title = [NSString stringWithFormat:@"%@  %@", titles[kind], PONumber(count)];
+        _kindButtons[kind].state = shown ? NSControlStateValueOn : NSControlStateValueOff;
+        _kindBoxes[kind].state = ticked ? NSControlStateValueOn : NSControlStateValueOff;
+        _kindButtons[kind].superview.hidden = count == 0 && ticked && !shown;
+    }
 }
 
 - (void)setShowsMap:(BOOL)showsMap {
