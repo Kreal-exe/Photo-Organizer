@@ -8,6 +8,9 @@ NS_ASSUME_NONNULL_BEGIN
 /// "Screenshot 2022-09-09 at 14.51.41.png". Returns nil when there is none.
 FOUNDATION_EXPORT NSDate *_Nullable PODateFromFileName(NSString *name);
 
+/// SHA-256 of the file's contents as lowercase hex — the same as POPhotoItem.contentHash; nil when it can't be read.
+FOUNDATION_EXPORT NSString *_Nullable POContentHashOfFile(NSURL *url);
+
 typedef NS_ENUM(NSInteger, POScanPhase) {
     POScanPhaseEnumerating,   // total is unknown (0), done = images found so far
     POScanPhaseMetadata,
@@ -19,10 +22,17 @@ typedef void (^POScanProgress)(POScanPhase phase, NSUInteger done, NSUInteger to
 /// Finds every image and video under a folder, reads its date and pixel size, and detects byte-identical copies.
 @interface POScanner : NSObject
 
-- (instancetype)initWithRootURL:(NSURL *)rootURL NS_DESIGNATED_INITIALIZER;
+/// A library of several folders, scanned together (copies are found across them). A folder inside another one is
+/// left out: the outer one covers it.
+- (instancetype)initWithRootURLs:(NSArray<NSURL *> *)rootURLs NS_DESIGNATED_INITIALIZER;
+- (instancetype)initWithRootURL:(NSURL *)rootURL;
+/// Canonical paths (/private/var/… rather than /var/…), without folders inside another one of them.
++ (NSArray<NSURL *> *)normalizedRootURLs:(NSArray<NSURL *> *)urls;
 - (instancetype)init NS_UNAVAILABLE;
 
+/// The first folder of the library.
 @property (nonatomic, readonly) NSURL *rootURL;
+@property (nonatomic, readonly, copy) NSArray<NSURL *> *rootURLs;
 /// Top-level folder names whose files should never be picked as the original of a duplicate set.
 @property (nonatomic, copy) NSArray<NSString *> *deprioritizedFolders;
 

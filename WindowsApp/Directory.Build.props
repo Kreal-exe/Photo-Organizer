@@ -1,0 +1,8 @@
+<Project>
+  <!-- Every build — build.ps1, dotnet build, Visual Studio — keeps its bin/obj output in the system's temporary folder,
+       so nothing but the sources stays in the project. build.ps1 copies the one exe it publishes from there. -->
+  <PropertyGroup>
+    <UseArtifactsOutput>true</UseArtifactsOutput>
+    <ArtifactsPath>$([System.IO.Path]::Combine($([System.IO.Path]::GetTempPath()), 'PhotoOrganizer-build'))</ArtifactsPath>
+  </PropertyGroup>
+</Project>

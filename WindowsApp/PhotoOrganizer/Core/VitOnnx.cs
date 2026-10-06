@@ -52,6 +52,8 @@ public sealed record VitInfo(int InputSize, float[] Mean, float[] Std, string[] 
 public static class VitOnnx
 {
     public const int Opset = 17;
+    /// <summary>Part of the built file's name: a model built by an older version of Build is built again.</summary>
+    public const int BuildVersion = 2;   // 2: layer normalisation spelled out (DirectML)
 
     /// <summary>The layout of the weights: timm's names, or transformers' with separate query, key and value.</summary>
     sealed record Layout(bool Timm, int Blocks, int Heads, float Epsilon, Func<int, string, string> Block, string Patch, string Cls,
@@ -201,9 +203,19 @@ public static class VitOnnx
         return g.Node("Add", [product, g.Float(name + ".b", [outputs], bias)], output: output);
     }
 
-    static string LayerNorm(GraphBuilder g, string x, float[] scale, float[] bias, string name, float epsilon) =>
-        g.Node("LayerNormalization", [x, g.Float(name + ".scale", [scale.Length], scale), g.Float(name + ".bias", [bias.Length], bias)],
-               intAttribute: ("axis", -1), floatAttribute: ("epsilon", epsilon));
+    /// <summary>
+    /// Layer normalisation over the last axis, spelled out. Not ONNX's LayerNormalization: DirectML (ONNX Runtime 1.24)
+    /// gives an output of it that does not depend on the input, so every face had the same embedding on the graphics card.
+    /// </summary>
+    static string LayerNorm(GraphBuilder g, string x, float[] scale, float[] bias, string name, float epsilon)
+    {
+        string mean = g.Node("ReduceMean", [x], ints: ("axes", [-1]), intAttribute: ("keepdims", 1));
+        string centered = g.Node("Sub", [x, mean]);
+        string variance = g.Node("ReduceMean", [g.Node("Mul", [centered, centered])], ints: ("axes", [-1]), intAttribute: ("keepdims", 1));
+        string deviation = g.Node("Sqrt", [g.Node("Add", [variance, g.Float(name + ".epsilon", [], [epsilon])])]);
+        string normalized = g.Node("Div", [centered, deviation]);
+        return g.Node("Add", [g.Node("Mul", [normalized, g.Float(name + ".scale", [scale.Length], scale)]), g.Float(name + ".bias", [bias.Length], bias)]);
+    }
 
     /// <summary>The few parts of ONNX's protobuf schema this model needs.</summary>
     sealed class GraphBuilder

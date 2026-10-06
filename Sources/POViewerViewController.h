@@ -10,7 +10,13 @@ NS_ASSUME_NONNULL_BEGIN
 /// Called when the user leaves the viewer, with the item that was on screen.
 @property (nonatomic, copy, nullable) void (^onClose)(POPhotoItem *_Nullable item);
 
+/// The right-click menu for the file on screen.
+@property (nonatomic, copy, nullable) NSMenu *_Nullable (^menuProvider)(POPhotoItem *item);
+
 - (void)showItems:(NSArray<POPhotoItem *> *)items atIndex:(NSUInteger)index;
+
+/// The file on screen; nil when there is none.
+@property (nonatomic, readonly, nullable) POPhotoItem *currentItem;
 
 /// Stops playback and releases the media. Call when the viewer is hidden.
 - (void)stop;

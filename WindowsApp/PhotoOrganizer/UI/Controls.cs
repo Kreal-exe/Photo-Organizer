@@ -8,32 +8,43 @@ namespace PhotoOrganizer.UI;
 
 /// <summary>
 /// Joined buttons, one of which is selected ("По годам | По месяцам | По дням"). Segments may carry a count
-/// ("Все 4 239") in bolder text; a segment with a count of 0 can't be chosen.
+/// ("Медиа 4 239") in bolder text. From `checkableFrom` on, each segment also has a checkbox of its own, which ticks it
+/// without choosing it ("☑ Фото 10 073"); such a segment is hidden while it is ticked, empty and not chosen, as on the Mac.
 /// </summary>
 public sealed class SegmentedControl : Border
 {
     readonly StackPanel _panel = new() { Orientation = Orientation.Horizontal };
     readonly List<Border> _segments = [];
     readonly List<(TextBlock Title, TextBlock Count)> _texts = [];
+    readonly List<CheckBox?> _boxes = [];
     int _selected;
-    bool[] _enabled = [];
 
     public event Action<int>? Changed;
+    /// <summary>A segment's checkbox was ticked or unticked.</summary>
+    public event Action<int, bool>? Ticked;
 
-    public SegmentedControl(string[] titles, double height = 30)
+    public SegmentedControl(string[] titles, double height = 30, int checkableFrom = -1)
     {
         Height = height;
         CornerRadius = new CornerRadius(7);
         Padding = new Thickness(2);
         SetResourceReference(BackgroundProperty, "Segment");
         Child = _panel;
-        _enabled = titles.Select(_ => true).ToArray();
         for (int i = 0; i < titles.Length; i++)
         {
             int index = i;
             var title = new TextBlock { Text = titles[i], VerticalAlignment = VerticalAlignment.Center };
             var count = new TextBlock { FontWeight = FontWeights.SemiBold, Margin = new Thickness(6, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center, Visibility = Visibility.Collapsed };
             var content = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Center };
+            CheckBox? box = null;
+            if (checkableFrom >= 0 && i >= checkableFrom)
+            {
+                // The checkbox handles its own click, so ticking doesn't also choose the segment.
+                box = new CheckBox { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 4, 0) };
+                box.Click += (_, _) => Ticked?.Invoke(index, box.IsChecked == true);
+                content.Children.Add(box);
+            }
+            _boxes.Add(box);
             content.Children.Add(title);
             content.Children.Add(count);
             var segment = new Border { Padding = new Thickness(12, 0, 12, 0), CornerRadius = new CornerRadius(5.5), Child = content, Cursor = Cursors.Hand, Background = Brushes.Transparent };
@@ -57,20 +68,38 @@ public sealed class SegmentedControl : Border
         }
     }
 
+    /// <summary>A tooltip for each segment ("Фотографии", "Видео"…), and one for all the checkboxes.</summary>
+    public void SetToolTips(string[] tips, string? checkboxTip = null)
+    {
+        for (int i = 0; i < tips.Length && i < _segments.Count; i++) _segments[i].ToolTip = tips[i];
+        foreach (var box in _boxes) if (box != null) box.ToolTip = checkboxTip;
+    }
+
+    /// <summary>Ticks or unticks the segments' checkboxes, by segment.</summary>
+    public void SetTicked(bool[] ticked)
+    {
+        for (int i = 0; i < ticked.Length && i < _boxes.Count; i++)
+        {
+            if (_boxes[i] is { } box) box.IsChecked = ticked[i];
+        }
+    }
+
     public void SetCounts(long[] counts)
     {
         for (int i = 0; i < counts.Length && i < _texts.Count; i++)
         {
             _texts[i].Count.Text = Strings.Number(counts[i]);
             _texts[i].Count.Visibility = Visibility.Visible;
-            _enabled[i] = counts[i] > 0 || i == _selected;
+            // An empty kind that is ticked says nothing; an unticked one stays, its checkbox is how it comes back.
+            bool hidden = _boxes[i] is { IsChecked: true } && counts[i] == 0 && i != _selected;
+            _segments[i].Visibility = hidden ? Visibility.Collapsed : Visibility.Visible;
         }
         Paint();
     }
 
     void Select(int index, bool notify)
     {
-        if (!_enabled[index] || index == _selected) return;
+        if (index == _selected) return;
         _selected = index;
         Paint();
         if (notify) Changed?.Invoke(index);
@@ -89,14 +118,10 @@ public sealed class SegmentedControl : Border
             }
             else
             {
-                segment.Background = segment.IsMouseOver && _enabled[i] ? new SolidColorBrush(Color.FromArgb(70, 128, 128, 128)) : Brushes.Transparent;
+                segment.Background = segment.IsMouseOver ? new SolidColorBrush(Color.FromArgb(70, 128, 128, 128)) : Brushes.Transparent;
                 segment.BorderThickness = new Thickness(0);
             }
-            foreach (var text in new[] { _texts[i].Title, _texts[i].Count })
-            {
-                text.SetResourceReference(TextBlock.ForegroundProperty, _enabled[i] ? "Text" : "Tertiary");
-            }
-            segment.Cursor = _enabled[i] ? Cursors.Hand : Cursors.Arrow;
+            foreach (var text in new[] { _texts[i].Title, _texts[i].Count }) text.SetResourceReference(TextBlock.ForegroundProperty, "Text");
         }
     }
 }

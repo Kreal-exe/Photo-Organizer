@@ -11,7 +11,8 @@ namespace PhotoOrganizer.Core;
 /// </summary>
 public sealed class ScanCache : IDisposable
 {
-    const int Version = 1;
+    // 2: videos' own dates and places (QuickTime keys) and the full size of RAW files are read again.
+    const int Version = 2;
 
     sealed record Entry(long Size, long Modified, Metadata? Metadata, string? Hash);
 
@@ -28,6 +29,7 @@ public sealed class ScanCache : IDisposable
         Directory.CreateDirectory(directory);
         _path = Path.Combine(directory, name + ".bin");
         int records = 0;
+        bool damaged = false;
         try
         {
             using var reader = new BinaryReader(File.OpenRead(_path));
@@ -58,11 +60,16 @@ public sealed class ScanCache : IDisposable
                 }
             }
         }
-        catch (Exception e) when (e is IOException or EndOfStreamException or UnauthorizedAccessException)
+        catch (FileNotFoundException)
         {
-            // A missing file, or one cut short when the app was closed: what was read is kept.
         }
-        if (records == 0 || records > _entries.Count * 2 + 200) Rewrite();
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or FormatException or ArgumentException)
+        {
+            // A file cut short when the app was closed: what was read is kept, and the file is written anew without the
+            // damage — records appended after it could never be read otherwise.
+            damaged = true;
+        }
+        if (damaged || records == 0 || records > _entries.Count * 2 + 200) Rewrite();
     }
 
     void Rewrite()

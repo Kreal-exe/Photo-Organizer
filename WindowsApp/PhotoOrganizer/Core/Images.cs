@@ -198,6 +198,63 @@ public static class Images
         }
     }
 
+    /// <summary>
+    /// Frames spread over a video, as the Mac analyses it: one for every three seconds, up to `count`, each from the
+    /// middle of its stretch. Media Foundation decodes them; when it can't (or gives them on their side), the frame
+    /// File Explorer shows stands for the whole video. Empty when there is none.
+    /// </summary>
+    public static List<RasterImage> VideoFrames(string path, int side, double duration, int width, int height, int count)
+    {
+        count = Math.Clamp((int)Math.Ceiling(duration / 3), 1, count);
+        var frames = new List<RasterImage>();
+        if (count > 1 && width > 0 && height > 0)
+        {
+            try
+            {
+                var file = Windows.Storage.StorageFile.GetFileFromPathAsync(path).AsTask().GetAwaiter().GetResult();
+                var clip = Windows.Media.Editing.MediaClip.CreateFromFileAsync(file).AsTask().GetAwaiter().GetResult();
+                var properties = clip.GetVideoEncodingProperties();
+                int naturalWidth = (int)properties.Width, naturalHeight = (int)properties.Height;
+                // A turned video is decoded as stored: the shell's frame is upright, so it is used instead.
+                if (naturalWidth > 0 && naturalHeight > 0 && naturalWidth > naturalHeight == width > height)
+                {
+                    var composition = new Windows.Media.Editing.MediaComposition();
+                    composition.Clips.Add(clip);
+                    double scale = Math.Min(1, (double)side / Math.Max(naturalWidth, naturalHeight));
+                    int w = Math.Max(1, (int)(naturalWidth * scale)), h = Math.Max(1, (int)(naturalHeight * scale));
+                    for (int frame = 0; frame < count; frame++)
+                    {
+                        var time = TimeSpan.FromSeconds(duration * (frame + 0.5) / count);
+                        using var stream = composition.GetThumbnailAsync(time, w, h, Windows.Media.Editing.VideoFramePrecision.NearestKeyFrame)
+                                                      .AsTask().GetAwaiter().GetResult();
+                        var decoder = Windows.Graphics.Imaging.BitmapDecoder.CreateAsync(stream).AsTask().GetAwaiter().GetResult();
+                        var data = decoder.GetPixelDataAsync(Windows.Graphics.Imaging.BitmapPixelFormat.Bgra8, Windows.Graphics.Imaging.BitmapAlphaMode.Ignore,
+                                                             new Windows.Graphics.Imaging.BitmapTransform(), Windows.Graphics.Imaging.ExifOrientationMode.RespectExifOrientation,
+                                                             Windows.Graphics.Imaging.ColorManagementMode.DoNotColorManage).AsTask().GetAwaiter().GetResult();
+                        byte[] bgra = data.DetachPixelData();
+                        int pw = (int)decoder.OrientedPixelWidth, ph = (int)decoder.OrientedPixelHeight;
+                        if (bgra.Length < pw * ph * 4) continue;
+                        var bgr = new byte[pw * ph * 3];
+                        for (int i = 0, j = 0; j < bgr.Length; i += 4, j += 3)
+                        {
+                            bgr[j] = bgra[i];
+                            bgr[j + 1] = bgra[i + 1];
+                            bgr[j + 2] = bgra[i + 2];
+                        }
+                        frames.Add(new RasterImage(pw, ph, bgr));
+                    }
+                }
+            }
+            catch (Exception)
+            {
+                // Media Foundation has no decoder for it, or the file is gone: the shell's frame below.
+                frames.Clear();
+            }
+        }
+        if (frames.Count == 0 && VideoFrame(path, side) is { } shown) frames.Add(shown);
+        return frames;
+    }
+
     /// <summary>A frame of a video, as Windows shows it in File Explorer; null when it has none.</summary>
     public static RasterImage? VideoFrame(string path, int side)
     {

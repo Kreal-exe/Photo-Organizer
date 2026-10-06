@@ -135,7 +135,16 @@ public sealed partial class VkAlbum(string link, string accessToken, string fold
         {
             throw new VkException(F("VK не ответил: %@", e.Message));
         }
-        using var reply = JsonDocument.Parse(text);
+        JsonDocument reply;
+        try
+        {
+            reply = JsonDocument.Parse(text);
+        }
+        catch (JsonException)
+        {
+            throw new VkException(F("VK не ответил: %@", L("ответ не читается")));
+        }
+        using var _ = reply;
         if (reply.RootElement.TryGetProperty("error", out var failure))
         {
             int code = failure.TryGetProperty("error_code", out var c) ? c.GetInt32() : 0;
@@ -229,7 +238,11 @@ public sealed partial class VkAlbum(string link, string accessToken, string fold
                 await using var output = File.Create(partial);
                 await response.Content.CopyToAsync(output, cancel);
             }
-            if (new FileInfo(partial).Length == 0) return false;
+            if (new FileInfo(partial).Length == 0)
+            {
+                File.Delete(partial);
+                return false;
+            }
             File.Move(partial, file, overwrite: false);
             return true;
         }

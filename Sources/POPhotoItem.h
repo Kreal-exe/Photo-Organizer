@@ -12,6 +12,8 @@ typedef NS_ENUM(NSInteger, PODateSource) {
     PODateSourceCopy,        // no date of its own; taken from another copy of the same picture that has one
     PODateSourceNeighborsMonth, // no date of its own; the numbered shots before and after it are from the same month
     PODateSourceManual,      // set by the user in the app (see POManualDates.h)
+    PODateSourceTakeoutFolder,  // nothing else: the year of the Google Takeout folder it is in ("Фото 2023 г",
+                                // "Photos from 2023") — the year Google Photos itself gives it
 };
 
 /// How much of the date is actually known.
@@ -31,17 +33,23 @@ FOUNDATION_EXPORT NSString *POItemDateText(POPhotoItem *item, BOOL withTime);
 /// One image or video file found by the scanner.
 @interface POPhotoItem : NSObject
 
-- (instancetype)initWithURL:(NSURL *)url relativePath:(NSString *)relativePath NS_DESIGNATED_INITIALIZER;
+- (instancetype)initWithURL:(NSURL *)url relativePath:(NSString *)relativePath rootURL:(nullable NSURL *)rootURL NS_DESIGNATED_INITIALIZER;
+- (instancetype)initWithURL:(NSURL *)url relativePath:(NSString *)relativePath;
 - (instancetype)init NS_UNAVAILABLE;
 
-@property (nonatomic, readonly) NSURL *url;
+/// Atomic: analysis threads read it while a move on the main thread replaces it.
+@property (atomic, readonly) NSURL *url;
 /// Path relative to the scanned root, e.g. "Trip/IMG_0001.jpg".
 @property (nonatomic, readonly, copy) NSString *relativePath;
 /// Folder the file currently lives in, relative to the root ("" for the root itself).
 @property (nonatomic, readonly, copy) NSString *currentFolder;
 
+/// The library folder the file is in (a library can be made of several); relativePath is relative to it.
+@property (nonatomic, readonly, nullable) NSURL *rootURL;
+
 /// The file was moved (by the app): follow it, keeping everything known about it.
 - (void)movedToURL:(NSURL *)url relativePath:(NSString *)relativePath;
+- (void)movedToURL:(NSURL *)url rootURL:(NSURL *)rootURL relativePath:(NSString *)relativePath;
 
 @property (nonatomic) unsigned long long fileSize;
 @property (nonatomic, strong) NSDate *date;
@@ -73,6 +81,9 @@ FOUNDATION_EXPORT NSString *POItemDateText(POPhotoItem *item, BOOL withTime);
 @property (atomic, copy, nullable) NSDictionary<NSString *, NSNumber *> *labels;
 /// One embedding per face found in the photo (see POFaces.h); nil when not analysed, empty when there are none.
 @property (atomic, copy, nullable) NSArray<NSData *> *faces;
+/// Where each of `faces` is: @[x, y, width, height] as fractions of the upright picture, from its top left; nil when
+/// not known (faces found before the boxes were kept).
+@property (atomic, copy, nullable) NSArray<NSArray<NSNumber *> *> *faceBoxes;
 /// How many people the photo shows: every face Vision finds, however small or turned away, or every human
 /// figure when there are more of those. Nil when not counted.
 @property (atomic, strong, nullable) NSNumber *peopleCount;
@@ -84,6 +95,8 @@ FOUNDATION_EXPORT NSString *POItemDateText(POPhotoItem *item, BOOL withTime);
 @property (atomic) BOOL bestOfCopies;
 /// 0…1 from the optional nudity model; nil when not analysed.
 @property (atomic, strong, nullable) NSNumber *nudityScore;
+/// The text written in the picture (a screenshot, a document, a sign), lower-cased for the search; nil when not read.
+@property (atomic, copy, nullable) NSString *text;
 
 @property (nonatomic, copy, nullable) NSString *contentHash;
 /// Set on every copy; points to the file that is kept as the original.
@@ -94,6 +107,8 @@ FOUNDATION_EXPORT NSString *POItemDateText(POPhotoItem *item, BOOL withTime);
 
 /// Folder assigned by the plan, relative to the root.
 @property (nonatomic, copy, nullable) NSString *destinationFolder;
+/// The folder everything is organized into (the plan's), which may be another one than the file's own.
+@property (nonatomic, strong, nullable) NSURL *destinationRootURL;
 @property (nonatomic, readonly) BOOL needsMove;
 
 @end

@@ -96,12 +96,25 @@ public sealed class VkLoginWindow : Window
         return path.Length > 1 && !path.StartsWith("/login") && !path.StartsWith("/join") && !path.StartsWith("/challenge");
     }
 
+    int _asked;
+
     async void AskForToken(bool quietly)
     {
         if (_asking || _web.CoreWebView2 == null) return;
         _asking = true;
         _quietly = quietly;
-        await _web.CoreWebView2.ExecuteScriptAsync(TokenScript);
+        int asked = ++_asked;
+        try
+        {
+            await _web.CoreWebView2.ExecuteScriptAsync(TokenScript);
+        }
+        catch (Exception)
+        {
+            // The page went away meanwhile: asked again below.
+        }
+        // A page that navigates away before answering never replies: "Готово" works again after a while.
+        await Task.Delay(TimeSpan.FromSeconds(10));
+        if (asked == _asked && _asking) TokenArrived("");
     }
 
     /// <summary>Finds "access_token" (and "user_id") anywhere in a JSON reply.</summary>
@@ -153,10 +166,12 @@ public sealed class VkLoginWindow : Window
     }
 
     /// <summary>Forgets the sign-in: the saved token and this window's cookies.</summary>
-    public static void SignOut()
+    /// <returns>False when the saved token could not be removed (the user is still signed in).</returns>
+    public static bool SignOut()
     {
         VkAlbum.SavedToken = null;
         try { Directory.Delete(BrowserData, recursive: true); }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
+        return VkAlbum.SavedToken == null;
     }
 }

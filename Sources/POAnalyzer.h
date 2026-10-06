@@ -25,8 +25,10 @@ NS_ASSUME_NONNULL_BEGIN
 /// The key results are remembered under for a file: changes when the file does, survives moving it.
 + (nullable NSString *)cacheKeyForURL:(NSURL *)url;
 
-/// Forgets every remembered result (used by the settings window).
+/// Forgets every remembered result, the prints of the search by object included (used by the settings window).
 + (void)removeAllCachedResults;
+/// Changes each time the results are forgotten: the open folder is then analysed again.
+@property (class, nonatomic, readonly) NSUInteger resultsGeneration;
 
 @end
 

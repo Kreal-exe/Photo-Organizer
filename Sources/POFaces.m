@@ -93,6 +93,13 @@ static NSInteger POHumanCount(VNDetectHumanRectanglesRequest *request) {
 }
 
 - (NSArray<NSData *> *)embeddingsForFacesInImage:(CGImageRef)image peopleCount:(NSInteger *)peopleCount {
+    return [self embeddingsForFacesInImage:image peopleCount:peopleCount boxes:NULL];
+}
+
+- (NSArray<NSData *> *)embeddingsForFacesInImage:(CGImageRef)image peopleCount:(NSInteger *)peopleCount
+                                           boxes:(NSArray<NSArray<NSNumber *> *> **)boxesOut {
+    NSMutableArray<NSArray<NSNumber *> *> *boxes = [NSMutableArray array];
+    if (boxesOut) *boxesOut = boxes;
     CGSize size = CGSizeMake(CGImageGetWidth(image), CGImageGetHeight(image));
     VNDetectFaceLandmarksRequest *request = [VNDetectFaceLandmarksRequest new];
     VNDetectHumanRectanglesRequest *humans = [VNDetectHumanRectanglesRequest new];
@@ -119,6 +126,10 @@ static NSInteger POHumanCount(VNDetectHumanRectanglesRequest *request) {
         int8_t *bytes = embedding.mutableBytes;
         for (NSInteger i = 0; i < POFaceEmbeddingLength; i++) bytes[i] = (int8_t)MIN(MAX(values[i].intValue, -127), 127);
         [embeddings addObject:embedding];
+        // Vision counts from the bottom left; rounded so the property list stays small.
+        CGRect box = face.boundingBox;
+        NSNumber *(^rounded)(CGFloat) = ^NSNumber *(CGFloat value) { return @(round(MIN(MAX(value, 0), 1) * 10000) / 10000); };
+        [boxes addObject:@[rounded(box.origin.x), rounded(1 - box.origin.y - box.size.height), rounded(box.size.width), rounded(box.size.height)]];
     }
     return embeddings;
 }

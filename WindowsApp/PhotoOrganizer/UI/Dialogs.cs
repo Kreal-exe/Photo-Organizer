@@ -25,7 +25,9 @@ public class Dialog : Window
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
         ShowInTaskbar = false;
         Theme.StyleTitleBar(this);
-        Content = Body;
+        // Never taller than the screen: a long dialog (organizing, at 150 % scaling) scrolls instead.
+        MaxHeight = SystemParameters.WorkArea.Height - 20;
+        Content = new ScrollViewer { Content = Body, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
     }
 
     protected void Heading(string text) => Body.Children.Add(new TextBlock { Text = text, Style = (Style)FindResource("Heading"), Margin = new Thickness(0, 0, 0, 4) });
@@ -59,23 +61,155 @@ public sealed class PromptDialog : Dialog
 {
     readonly TextBox _field = new() { Height = 32 };
 
-    public PromptDialog(Window owner, string title, string message, string text) : base(owner, title, 460)
+    public PromptDialog(Window owner, string title, string message, string text, string placeholder = "") : base(owner, title, 460)
     {
         Heading(title);
         Note(message);
         _field.Text = text;
-        Body.Children.Add(_field);
+        // Grey text in the empty field ("Человек 3" while a person has no name), as on the Mac.
+        var hint = new TextBlock { Text = placeholder, IsHitTestVisible = false, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(6, 0, 0, 0) };
+        hint.SetResourceReference(TextBlock.ForegroundProperty, "Tertiary");
+        void ShowHint() => hint.Visibility = _field.Text.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
+        _field.TextChanged += (_, _) => ShowHint();
+        ShowHint();
+        var field = new Grid();
+        field.Children.Add(_field);
+        field.Children.Add(hint);
+        Body.Children.Add(field);
         AddButton(L("Ок"), () => DialogResult = true, primary: true);
         AddButton(L("Отмена"), () => DialogResult = false).IsCancel = true;
         Finish();
         Loaded += (_, _) => { _field.Focus(); _field.SelectAll(); };
     }
 
-    public static string? Ask(Window owner, string title, string message, string text = "")
+    public static string? Ask(Window owner, string title, string message, string text = "", string placeholder = "")
     {
-        var dialog = new PromptDialog(owner, title, message, text);
+        var dialog = new PromptDialog(owner, title, message, text, placeholder);
         return dialog.ShowDialog() == true ? dialog._field.Text : null;
     }
+}
+
+/// <summary>A question whose buttons say what they do ("Переместить в Корзину" / "Отмена"), as the Mac's alerts.</summary>
+public sealed class ConfirmDialog : Dialog
+{
+    ConfirmDialog(Window owner, string title, string message, string action) : base(owner, action, 480)
+    {
+        Heading(title);
+        Note(message, "Secondary", 4).FontSize = 13;
+        AddButton(action, () => DialogResult = true, primary: true);
+        AddButton(L("Отмена"), () => DialogResult = false).IsCancel = true;
+        Finish();
+    }
+
+    public static bool Ask(Window owner, string title, string message, string action) =>
+        new ConfirmDialog(owner, title, message, action).ShowDialog() == true;
+}
+
+/// <summary>
+/// "Разложить…" of a section: the name of the folder, and whether its files lie in it together or in folders by year,
+/// month or day (named as in "Разложить по папкам").
+/// </summary>
+public sealed class ArrangeDialog : Dialog
+{
+    readonly TextBox _name = new() { Height = 32 };
+    readonly ComboBox _layout = new() { Width = 260, HorizontalAlignment = HorizontalAlignment.Left };
+    readonly RadioButton _move = new() { Content = L("Переместить"), GroupName = "arrangeMode", Margin = new Thickness(0, 0, 18, 0) };
+    readonly RadioButton _copy = new() { Content = L("Копировать"), GroupName = "arrangeMode" };
+    readonly TextBlock _destination = new() { TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = VerticalAlignment.Center };
+    readonly CheckBox _skipCopies = new() { Content = L("Не копировать то, что уже есть в папке назначения (сравнивается содержимое файлов)"), Margin = new Thickness(0, 10, 0, 0) };
+    readonly TextBlock _note, _nameLabel;
+    readonly string _defaultName;
+    readonly StackPanel _copyOptions = new();
+    readonly string _root, _rootName;
+    readonly int _count;
+
+    public ArrangeDialog(Window owner, List<PhotoItem> items, string name, string root) : base(owner, L("Разложить по папке"), 520)
+    {
+        _root = root;
+        _rootName = System.IO.Path.GetFileName(root.TrimEnd('\\'));
+        _count = items.Count;
+        Destination = Settings.Shared.GetString("arrangeDestination") is { } saved && System.IO.Directory.Exists(saved) ? saved : root;
+        Heading(L("Разложить по папке"));
+        _note = Note("", "Secondary", 12);
+        var mode = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 10) };
+        mode.Children.Add(_move);
+        mode.Children.Add(_copy);
+        Body.Children.Add(mode);
+
+        // Copies may go anywhere — another disk with an archive by years of its own, which is filled up.
+        var whereLabel = Ui.Text(L("Куда"), "Secondary");
+        whereLabel.Margin = new Thickness(0, 0, 0, 4);
+        _copyOptions.Children.Add(whereLabel);
+        var where = new DockPanel { LastChildFill = true };
+        var choose = Ui.TextButton(L("Выбрать…"), ChooseDestination);
+        choose.Margin = new Thickness(8, 0, 0, 0);
+        DockPanel.SetDock(choose, Dock.Right);
+        where.Children.Add(choose);
+        where.Children.Add(_destination);
+        _copyOptions.Children.Add(where);
+        _skipCopies.IsChecked = Settings.Shared.Get("arrangeSkipCopies", true);
+        _copyOptions.Children.Add(_skipCopies);
+        _copyOptions.Margin = new Thickness(0, 0, 0, 12);
+        Body.Children.Add(_copyOptions);
+
+        _defaultName = name;
+        _nameLabel = Note(L("Название папки"), "Secondary", 4);
+        _name.Text = name;
+        Body.Children.Add(_name);
+        Note(L("Внутри папки"), "Secondary", 4).Margin = new Thickness(0, 12, 0, 4);
+        foreach (string title in new[] { L("Все файлы вместе"), L("По годам"), L("По месяцам"), L("По дням") }) _layout.Items.Add(title);
+        _layout.SelectedIndex = Math.Clamp(Settings.Shared.Get("arrangeLayout", 0), 0, 3);
+        Body.Children.Add(_layout);
+        AddButton(L("Разложить"), () =>
+        {
+            // Without a name the files go straight into the chosen folder (its year folders) — only when copying elsewhere.
+            if (Plan.SanitizedFolderPath(_name.Text) == null && !(Copies && !SameFolder(Destination, _root))) { _name.Focus(); return; }
+            Settings.Shared.Set("arrangeLayout", _layout.SelectedIndex);
+            Settings.Shared.Set("arrangeCopies", Copies);
+            Settings.Shared.Set("arrangeSkipCopies", SkipCopies);
+            if (Copies) Settings.Shared.Set("arrangeDestination", Destination);
+            DialogResult = true;
+        }, primary: true);
+        AddButton(L("Отмена"), () => DialogResult = false).IsCancel = true;
+        Finish();
+        _move.Checked += (_, _) => Update();
+        _copy.Checked += (_, _) => Update();
+        (Settings.Shared.Get("arrangeCopies", false) ? _copy : _move).IsChecked = true;
+        Update();
+        Loaded += (_, _) => { _name.Focus(); _name.SelectAll(); };
+    }
+
+    static bool SameFolder(string a, string b) => string.Equals(a.TrimEnd('\\'), b.TrimEnd('\\'), StringComparison.OrdinalIgnoreCase);
+
+    void ChooseDestination()
+    {
+        var dialog = new Microsoft.Win32.OpenFolderDialog { Title = L("Куда копировать"), InitialDirectory = Destination };
+        if (dialog.ShowDialog(this) != true) return;
+        Destination = dialog.FolderName;
+        Update();
+    }
+
+    void Update()
+    {
+        _copyOptions.Visibility = Copies ? Visibility.Visible : Visibility.Collapsed;
+        // Copies go straight into the chosen folder's own year folders unless a folder is asked for; moves need one.
+        if (Copies && _name.Text == _defaultName) _name.Text = "";
+        else if (!Copies && _name.Text.Trim().Length == 0) _name.Text = _defaultName;
+        _nameLabel.Text = Copies ? L("Подпапка (необязательно — без неё годы будут прямо в выбранной папке)") : L("Название папки");
+        _destination.Text = Destination;
+        _destination.ToolTip = Destination;
+        _note.Text = Copies
+            ? F("%@ будут скопированы, оригиналы останутся на месте. Папки, которые уже есть (в том числе годы — «2015» или «2015 год»), дополняются: ни один файл не заменяется, при совпадении имени копия получит имя «… (2)». Название папки можно оставить пустым — тогда годы прямо в выбранной папке.",
+                Capitalized(FilesDetail(_count)))
+            : F("%@ будут перемещены в папку внутри «%@». Потом общая раскладка по датам эту папку не трогает.", Capitalized(FilesDetail(_count)), _rootName);
+    }
+
+    public string FolderName => _name.Text;
+    public FolderLayout Layout => (FolderLayout)Math.Max(0, _layout.SelectedIndex);
+    public bool Copies => _copy.IsChecked == true;
+    public bool SkipCopies => _skipCopies.IsChecked == true;
+    /// <summary>The folder the section's folder goes into: the library's when moving.</summary>
+    public string Destination { get; private set; }
 }
 
 /// <summary>Gives the selected files a date by hand: a whole date, or only the month or the year when that is all that is known.</summary>
@@ -84,14 +218,34 @@ public sealed class DateDialog : Dialog
     public const int Remove = 2;
     readonly ComboBox _precision = new(), _month = new();
     readonly TextBox _year = new() { Width = 120, Height = 30 }, _day = new() { Width = 120, Height = 30 };
+    readonly List<(RadioButton Choice, Suggestion Suggestion)> _suggestions = [];
+    readonly RadioButton _custom = new() { Content = L("Указать:"), GroupName = "date", Margin = new Thickness(0, 6, 0, 6) };
     public int Outcome { get; private set; }
 
-    public DateDialog(Window owner, List<PhotoItem> items) : base(owner, L("Задать дату"), 420)
+    /// <summary>`suggestions`: the dates every one of the files is suggested (see Suggester), offered first, as on the Mac.</summary>
+    public DateDialog(Window owner, List<PhotoItem> items, List<Suggestion> suggestions) : base(owner, L("Задать дату"), 480)
     {
-        var dated = items.FirstOrDefault(i => !i.Undated);
-        DateTime start = dated?.Date ?? items.FirstOrDefault()?.FileDate ?? DateTime.Now;
+        // The first file's date when it has one, else today — as on the Mac.
+        DateTime start = items.FirstOrDefault() is { Undated: false } first ? first.Date : DateTime.Now;
         Heading(L("Задать дату"));
         Note(F("Выбрано: %@", FilesDetail(items.Count)), "Secondary", 14);
+        if (suggestions.Count > 0)
+        {
+            Body.Children.Add(new TextBlock { Text = L("Подсказки:"), FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 0, 0, 4) });
+            foreach (var suggestion in suggestions)
+            {
+                var choice = new RadioButton { Content = new TextBlock { Text = $"{suggestion.DateText} — {suggestion.Reason}", TextTrimming = TextTrimming.CharacterEllipsis },
+                                               GroupName = "date", Margin = new Thickness(0, 3, 0, 3) };
+                _suggestions.Add((choice, suggestion));
+                Body.Children.Add(choice);
+            }
+            Body.Children.Add(_custom);
+            _suggestions[0].Choice.IsChecked = true;
+        }
+        else
+        {
+            _custom.IsChecked = true;
+        }
         foreach (string p in new[] { L("Полная дата"), L("Год и месяц"), L("Только год") }) _precision.Items.Add(p);
         _precision.SelectedIndex = 0;
         foreach (string m in new[] { "Январь", "Февраль", "Март", "Апрель", "Май", "Июнь", "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь" }) _month.Items.Add(L(m));
@@ -102,7 +256,11 @@ public sealed class DateDialog : Dialog
         {
             _month.IsEnabled = _precision.SelectedIndex < 2;
             _day.IsEnabled = _precision.SelectedIndex < 1;
+            _custom.IsChecked = true;
         };
+        // Changing the date by hand chooses it over the suggestions.
+        _month.SelectionChanged += (_, _) => _custom.IsChecked = true;
+        _day.TextChanged += (_, _) => _custom.IsChecked = true;
         var form = new Grid();
         form.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(110) });
         form.ColumnDefinitions.Add(new ColumnDefinition());
@@ -125,7 +283,7 @@ public sealed class DateDialog : Dialog
         var problem = Note("", "Secondary", 0);
         problem.Visibility = Visibility.Collapsed;
         problem.SetResourceReference(TextBlock.ForegroundProperty, "BadgePink");
-        _year.TextChanged += (_, _) => { problem.Visibility = Visibility.Collapsed; _year.ClearValue(Control.BorderBrushProperty); };
+        _year.TextChanged += (_, _) => { problem.Visibility = Visibility.Collapsed; _year.ClearValue(Control.BorderBrushProperty); _custom.IsChecked = true; };
         AddButton(L("Сохранить"), () =>
         {
             if (Result() != null)
@@ -134,8 +292,8 @@ public sealed class DateDialog : Dialog
                 DialogResult = true;
                 return;
             }
-            // An impossible year: shown, not silently ignored.
-            problem.Text = L("Проверьте год: число от 1900 до текущего.");
+            // An impossible date: shown, not silently ignored.
+            problem.Text = L("Проверьте дату: она не может быть позже сегодняшнего дня.");
             problem.Visibility = Visibility.Visible;
             _year.SetResourceReference(Control.BorderBrushProperty, "BadgePink");
             _year.Focus();
@@ -148,13 +306,19 @@ public sealed class DateDialog : Dialog
     }
 
     /// <summary>(date, precision): noon of the day, or of the first day of the month / year for a less precise date.</summary>
+    /// <remarks>Any date up to today, as on the Mac.</remarks>
     public (DateTime Date, Precision Precision)? Result()
     {
-        if (!int.TryParse(_year.Text, out int year) || year < 1900 || year > DateTime.Now.Year) return null;
+        foreach (var (choice, suggestion) in _suggestions)
+        {
+            if (choice.IsChecked == true) return (suggestion.Date, suggestion.Precision);
+        }
+        if (!int.TryParse(_year.Text, out int year) || year < 1 || year > DateTime.Now.Year) return null;
         var precision = (Precision)_precision.SelectedIndex;
         int month = precision < Precision.Year ? _month.SelectedIndex + 1 : 1;
         int day = precision == Precision.Day && int.TryParse(_day.Text, out int d) ? Math.Clamp(d, 1, DateTime.DaysInMonth(year, month)) : 1;
-        return (new DateTime(year, month, day, 12, 0, 0), precision);
+        var date = new DateTime(year, month, day, 12, 0, 0);
+        return date.Date > DateTime.Today ? null : (date, precision);
     }
 }
 
@@ -163,44 +327,106 @@ public sealed class OrganizeDialog : Dialog
 {
     readonly Plan _plan;
     readonly Action _onChange;
-    readonly ComboBox _scheme = new(), _year = new(), _month = new(), _day = new();
-    readonly CheckBox _nested = new(), _duplicates = new(), _tiny = new();
-    readonly TextBox _duplicatesField = new() { Width = 220, Height = 30 }, _tinyField = new() { Width = 220, Height = 30 };
+    readonly TextBlock? _destinationText;
+    readonly ComboBox _arrangement = new(), _screenshotsPlace = new(), _scheme = new(), _year = new(), _month = new(), _day = new();
+    readonly CheckBox _nested = new(), _datesInside = new(), _tiny = new(), _screenshots = new(), _duplicates = new(), _removeDuplicates = new(),
+                      _photos = new(), _videos = new(), _pictures = new(), _collages = new();
+    readonly TextBox _duplicatesField = new() { Width = 220, Height = 30 }, _tinyField = new() { Width = 220, Height = 30 },
+                     _screenshotsField = new() { Width = 220, Height = 30 };
     // Grouped by day, a library makes thousands of folders: only the rows on screen are made.
     readonly PreviewList _preview = new();
     readonly TextBlock _summary = new() { TextWrapping = TextWrapping.Wrap, FontSize = 12 };
     readonly Button _reset;
     readonly Button _confirm;
+    readonly SegmentedControl _mode = new([L("Переместить"), L("Копировать")]);
     bool _updating;
 
     public OrganizeDialog(Window owner, Plan plan, Action onChange) : base(owner, L("Разложить по папкам"), 660)
     {
         _plan = plan;
         _onChange = onChange;
+        // Resizable — narrower, shorter, with the options scrolling — for small screens.
+        ResizeMode = ResizeMode.CanResize;
+        MinWidth = 460;
+        MinHeight = 260;
         Heading(L("Разложить по папкам"));
-        Note(F("Папки будут созданы внутри «%@». Выберите, как группировать файлы и как назвать папки.", Path.GetFileName(plan.Root.TrimEnd('\\'))), "Secondary", 16);
+        Note(plan.Sources.Count > 1
+                ? F("Файлы из %@ будут сложены в одну папку. Выберите, куда, как группировать файлы и как назвать папки.", Count(plan.Sources.Count, L("папки"), L("папок"), L("папок")))
+                : L("Выберите, куда сложить файлы, как их группировать и как назвать папки."), "Secondary", 12);
+        // Where everything goes: the library's first folder, or another one.
+        var destination = new DockPanel { Margin = new Thickness(0, 0, 0, 14) };
+        var change = Ui.TextButton(L("Изменить…"), () =>
+        {
+            var dialog = new Microsoft.Win32.OpenFolderDialog { Title = L("Куда сложить файлы"), InitialDirectory = _plan.Root };
+            if (dialog.ShowDialog(this) != true) return;
+            _plan.SetDestination(dialog.FolderName);
+            _destinationText!.Text = _plan.Root;
+            PlanChanged();
+        });
+        change.Margin = new Thickness(10, 0, 0, 0);
+        // Move or copy: right of the folder and its button.
+        _mode.Margin = new Thickness(14, 0, 0, 0);
+        _mode.ToolTip = L("Переместить — оригиналы переезжают в новые папки. Копировать — оригиналы остаются на месте, в папках появляются их копии.");
+        _mode.Changed += index =>
+        {
+            _plan.CopiesFiles = index == 1;
+            PlanChanged();
+        };
+        DockPanel.SetDock(_mode, Dock.Right);
+        destination.Children.Add(_mode);
+        DockPanel.SetDock(change, Dock.Right);
+        destination.Children.Add(change);
+        var destinationLabel = new TextBlock { Text = L("Куда сложить:"), VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 10, 0) };
+        DockPanel.SetDock(destinationLabel, Dock.Left);
+        destination.Children.Add(destinationLabel);
+        _destinationText = new TextBlock { Text = plan.Root, VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis, FontWeight = FontWeights.SemiBold, ToolTip = plan.Root };
+        destination.Children.Add(_destinationText);
+        Body.Children.Add(destination);
 
+        Fill(_arrangement, L("По датам"), L("По типам"), L("По людям"), L("По форматам"));
+        _arrangement.ToolTip = L("По типам: скриншоты, записи экрана, WhatsApp, Telegram, видео, анимации, панорамы, RAW, фото. По людям: фото, где узнан ровно один названный человек, — в папку с его именем, остальное по датам. По форматам: JPEG, HEIC, PNG, MOV…");
         Fill(_scheme, L("По годам"), L("По месяцам"), L("По дням"));
+        Fill(_screenshotsPlace, L("Одна папка, даты внутри"), L("Внутри папки каждой даты"));
         Fill(_year, "2024", L("2024 год"));
         Fill(_month, "2024-03", L("2024-03 Март"), L("03 Март"), L("Март 2024"));
         Fill(_day, "2024-03-15", "15", L("15 марта"));
-        _nested.Content = L("Вкладывать папки друг в друга (год → месяц → день)");
+        // Copies: with everything else, in a folder of their own, or not at all ("без").
         _duplicates.Content = L("Дубликаты — в папку:");
+        _removeDuplicates.Content = L("Удалить дубликаты");
+        _removeDuplicates.ToolTip = L("Точные копии и уменьшенные или пережатые версии снимка при переносе уходят в Корзину (при копировании — не копируются): раскладывается только оригинал или лучшая версия. Копия удаляется, только если её оригинал остаётся.");
+        // Each kind when ticked — unticked, it stays where it is.
+        _photos.Content = L("Фото");
+        _videos.Content = L("Видео");
+        _pictures.Content = L("Картинки");
+        _pictures.ToolTip = L("Открытки, мемы, рисунки, документы — то, что не фотография. Без галочки остаются на месте.");
+        _collages.Content = L("Коллажи");
+        _collages.ToolTip = L("Коллажи, рамки, анимации, фильмы и правки, которые сделал Google Фото. Без галочки остаются на месте.");
+        _nested.Content = L("Вкладывать папки друг в друга (год → месяц → день)");
+        _datesInside.Content = L("Внутри — по датам");
         _tiny.Content = L("Миниатюры — в папку:");
-        foreach (var box in new[] { _nested, _duplicates, _tiny }) box.Click += (_, _) => OptionChanged();
-        foreach (var field in new[] { _duplicatesField, _tinyField })
+        _screenshots.Content = L("Скриншоты — в папку:");
+        foreach (var box in new[] { _nested, _datesInside, _tiny, _screenshots, _duplicates, _removeDuplicates, _photos, _videos, _pictures, _collages }) box.Click += (_, _) => OptionChanged();
+        foreach (var field in new[] { _duplicatesField, _tinyField, _screenshotsField })
         {
             field.LostFocus += (_, _) => OptionChanged();
             field.KeyDown += (_, e) => { if (e.Key == Key.Enter) { OptionChanged(); e.Handled = true; } };
         }
 
+        var kinds = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+        foreach (var box in new[] { _photos, _videos, _pictures, _collages })
+        {
+            box.Margin = new Thickness(0, 0, 16, 0);
+            kinds.Children.Add(box);
+        }
         var form = new Grid { Margin = new Thickness(0, 0, 0, 14) };
         form.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Auto) });
         form.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         var rows = new (FrameworkElement Label, FrameworkElement Control)[]
         {
+            (Label(L("Что раскладывать:")), kinds),
+            (Label(L("Раскладывать:")), _arrangement), (new Border(), _datesInside),
             (Label(L("Группировать:")), _scheme), (Label(L("Название года:")), _year), (Label(L("Название месяца:")), _month),
-            (Label(L("Название дня:")), _day), (new Border(), _nested), (_duplicates, _duplicatesField), (_tiny, _tinyField),
+            (Label(L("Название дня:")), _day), (new Border(), _nested), (_screenshots, _screenshotsField), (new Border(), _screenshotsPlace), (_duplicates, _duplicatesField), (_removeDuplicates, new Border()), (_tiny, _tinyField),
         };
         for (int i = 0; i < rows.Length; i++)
         {
@@ -253,7 +479,7 @@ public sealed class OrganizeDialog : Dialog
         _summary.MaxWidth = 380;
         DockPanel.SetDock(_summary, Dock.Left);
         Footer.Children.Add(_summary);
-        _confirm = AddButton(L("Разложить"), () => { if (_plan.PendingItems.Count > 0) DialogResult = true; }, primary: true);
+        _confirm = AddButton(L("Разложить"), () => { if (_plan.PendingItems.Count > 0 || _plan.DuplicatesToRemove.Count > 0) DialogResult = true; }, primary: true);
         AddButton(L("Отмена"), () => DialogResult = false).IsCancel = true;
         Finish();
         Refresh();
@@ -270,6 +496,14 @@ public sealed class OrganizeDialog : Dialog
     void Refresh()
     {
         _updating = true;
+        _arrangement.SelectedIndex = (int)_plan.Arrangement;
+        _datesInside.IsChecked = _plan.DatesInside;
+        _datesInside.IsEnabled = _plan.Arrangement != Arrangement.Date;
+        _screenshots.IsChecked = _plan.SeparateScreenshots;
+        _screenshotsField.Text = _plan.ScreenshotsFolderName;
+        _screenshotsField.IsEnabled = _plan.SeparateScreenshots;
+        _screenshotsPlace.SelectedIndex = _plan.ScreenshotsInEachDate ? 1 : 0;
+        _screenshotsPlace.IsEnabled = _plan.SeparateScreenshots;
         _scheme.SelectedIndex = (int)_plan.Scheme;
         _year.SelectedIndex = (int)_plan.YearStyle;
         _month.SelectedIndex = (int)_plan.MonthStyle;
@@ -279,19 +513,36 @@ public sealed class OrganizeDialog : Dialog
         _nested.IsChecked = _plan.Nested;
         _nested.IsEnabled = _plan.Scheme != Scheme.Year;
         _duplicates.IsChecked = _plan.SeparateDuplicates;
+        _removeDuplicates.IsChecked = _plan.RemovesDuplicates;
         _duplicatesField.Text = _plan.DuplicatesFolderName;
-        _duplicatesField.IsEnabled = _plan.SeparateDuplicates;
+        // Duplicates that go to the Recycle Bin need no folder of their own.
+        _duplicates.IsEnabled = !_plan.RemovesDuplicates;
+        _duplicatesField.IsEnabled = _plan.SeparateDuplicates && !_plan.RemovesDuplicates;
+        _photos.IsChecked = _plan.OrganizesPhotos;
+        _videos.IsChecked = _plan.OrganizesVideos;
+        _pictures.IsChecked = _plan.OrganizesPictures;
+        _collages.IsChecked = _plan.OrganizesCollages;
         _tiny.IsChecked = _plan.SeparateTiny;
         _tinyField.Text = _plan.TinyFolderName;
         _tinyField.IsEnabled = _plan.SeparateTiny;
         _reset.Visibility = _plan.HasCustomNames ? Visibility.Visible : Visibility.Collapsed;
         _preview.ItemsSource = _plan.Groups.Select((group, index) => new PreviewItem(group, index)).ToList();
         int pending = _plan.PendingItems.Count;
+        bool copies = _plan.CopiesFiles;
+        _mode.Selected = copies ? 1 : 0;
         string what = pending > 0
-            ? F("Будет перемещено %@ из %@ в %@.", Number(pending), Number(_plan.Items.Count), Count(_plan.Groups.Count, L("папку"), L("папки"), L("папок")))
+            ? F(copies ? "Будет скопировано %@ из %@ в %@." : "Будет перемещено %@ из %@ в %@.",
+                Number(pending), Number(_plan.Items.Count), Count(_plan.Groups.Count, L("папку"), L("папки"), L("папок")))
             : L("Все файлы уже лежат на своих местах.");
-        _summary.Text = what + L(" Оригиналы перемещаются, а не копируются; ничего не удаляется и не перезаписывается. Отменить — ⌘Z.").Replace("⌘Z", "Ctrl+Z");
-        _confirm.IsEnabled = pending > 0;
+        int removed = _plan.DuplicatesToRemove.Count;
+        if (removed > 0) what += F(" Дубликаты в Корзину: %@.", Number(removed));
+        _summary.Text = what + (copies
+            ? L(" Оригиналы остаются на месте; копии ничего не перезаписывают, уже скопированные файлы пропускаются. Отменить — ⌘Z.")
+            : removed > 0
+            ? L(" Оригиналы перемещаются, а не копируются; ничего не перезаписывается, дубликаты можно вернуть из Корзины. Отменить перенос — ⌘Z.")
+            : L(" Оригиналы перемещаются, а не копируются; ничего не удаляется и не перезаписывается. Отменить — ⌘Z.")).Replace("⌘Z", "Ctrl+Z");
+        _confirm.Content = copies ? L("Скопировать") : L("Разложить");
+        _confirm.IsEnabled = pending > 0 || removed > 0;
         _updating = false;
     }
 
@@ -369,12 +620,22 @@ public sealed class OrganizeDialog : Dialog
     void OptionChanged()
     {
         if (_updating) return;
+        _plan.Arrangement = (Arrangement)Math.Max(0, _arrangement.SelectedIndex);
+        _plan.DatesInside = _datesInside.IsChecked == true;
+        _plan.SeparateScreenshots = _screenshots.IsChecked == true;
+        _plan.ScreenshotsInEachDate = _screenshotsPlace.SelectedIndex == 1;
+        _plan.ScreenshotsFolderName = _screenshotsField.Text;
         _plan.Scheme = (Scheme)Math.Max(0, _scheme.SelectedIndex);
         _plan.YearStyle = (YearStyle)Math.Max(0, _year.SelectedIndex);
         _plan.MonthStyle = (MonthStyle)Math.Max(0, _month.SelectedIndex);
         _plan.DayStyle = (DayStyle)Math.Max(0, _day.SelectedIndex);
         _plan.Nested = _nested.IsChecked == true;
         _plan.SeparateDuplicates = _duplicates.IsChecked == true;
+        _plan.RemovesDuplicates = _removeDuplicates.IsChecked == true;
+        _plan.OrganizesPhotos = _photos.IsChecked == true;
+        _plan.OrganizesVideos = _videos.IsChecked == true;
+        _plan.OrganizesPictures = _pictures.IsChecked == true;
+        _plan.OrganizesCollages = _collages.IsChecked == true;
         _plan.SeparateTiny = _tiny.IsChecked == true;
         _plan.DuplicatesFolderName = _duplicatesField.Text;
         _plan.TinyFolderName = _tinyField.Text;
@@ -389,6 +650,8 @@ public sealed class OrganizeDialog : Dialog
 public sealed class SettingsDialog : Window
 {
     public static bool GroupsFaces => Settings.Shared.Get("groupsFaces", false);
+    /// <summary>"Распознать заново": the open library is to be analysed again from scratch.</summary>
+    public bool ResultsCleared { get; private set; }
     readonly List<ModelRow> _rows = [];
     readonly ContentControl _page = new();
     readonly StackPanel _tabs = new() { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Center };
@@ -421,18 +684,20 @@ public sealed class SettingsDialog : Window
         AddTab(L("Распознавание"), "object-search", Recognition());
         AddTab(L("Нагота"), "explicit", Nudity());
         AddTab("VK", "download", Vk());
-        Select(Math.Clamp(Settings.Shared.Get("settingsTab", 0), 0, _pages.Count - 1));
-        // Closing stops a model download: asked first, so that it never happens unnoticed.
+        Select(0);
+        // Closing stops a model download or a VK album being downloaded: asked first, so that it never happens unnoticed.
         Closing += (_, e) =>
         {
-            if (_rows.Any(r => r.Downloading)
-                && MessageBox.Show(this, L("Модель ещё загружается. Если закрыть настройки, загрузка остановится."), L("Закрыть настройки?"),
-                                   MessageBoxButton.OKCancel, MessageBoxImage.Question) != MessageBoxResult.OK)
+            string? running = _rows.Any(r => r.Downloading) ? L("Модель ещё загружается. Если закрыть настройки, загрузка остановится.")
+                : _vkRunning != null ? L("Альбом VK ещё скачивается. Если закрыть настройки, загрузка остановится.") : null;
+            if (running != null && MessageBox.Show(this, running, L("Закрыть настройки?"), MessageBoxButton.OKCancel, MessageBoxImage.Question) != MessageBoxResult.OK)
             {
                 e.Cancel = true;
                 return;
             }
             foreach (var row in _rows) row.Cancel();
+            _vkRunning?.Cancel();
+            Settings.Shared.Set("vkLink", _vkLink.Text);
         };
     }
 
@@ -450,7 +715,6 @@ public sealed class SettingsDialog : Window
 
     void Select(int index)
     {
-        Settings.Shared.Set("settingsTab", index);
         for (int i = 0; i < _pages.Count; i++)
         {
             if (i == index) _pages[i].Tab.SetResourceReference(Border.BackgroundProperty, "Selection");
@@ -490,7 +754,7 @@ public sealed class SettingsDialog : Window
         language.SelectionChanged += (_, _) =>
         {
             Settings.Shared.Set("language", language.SelectedIndex switch { 1 => "ru", 2 => "en", _ => null });
-            note.Text = L("Язык сменится, когда приложение будет открыто заново.");
+            note.Text = L("Язык сменится после перезапуска приложения.");
         };
         var row = new StackPanel { Orientation = Orientation.Horizontal };
         row.Children.Add(new TextBlock { Text = L("Язык:"), VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 10, 0) });
@@ -521,9 +785,11 @@ public sealed class SettingsDialog : Window
         pane.Children.Add(AddModel(Recognizer.Model));
         var reset = Ui.TextButton(L("Распознать заново…"), () =>
         {
-            if (MessageBox.Show(this, L("Забыть сохранённые результаты распознавания и проанализировать файлы ещё раз"), L("Распознать заново…").TrimEnd('…'),
-                                MessageBoxButton.OKCancel, MessageBoxImage.Question) != MessageBoxResult.OK) return;
+            if (!ConfirmDialog.Ask(this, L("Распознать все файлы заново?"),
+                                   L("Сохранённые результаты распознавания объектов, лиц и наготы будут забыты, и открытая папка проанализируется ещё раз. Сами фото и видео не затрагиваются."),
+                                   L("Распознать заново"))) return;
             RecognitionStore.Shared.Clear();
+            ResultsCleared = true;
         });
         reset.HorizontalAlignment = HorizontalAlignment.Left;
         reset.Padding = new Thickness(10, 3, 10, 3);
@@ -573,9 +839,10 @@ public sealed class SettingsDialog : Window
         pane.Children.Add(Note(L("Скачивает все фото альбома в оригинальном размере и называет их по порядку в альбоме: 001.jpg, 002.jpg… " +
                                  "Уже скачанные файлы пропускаются, так что прерванную загрузку можно продолжить.")));
         _vkLink.Text = Settings.Shared.GetString("vkLink") ?? "";
+        // Remembered when it is used or the settings are closed, not at every key.
+        _vkLink.LostFocus += (_, _) => Settings.Shared.Set("vkLink", _vkLink.Text);
         _vkLink.TextChanged += (_, _) =>
         {
-            Settings.Shared.Set("vkLink", _vkLink.Text);
             // VK lists the service albums newest first and ordinary albums in their own order.
             if (VkAlbum.ParseAlbumUrl(_vkLink.Text) != null) _vkNewest.IsChecked = VkAlbum.IsServiceAlbum(_vkLink.Text);
         };
@@ -590,7 +857,12 @@ public sealed class SettingsDialog : Window
         {
             if (VkAlbum.SavedToken != null)
             {
-                VkLoginWindow.SignOut();
+                if (!VkLoginWindow.SignOut())
+                {
+                    _vkStatus.Text = L("Не удалось выйти: сохранённый доступ не удаляется из папки данных приложения.");
+                    _vkStatus.Foreground = Brushes.IndianRed;
+                    return;
+                }
                 Settings.Shared.Set("vkUserID", null);
                 RefreshVk();
                 return;
@@ -649,7 +921,6 @@ public sealed class SettingsDialog : Window
         pane.Children.Add(buttons);
         _vkStatus.SetResourceReference(TextBlock.ForegroundProperty, "Text");
         pane.Children.Add(_vkStatus);
-        Closing += (_, _) => _vkRunning?.Cancel();
         RefreshVk();
         return pane;
     }
@@ -682,6 +953,7 @@ public sealed class SettingsDialog : Window
             _vkStatus.Text = L("Сначала выберите папку, куда сохранять.");
             return;
         }
+        Settings.Shared.Set("vkLink", _vkLink.Text);
         var album = new VkAlbum(_vkLink.Text.Trim(), VkAlbum.SavedToken ?? "", folder, _vkNewest.IsChecked == true);
         _vkRunning = album;
         _vkProgress.IsIndeterminate = true;
@@ -733,11 +1005,14 @@ public sealed class SettingsDialog : Window
         pane.Children.Add(_nudityModelHost);
         ShowNudityModel();
         var threshold = new Slider { Minimum = 0.1, Maximum = 0.95, Width = 220, Value = NudityClassifier.Threshold, VerticalAlignment = VerticalAlignment.Center };
+        // Saved rounded to a hundredth once the knob is let go, as on the Mac, not at every step of a drag.
+        void SaveThreshold() => NudityClassifier.Threshold = Math.Round(threshold.Value, 2);
         threshold.ValueChanged += (_, _) =>
         {
-            NudityClassifier.Threshold = threshold.Value;
             _thresholdLabel.Text = $"{threshold.Value * 100:0} %";
+            if (!threshold.IsMouseCaptureWithin) SaveThreshold();
         };
+        threshold.AddHandler(System.Windows.Controls.Primitives.Thumb.DragCompletedEvent, new System.Windows.Controls.Primitives.DragCompletedEventHandler((_, _) => SaveThreshold()));
         _thresholdLabel.Text = $"{threshold.Value * 100:0} %";
         var thresholdRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 8, 0, 8),
                                             ToolTip = L("Файл попадает в «Откровенные», если модель уверена не меньше чем на столько. Ниже порог — больше находок и больше ложных.") };

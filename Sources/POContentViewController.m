@@ -82,8 +82,11 @@ static NSStackView *POCenteredStack(NSArray<NSView *> *views, NSView *container)
     NSTextField *_progressLabel;
     NSButton *_cancelButton;
     NSView *_resultsView;
-    NSSegmentedControl *_filterControl;
+    NSStackView *_filterControl;
+    NSButton *_allButton;
+    NSArray<NSButton *> *_kindButtons, *_kindBoxes;   // by POMediaKind
     NSButton *_cleanupButton;
+    NSButton *_byFoldersButton;
     NSButton *_soloCheckbox;
     NSStackView *_stripExtras;
     NSTextField *_analysisLabel;
@@ -107,6 +110,13 @@ static NSStackView *POCenteredStack(NSArray<NSView *> *views, NSView *container)
     _viewer.onClose = ^(POPhotoItem *item) {
         [weakSelf showResults];
         if (item) [weakSelf.grid revealItem:item];
+    };
+    // The viewer's right-click menu is the grid's, for the file on screen: it becomes the selection.
+    _viewer.menuProvider = ^NSMenu *(POPhotoItem *item) {
+        typeof(self) me = weakSelf;
+        if (!me) return nil;
+        [me->_grid selectItem:item];
+        return [me->_grid itemMenuForViewer:YES];
     };
     _grid.onOpen = ^(NSArray<POPhotoItem *> *items, NSUInteger index) {
         typeof(self) me = weakSelf;
@@ -158,7 +168,7 @@ static NSStackView *POCenteredStack(NSArray<NSView *> *views, NSView *container)
     [_progressBar.widthAnchor constraintEqualToConstant:320].active = YES;
 
     _progressLabel = POLabel(@"", [NSFont monospacedDigitSystemFontOfSize:13 weight:NSFontWeightRegular], NSColor.secondaryLabelColor);
-    _cancelButton = [NSButton buttonWithTitle:POL(@"Отменить") target:nil action:@selector(cancelScan:)];
+    _cancelButton = [NSButton buttonWithTitle:POL(@"Отмена") target:nil action:@selector(cancelScan:)];
     _cancelButton.keyEquivalent = @"\e";
 
     NSStackView *stack = POCenteredStack(@[_progressBar, _progressLabel, _cancelButton], view);
@@ -171,17 +181,43 @@ static NSStackView *POCenteredStack(NSArray<NSView *> *views, NSView *container)
     NSView *gridView = _grid.view;
     gridView.translatesAutoresizingMaskIntoConstraints = NO;
 
-    _filterControl = [NSSegmentedControl segmentedControlWithLabels:@[POL(@"Все"), POL(@"Фото"), POL(@"Видео")]
-                                                       trackingMode:NSSegmentSwitchTrackingSelectOne
-                                                             target:nil
-                                                             action:@selector(selectQuickFilter:)];
-    _filterControl.segmentStyle = NSSegmentStyleRounded;
-    _filterControl.segmentDistribution = NSSegmentDistributionFit;
+    // "Медиа", then each kind: its checkbox (in the library and organized, or not) and a button showing it alone.
+    NSButton *(^tab)(NSString *, NSInteger) = ^NSButton *(NSString *title, NSInteger tag) {
+        NSButton *button = [NSButton buttonWithTitle:title target:nil action:@selector(selectQuickFilter:)];
+        button.bezelStyle = NSBezelStyleRecessed;
+        [button setButtonType:NSButtonTypePushOnPushOff];
+        button.tag = tag;
+        return button;
+    };
+    _allButton = tab(POL(@"Медиа"), POQuickFilterAll);
+    _allButton.toolTip = POL(@"Все отмеченные виды файлов");
+    NSMutableArray<NSView *> *strip = [NSMutableArray arrayWithObject:_allButton];
+    NSMutableArray<NSButton *> *buttons = [NSMutableArray array], *boxes = [NSMutableArray array];
+    NSArray<NSString *> *tips = @[POL(@"Фотографии"), POL(@"Видео"), POL(@"Открытки, мемы, рисунки, документы — то, что не фотография"),
+                                  POL(@"Коллажи, рамки, анимации, фильмы и эффекты, которые сделал Google Фото")];
+    for (NSInteger kind = POMediaKindPhotos; kind <= POMediaKindCollages; kind++) {
+        NSButton *box = [NSButton checkboxWithTitle:@"" target:nil action:@selector(toggleKindIncluded:)];
+        box.tag = kind;
+        box.toolTip = POL(@"Отмечено — в медиатеке и раскладывается; без галочки — скрыто и остаётся на месте");
+        NSButton *button = tab(@"", POQuickFilterAll + 1 + kind);
+        button.toolTip = tips[kind];
+        NSStackView *pair = [NSStackView stackViewWithViews:@[box, button]];
+        pair.spacing = 2;
+        [strip addObject:pair];
+        [boxes addObject:box];
+        [buttons addObject:button];
+    }
+    _kindBoxes = boxes;
+    _kindButtons = buttons;
+    _filterControl = [NSStackView stackViewWithViews:strip];
+    _filterControl.spacing = 12;
     _filterControl.translatesAutoresizingMaskIntoConstraints = NO;
 
     _cleanupButton = [NSButton buttonWithTitle:POL(@"Удалить дубликаты…") target:nil action:@selector(removeDuplicates:)];
-    _cleanupButton.toolTip = POL(@"Переместить в Корзину все копии, оставив в каждом наборе оригинал или файл лучшего качества");
     _cleanupButton.hidden = YES;
+    _byFoldersButton = [NSButton buttonWithTitle:POL(@"Дубликаты по папкам…") target:nil action:@selector(removeDuplicatesByFolder:)];
+    _byFoldersButton.toolTip = POL(@"Для одинаковых фото в разных папках выбрать, какая папка останется");
+    _byFoldersButton.hidden = YES;
     _soloCheckbox = [NSButton checkboxWithTitle:POL(@"Без других людей") target:nil action:@selector(toggleSoloPerson:)];
     _soloCheckbox.toolTip = POL(@"Показывать только фото, на которых нет никого, кроме этого человека");
     _soloCheckbox.hidden = YES;
@@ -198,7 +234,7 @@ static NSStackView *POCenteredStack(NSArray<NSView *> *views, NSView *container)
     _backToMapButton.hidden = YES;
     _extraButton = [NSButton buttonWithTitle:@"" target:nil action:NULL];
     _extraButton.hidden = YES;
-    _stripExtras = [NSStackView stackViewWithViews:@[_extraButton, _backToMapButton, _cleanupButton, _soloCheckbox, _setDateButton, _acceptSuggestionsButton]];
+    _stripExtras = [NSStackView stackViewWithViews:@[_extraButton, _backToMapButton, _cleanupButton, _byFoldersButton, _soloCheckbox, _setDateButton, _acceptSuggestionsButton]];
     _stripExtras.spacing = 12;
     _stripExtras.translatesAutoresizingMaskIntoConstraints = NO;
 
@@ -220,11 +256,17 @@ static NSStackView *POCenteredStack(NSArray<NSView *> *views, NSView *container)
     [_statusLabel setContentHuggingPriority:1 forOrientation:NSLayoutConstraintOrientationHorizontal];
 
     _organizeButton = [NSButton buttonWithTitle:POL(@"Разложить по папкам") target:nil action:@selector(organize:)];
+    // ⌘↩, as on Windows (Ctrl+Enter): a plain Return is too easily pressed meaning something else.
     _organizeButton.keyEquivalent = @"\r";
+    _organizeButton.keyEquivalentModifierMask = NSEventModifierFlagCommand;
+    _organizeButton.toolTip = @"⌘↩";
 
-    NSSlider *sizeSlider = [NSSlider sliderWithValue:_grid.cellWidth minValue:90 maxValue:480 target:self action:@selector(thumbnailSizeChanged:)];
+    NSSlider *sizeSlider = [NSSlider sliderWithValue:_grid.cellWidth minValue:POGridViewController.minimumCellWidth
+                                            maxValue:POGridViewController.maximumCellWidth target:self action:@selector(thumbnailSizeChanged:)];
     sizeSlider.controlSize = NSControlSizeSmall;
     sizeSlider.toolTip = POL(@"Размер миниатюр в сетке");
+    __weak NSSlider *weakSlider = sizeSlider;
+    _grid.onCellWidthChange = ^(CGFloat width) { weakSlider.doubleValue = width; };
     [sizeSlider.widthAnchor constraintEqualToConstant:110].active = YES;
 
     NSStackView *bar = [NSStackView stackViewWithViews:@[_statusLabel, sizeSlider, _organizeButton]];
@@ -307,9 +349,14 @@ static NSStackView *POCenteredStack(NSArray<NSView *> *views, NSView *container)
 }
 
 - (void)showProgressWithText:(NSString *)text fraction:(double)fraction cancellable:(BOOL)cancellable {
+    [self showProgressWithText:text fraction:fraction cancelTitle:cancellable ? POL(@"Отмена") : nil];
+}
+
+- (void)showProgressWithText:(NSString *)text fraction:(double)fraction cancelTitle:(NSString *)cancelTitle {
     [self showView:_progressView];
     _progressLabel.stringValue = text;
-    _cancelButton.hidden = !cancellable;
+    _cancelButton.hidden = cancelTitle == nil;
+    if (cancelTitle) _cancelButton.title = cancelTitle;
     _progressBar.indeterminate = fraction < 0;
     if (fraction < 0) {
         [_progressBar startAnimation:nil];
@@ -329,15 +376,30 @@ static NSStackView *POCenteredStack(NSArray<NSView *> *views, NSView *container)
     _organizeButton.enabled = canOrganize;
 }
 
-- (void)setQuickFilterCounts:(NSArray<NSNumber *> *)counts selected:(POQuickFilter)selected {
+- (void)setKindCounts:(NSArray<NSNumber *> *)counts included:(NSArray<NSNumber *> *)included selected:(POQuickFilter)selected {
+    [self setKindCounts:counts included:included counted:included selected:selected];
+}
+
+- (void)setKindCounts:(NSArray<NSNumber *> *)counts included:(NSArray<NSNumber *> *)included counted:(NSArray<NSNumber *> *)counted
+             selected:(POQuickFilter)selected {
     (void)self.view;
-    NSArray<NSString *> *titles = @[POL(@"Все"), POL(@"Фото"), POL(@"Видео")];
-    for (NSInteger segment = 0; segment < 3; segment++) {
-        NSInteger count = segment < (NSInteger)counts.count ? counts[segment].integerValue : 0;
-        [_filterControl setLabel:[NSString stringWithFormat:@"%@  %@", titles[segment], PONumber(count)] forSegment:segment];
-        [_filterControl setEnabled:count > 0 || segment == POQuickFilterAll || segment == selected forSegment:segment];
+    NSArray<NSString *> *titles = @[POL(@"Фото"), POL(@"Видео"), POL(@"Картинки"), POL(@"Коллажи")];
+    _allButton.state = selected == POQuickFilterAll ? NSControlStateValueOn : NSControlStateValueOff;
+    // "Медиа" counts what the ticked kinds add up to.
+    NSInteger ticked = 0;
+    for (NSInteger kind = POMediaKindPhotos; kind <= POMediaKindCollages && kind < (NSInteger)counts.count; kind++) {
+        if (kind < (NSInteger)counted.count && counted[kind].boolValue) ticked += counts[kind].integerValue;
     }
-    _filterControl.selectedSegment = selected;
+    _allButton.title = [NSString stringWithFormat:@"%@  %@", POL(@"Медиа"), PONumber(ticked)];
+    for (NSInteger kind = POMediaKindPhotos; kind <= POMediaKindCollages; kind++) {
+        NSInteger count = kind < (NSInteger)counts.count ? counts[kind].integerValue : 0;
+        BOOL ticked = kind < (NSInteger)included.count && included[kind].boolValue;
+        BOOL shown = selected == POQuickFilterAll + 1 + kind;
+        _kindButtons[kind].title = [NSString stringWithFormat:@"%@  %@", titles[kind], PONumber(count)];
+        _kindButtons[kind].state = shown ? NSControlStateValueOn : NSControlStateValueOff;
+        _kindBoxes[kind].state = ticked ? NSControlStateValueOn : NSControlStateValueOff;
+        _kindButtons[kind].superview.hidden = count == 0 && ticked && !shown;
+    }
 }
 
 - (void)setShowsMap:(BOOL)showsMap {
@@ -347,11 +409,12 @@ static NSStackView *POCenteredStack(NSArray<NSView *> *views, NSView *container)
     _grid.view.hidden = showsMap;
 }
 
-- (void)setExtraButtonTitle:(NSString *)title action:(SEL)action {
+- (void)setExtraButtonTitle:(NSString *)title action:(SEL)action toolTip:(NSString *)toolTip {
     (void)self.view;
     _extraButton.hidden = title == nil;
     _extraButton.title = title ?: @"";
     _extraButton.action = action;
+    _extraButton.toolTip = toolTip;
 }
 
 - (void)setShowsBackToMap:(BOOL)shows {
@@ -371,10 +434,20 @@ static NSStackView *POCenteredStack(NSArray<NSView *> *views, NSView *container)
     _soloCheckbox.state = on ? NSControlStateValueOn : NSControlStateValueOff;
 }
 
-- (void)setCleanupButtonTitle:(NSString *)title {
+- (void)setCleanupButtonTitle:(NSString *)title toolTip:(NSString *)toolTip {
     (void)self.view;
     _cleanupButton.hidden = title == nil;
     if (title) _cleanupButton.title = title;
+    _cleanupButton.toolTip = toolTip;
+}
+
+- (void)setShowsDuplicatesByFolder:(BOOL)shows {
+    (void)self.view;
+    _byFoldersButton.hidden = !shows;
+}
+
+- (NSString *)analysisStatus {
+    return self.viewLoaded ? _analysisLabel.stringValue : @"";
 }
 
 - (void)setAnalysisStatus:(NSString *)text {

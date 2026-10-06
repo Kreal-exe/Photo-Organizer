@@ -21,7 +21,7 @@ public sealed class MapView : Grid
                                         TextWrapping = TextWrapping.Wrap, TextAlignment = TextAlignment.Center, MaxWidth = 420,
                                         HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center, Padding = new Thickness(16) };
     List<PhotoItem> _items = [];
-    bool _ready;
+    bool _ready, _offline;
     Task? _starting;
 
     public event Action<List<PhotoItem>>? ItemsSelected;
@@ -42,6 +42,13 @@ public sealed class MapView : Grid
         _web.CoreWebView2.Settings.AreDefaultContextMenusEnabled = false;
         _web.CoreWebView2.WebMessageReceived += (_, e) =>
         {
+            // The map's scripts come from the internet: without it the page would stay blank.
+            if (e.WebMessageAsJson.StartsWith('"'))
+            {
+                _offline = true;
+                ShowOffline();
+                return;
+            }
             var indexes = JsonSerializer.Deserialize<int[]>(e.WebMessageAsJson) ?? [];
             var chosen = indexes.Where(i => i >= 0 && i < _items.Count).Select(i => _items[i]).OrderBy(i => i.Date).ToList();
             if (chosen.Count > 0) ItemsSelected?.Invoke(chosen);
@@ -56,6 +63,12 @@ public sealed class MapView : Grid
         _web.CoreWebView2.Navigate("https://photo-organizer.map/index.html");
         await loaded.Task;
         _ready = true;
+    }
+
+    void ShowOffline()
+    {
+        _empty.Text = L("Карта не загрузилась — нужен интернет: карта берётся с OpenStreetMap.");
+        _empty.Visibility = Visibility.Visible;
     }
 
     public async void SetItems(IEnumerable<PhotoItem> items)
@@ -75,6 +88,11 @@ public sealed class MapView : Grid
             _empty.Visibility = Visibility.Visible;
             return;
         }
+        if (_offline)
+        {
+            ShowOffline();
+            return;
+        }
         var points = new StringBuilder("[");
         for (int i = 0; i < _items.Count; i++)
         {
@@ -88,6 +106,7 @@ public sealed class MapView : Grid
     static string Page()
     {
         string accent = Theme.Get("Accent").ToString()[3..];   // #AARRGGBB → RRGGBB
+        string separator = IsRussian ? "\u00a0" : ",";
         return $$"""
             <!doctype html>
             <html><head><meta charset="utf-8">
@@ -99,12 +118,16 @@ public sealed class MapView : Grid
               html, body, #map { margin: 0; height: 100%; font-family: "Segoe UI", sans-serif; }
               .pin { width: 26px; height: 26px; border-radius: 50% 50% 50% 0; transform: rotate(-45deg); background: #ff9500;
                      border: 2px solid white; box-shadow: 0 1px 4px rgba(0,0,0,.4); }
+              .video { background: #5856d6; }
               .cluster { width: 34px; height: 34px; border-radius: 50%; background: #{{accent}}; color: white; font-weight: 600;
                          display: flex; align-items: center; justify-content: center; border: 2px solid white;
                          box-shadow: 0 1px 4px rgba(0,0,0,.4); font-size: 13px; }
             </style></head>
             <body><div id="map"></div>
             <script>
+              if (typeof L === 'undefined') window.chrome.webview.postMessage('offline');
+              // Counts with thousands separated, as everywhere in the app.
+              const number = n => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, '{{separator}}');
               const map = L.map('map', { zoomControl: true }).setView([30, 0], 2);
               L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',
                           { maxZoom: 19, attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>' }).addTo(map);
@@ -113,10 +136,12 @@ public sealed class MapView : Grid
                 if (layer) map.removeLayer(layer);
                 // Tens of thousands of photos: the markers go in at once and are clustered in chunks, so the page stays responsive.
                 layer = L.markerClusterGroup({ showCoverageOnHover: false, zoomToBoundsOnClick: false, chunkedLoading: true,
-                  iconCreateFunction: c => L.divIcon({ html: '<div class="cluster">' + c.getChildCount() + '</div>', className: '', iconSize: [34, 34] }) });
+                  iconCreateFunction: c => L.divIcon({ html: '<div class="cluster">' + number(c.getChildCount()) + '</div>', className: '', iconSize: [34, 34] }) });
                 const icon = L.divIcon({ html: '<div class="pin"></div>', className: '', iconSize: [26, 26], iconAnchor: [13, 26] });
+                // Videos in a colour of their own.
+                const videoIcon = L.divIcon({ html: '<div class="pin video"></div>', className: '', iconSize: [26, 26], iconAnchor: [13, 26] });
                 const markers = points.map((p, i) => {
-                  const marker = L.marker([p[0], p[1]], { icon });
+                  const marker = L.marker([p[0], p[1]], { icon: p[2] ? videoIcon : icon });
                   marker.index = i;
                   return marker;
                 });

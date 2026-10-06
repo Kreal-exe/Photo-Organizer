@@ -48,7 +48,8 @@ static BOOL POHasRealDate(POPhotoItem *item) {
     return !item.isUndated;
 }
 
-/// "2019", "2019-05", "2019_05", "05.2019" as a year (and month) in a name; nil when there is none or more than one.
+/// "2019", "2019-05", "2019_05", "2019.05" as a year (and month) in a name — the year first, then the month; nil when
+/// there is none or more than one.
 static NSDateComponents *POYearInName(NSString *name) {
     static NSRegularExpression *expression;
     static dispatch_once_t once;

@@ -89,6 +89,14 @@ static const NSUInteger POMaximumObjects = 3;
     [handle closeFile];
 }
 
+- (void)removeAll {
+    @synchronized (self) {
+        [_vectors removeAllObjects];
+        [_unsaved removeAllObjects];
+    }
+    [NSFileManager.defaultManager removeItemAtURL:POObjectIndex.fileURL error:NULL];
+}
+
 #pragma mark - Prints
 
 /// One unit-length print of `image`, as float32; nil on failure.

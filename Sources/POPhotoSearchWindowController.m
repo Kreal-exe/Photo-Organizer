@@ -3,6 +3,10 @@
 #import "POSimilaritySearch.h"
 #import "POAnalyzer.h"
 #import "POLabels.h"
+#import "POSettings.h"
+#import "POModel.h"
+#import "POFaces.h"
+#import <ImageIO/ImageIO.h>
 
 static const NSUInteger POMaximumWords = 10;
 
@@ -41,6 +45,8 @@ static const NSUInteger POMaximumWords = 10;
     NSTextField *_hintLabel;
     NSTextField *_wordsTitle;
     NSStackView *_wordsStack;
+    NSButton *_personCheckbox;                 // shown when the example has a face and people are on
+    NSData *_face;
     NSButton *_searchButton;
     NSProgressIndicator *_spinner;
     NSTextField *_statusLabel;
@@ -87,6 +93,8 @@ static const NSUInteger POMaximumWords = 10;
     _wordsStack.alignment = NSLayoutAttributeLeading;
     _wordsStack.spacing = 4;
 
+    _personCheckbox = [NSButton checkboxWithTitle:POL(@"Искать этого человека по лицу") target:self action:@selector(personToggled:)];
+    _personCheckbox.hidden = YES;
     _searchButton = [NSButton buttonWithTitle:POL(@"Найти похожие") target:self action:@selector(search:)];
     _searchButton.keyEquivalent = @"\r";
     _spinner = [NSProgressIndicator new];
@@ -99,7 +107,7 @@ static const NSUInteger POMaximumWords = 10;
     _statusLabel.textColor = NSColor.secondaryLabelColor;
     _statusLabel.selectable = NO;
 
-    NSStackView *stack = [NSStackView stackViewWithViews:@[_imageView, _hintLabel, _wordsTitle, _wordsStack, buttonRow, _statusLabel]];
+    NSStackView *stack = [NSStackView stackViewWithViews:@[_imageView, _hintLabel, _wordsTitle, _wordsStack, _personCheckbox, buttonRow, _statusLabel]];
     stack.orientation = NSUserInterfaceLayoutOrientationVertical;
     stack.alignment = NSLayoutAttributeLeading;
     stack.spacing = 10;
@@ -152,6 +160,19 @@ static const NSUInteger POMaximumWords = 10;
         CGImageRef image = [POSimilaritySearch newImageWithContentsOfURL:url];
         NSDictionary<NSString *, NSNumber *> *labels = image ? [POAnalyzer labelsForImage:image] : @{};
         id retained = CFBridgingRelease(image);
+        // With people on, the example's face can be searched for instead: its largest one, found as the analysis does.
+        NSData *face = nil;
+        if (retained && POSettings.groupsFaces && POModel.faceModel.isReady) {
+            POFaceEmbedder *embedder = [POFaceEmbedder embedderWithError:NULL];
+            CGImageSourceRef source = CGImageSourceCreateWithURL((__bridge CFURLRef)url, NULL);
+            NSDictionary *options = @{(id)kCGImageSourceCreateThumbnailFromImageAlways: @YES, (id)kCGImageSourceCreateThumbnailWithTransform: @YES,
+                                      (id)kCGImageSourceThumbnailMaxPixelSize: @1280};
+            CGImageRef large = source ? CGImageSourceCreateThumbnailAtIndex(source, 0, (__bridge CFDictionaryRef)options) : NULL;
+            if (source) CFRelease(source);
+            if (embedder && large) face = [embedder embeddingsForFacesInImage:large peopleCount:NULL].firstObject;
+            if (large) CGImageRelease(large);
+            [embedder invalidate];
+        }
         dispatch_async(dispatch_get_main_queue(), ^{
             if (generation != self->_loadGeneration) return;
             if (!retained) {
@@ -159,6 +180,10 @@ static const NSUInteger POMaximumWords = 10;
                 return;
             }
             self->_image = retained;
+            self->_face = face;
+            self->_personCheckbox.hidden = face == nil;
+            self->_personCheckbox.state = NSControlStateValueOff;
+            for (NSButton *checkbox in self->_wordsStack.arrangedSubviews) checkbox.enabled = YES;
             CGImageRef cgImage = (__bridge CGImageRef)retained;
             self->_imageView.image = [[NSImage alloc] initWithCGImage:cgImage size:NSMakeSize(CGImageGetWidth(cgImage), CGImageGetHeight(cgImage))];
             [self showWords:labels];
@@ -194,14 +219,23 @@ static const NSUInteger POMaximumWords = 10;
     return YES;
 }
 
+- (void)personToggled:(id)sender {
+    // Searching by the face leaves the words out.
+    for (NSButton *checkbox in _wordsStack.arrangedSubviews) checkbox.enabled = _personCheckbox.state != NSControlStateValueOn;
+}
+
 - (void)search:(id)sender {
     if (!_image || !self.onSearch) return;
+    if (_face && _personCheckbox.state == NSControlStateValueOn) {
+        self.onSearch((__bridge CGImageRef)_image, @[], _face);
+        return;
+    }
     NSMutableArray<NSString *> *chosen = [NSMutableArray array];
     NSArray<NSButton *> *checkboxes = (NSArray<NSButton *> *)_wordsStack.arrangedSubviews;
     for (NSUInteger index = 0; index < checkboxes.count && index < _labels.count; index++) {
         if (checkboxes[index].state == NSControlStateValueOn) [chosen addObject:_labels[index]];
     }
-    self.onSearch((__bridge CGImageRef)_image, chosen);
+    self.onSearch((__bridge CGImageRef)_image, chosen, nil);
 }
 
 - (void)setStatus:(NSString *)status busy:(BOOL)busy {

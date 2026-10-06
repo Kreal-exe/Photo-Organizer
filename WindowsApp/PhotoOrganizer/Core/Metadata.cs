@@ -23,21 +23,30 @@ public sealed class Metadata
 /// </summary>
 public static partial class MetadataReader
 {
-    public static readonly HashSet<string> ImageExtensions = new(StringComparer.OrdinalIgnoreCase)
+    // The files the library holds — the same list as the macOS version's (POMediaTypes): RAW formats of every camera
+    // maker, and the other pictures and videos either system opens. ".ts" is left out: it is far more often TypeScript.
+    public static readonly HashSet<string> RawExtensions = new(StringComparer.OrdinalIgnoreCase)
     {
-        "jpg", "jpeg", "jpe", "jfif", "png", "gif", "bmp", "tif", "tiff", "webp", "heic", "heif", "avif",
-        "dng", "cr2", "cr3", "crw", "nef", "nrw", "arw", "srf", "sr2", "orf", "rw2", "raf", "srw", "pef", "raw", "x3f",
+        "dng", "cr2", "cr3", "crw", "nef", "nrw", "arw", "srf", "sr2", "raf", "orf", "rw2", "pef", "srw", "x3f", "3fr", "erf", "kdc",
+        "rwl", "iiq", "mrw", "dcr", "mos", "mef", "raw",
     };
+
+    public static readonly HashSet<string> ImageExtensions = new(new[]
+    {
+        "jpg", "jpeg", "jpe", "jfif", "png", "gif", "bmp", "tif", "tiff", "webp", "heic", "heif", "avif", "psd", "ico", "jp2", "jxl",
+    }.Concat(RawExtensions), StringComparer.OrdinalIgnoreCase);
 
     public static readonly HashSet<string> VideoExtensions = new(StringComparer.OrdinalIgnoreCase)
     {
-        "mp4", "m4v", "mov", "qt", "avi", "mkv", "3gp", "3g2", "mts", "m2ts", "ts", "wmv", "webm", "mpg", "mpeg", "flv",
+        "mp4", "m4v", "mov", "qt", "avi", "mkv", "3gp", "3g2", "mts", "m2ts", "wmv", "webm", "mpg", "mpeg", "flv",
     };
 
     static readonly HashSet<string> TiffBased = new(StringComparer.OrdinalIgnoreCase)
     {
-        "tif", "tiff", "dng", "cr2", "nef", "nrw", "arw", "srf", "sr2", "orf", "rw2", "srw", "pef",
+        "tif", "tiff", "dng", "cr2", "nef", "nrw", "arw", "srf", "sr2", "orf", "rw2", "srw", "pef", "3fr", "erf", "kdc", "dcr", "mos", "mef", "iiq",
     };
+
+    static readonly HashSet<string> QuickTimeBased = new(StringComparer.OrdinalIgnoreCase) { "mov", "qt", "mp4", "m4v", "3gp", "3g2" };
 
     static readonly DateTime Year1990 = new(1990, 1, 1);
 
@@ -93,6 +102,10 @@ public static partial class MetadataReader
             else if (!video && extension.Equals("png", StringComparison.OrdinalIgnoreCase))
             {
                 ReadPngSize(path, meta);
+            }
+            else if (video && QuickTimeBased.Contains(extension))
+            {
+                ReadQuickTime(path, meta);
             }
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException or EndOfStreamException)
@@ -179,11 +192,7 @@ public static partial class MetadataReader
         if (main == null) return false;
         DateTime? date = main.TryGetValue(306, out var dateTime) ? DateFromExifString(tiff.String(dateTime)) : null;
         if (main.TryGetValue(274, out var orientation)) meta.Orientation = (int)tiff.Number(orientation);
-        if (meta.Width == 0 && main.TryGetValue(256, out var width) && main.TryGetValue(257, out var height))
-        {
-            meta.Width = (int)tiff.Number(width);
-            meta.Height = (int)tiff.Number(height);
-        }
+        if (meta.Width == 0) (meta.Width, meta.Height) = FullSize(tiff, main, tiff.UInt32(4));
         if (main.TryGetValue(0x8769, out var exifPointer) && tiff.Directory((uint)tiff.Number(exifPointer)) is { } exif)
         {
             foreach (int tag in new[] { 36867, 36868 })
@@ -217,11 +226,45 @@ public static partial class MetadataReader
         return true;
     }
 
+    /// <summary>
+    /// The pixel size of the full picture of a TIFF or RAW file: the largest full-resolution image among the main
+    /// directories and their sub-directories. A NEF's or CR2's first directory describes a small preview.
+    /// </summary>
+    static (int Width, int Height) FullSize(TiffReader tiff, Dictionary<int, TiffEntry> main, uint mainOffset)
+    {
+        var directories = new List<Dictionary<int, TiffEntry>> { main };
+        var seen = new HashSet<uint> { mainOffset };
+        for (uint next = tiff.NextDirectory(mainOffset); next != 0 && seen.Add(next) && directories.Count < 8; next = tiff.NextDirectory(next))
+        {
+            if (tiff.Directory(next) is not { } directory) break;
+            directories.Add(directory);
+        }
+        foreach (var directory in directories.ToList())
+        {
+            if (!directory.TryGetValue(330, out var sub)) continue;
+            for (int i = 0; i < Math.Min(sub.Count, 8); i++)
+            {
+                uint offset = sub.Count == 1 ? (uint)tiff.Number(sub) : tiff.UInt32(sub.ValueOffset + 4 * i);
+                if (seen.Add(offset) && tiff.Directory(offset) is { } found) directories.Add(found);
+            }
+        }
+        int width = 0, height = 0;
+        foreach (var directory in directories)
+        {
+            // A reduced-resolution image (a preview, a thumbnail) is not the picture.
+            if (directory.TryGetValue(254, out var kind) && ((int)tiff.Number(kind) & 1) != 0 && directory != main) continue;
+            if (!directory.TryGetValue(256, out var w) || !directory.TryGetValue(257, out var h)) continue;
+            int candidateWidth = (int)tiff.Number(w), candidateHeight = (int)tiff.Number(h);
+            if ((long)candidateWidth * candidateHeight > (long)width * height) (width, height) = (candidateWidth, candidateHeight);
+        }
+        return (width, height);
+    }
+
     readonly record struct TiffEntry(int Type, uint Count, int ValueOffset);
 
     sealed class TiffReader(byte[] data, bool little)
     {
-        static readonly Dictionary<int, int> TypeSizes = new() { [1] = 1, [2] = 1, [3] = 2, [4] = 4, [5] = 8, [7] = 1, [9] = 4, [10] = 8 };
+        static readonly Dictionary<int, int> TypeSizes = new() { [1] = 1, [2] = 1, [3] = 2, [4] = 4, [5] = 8, [7] = 1, [9] = 4, [10] = 8, [13] = 4 };
 
         public uint UInt32(int at) => at + 4 > data.Length ? 0
             : little ? BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(at)) : BinaryPrimitives.ReadUInt32BigEndian(data.AsSpan(at));
@@ -248,10 +291,18 @@ public static partial class MetadataReader
             return entries;
         }
 
+        /// <summary>Where the directory after the one at `offset` starts; 0 when it is the last.</summary>
+        public uint NextDirectory(uint offset)
+        {
+            if (offset == 0 || offset + 2 > data.Length) return 0;
+            uint next = UInt32((int)offset + 2 + 12 * UInt16((int)offset));
+            return next < data.Length ? next : 0;
+        }
+
         public double Number(TiffEntry entry) => entry.Type switch
         {
             3 => UInt16(entry.ValueOffset),
-            4 or 9 => UInt32(entry.ValueOffset),
+            4 or 9 or 13 => UInt32(entry.ValueOffset),
             5 => Rational(entry.ValueOffset),
             _ => 0,
         };
@@ -292,6 +343,119 @@ public static partial class MetadataReader
         double longitude = double.Parse(m.Groups[2].Value, CultureInfo.InvariantCulture);
         if (Math.Abs(latitude) > 90 || Math.Abs(longitude) > 180 || (latitude == 0 && longitude == 0)) return null;
         return (latitude, longitude);
+    }
+
+    /// <summary>
+    /// The date and place a phone wrote into a QuickTime or MP4 file: "com.apple.quicktime.creationdate" — the
+    /// wall-clock time of the shot, where the container's own creation time is UTC and often the time of an export —
+    /// and "com.apple.quicktime.location.ISO6709" or Android's "©xyz". The rest comes from the Property System.
+    /// </summary>
+    static void ReadQuickTime(string path, Metadata meta)
+    {
+        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 65536);
+        // The movie box: at the start, or after the media data in a file written straight from a camera.
+        byte[]? movie = null;
+        var head = new byte[16];
+        for (long at = 0; at + 8 <= stream.Length;)
+        {
+            stream.Position = at;
+            stream.ReadExactly(head, 0, 8);
+            long size = BinaryPrimitives.ReadUInt32BigEndian(head);
+            int header = 8;
+            if (size == 1)
+            {
+                stream.ReadExactly(head, 8, 8);
+                size = (long)BinaryPrimitives.ReadUInt64BigEndian(head.AsSpan(8));
+                header = 16;
+            }
+            else if (size == 0)
+            {
+                size = stream.Length - at;
+            }
+            if (size < header || at + size > stream.Length) break;
+            if (head[4] == 'm' && head[5] == 'o' && head[6] == 'o' && head[7] == 'v')
+            {
+                if (size > 64 << 20) return;
+                movie = new byte[size - header];
+                stream.ReadExactly(movie);
+                break;
+            }
+            at += size;
+        }
+        if (movie == null) return;
+        string? date = null, location = null;
+        foreach (var (type, start, end) in Boxes(movie, 0, movie.Length))
+        {
+            if (type == "meta") ReadKeyedMetadata(movie, start, end, ref date, ref location);
+            if (type != "udta") continue;
+            foreach (var (inner, innerStart, innerEnd) in Boxes(movie, start, end))
+            {
+                // Android: a 16-bit length and a language code, then "+51.2213+006.7877/".
+                if (inner == "©xyz" && innerEnd - innerStart > 4)
+                    location ??= Encoding.UTF8.GetString(movie, innerStart + 4, Math.Min(BinaryPrimitives.ReadUInt16BigEndian(movie.AsSpan(innerStart)), innerEnd - innerStart - 4));
+                if (inner == "meta") ReadKeyedMetadata(movie, innerStart, innerEnd, ref date, ref location);
+            }
+        }
+        if (DateFromExifString(date) is { } taken && taken > Year1990) meta.Date = taken;
+        if (ParseIso6709(location) is { } place) (meta.Latitude, meta.Longitude) = place;
+    }
+
+    /// <summary>The boxes inside data[start..end): their type and where their contents start and end.</summary>
+    static IEnumerable<(string Type, int Start, int End)> Boxes(byte[] data, int start, int end)
+    {
+        for (int at = start; at + 8 <= end;)
+        {
+            long size = BinaryPrimitives.ReadUInt32BigEndian(data.AsSpan(at));
+            int header = 8;
+            if (size == 1 && at + 16 <= end)
+            {
+                size = (long)BinaryPrimitives.ReadUInt64BigEndian(data.AsSpan(at + 8));
+                header = 16;
+            }
+            else if (size == 0)
+            {
+                size = end - at;
+            }
+            if (size < header || at + size > end) yield break;
+            yield return (Encoding.Latin1.GetString(data, at + 4, 4), at + header, at + (int)size);
+            at += (int)size;
+        }
+    }
+
+    /// <summary>A "meta" box with "keys" and "ilst": the values of the creation date and the location keys.</summary>
+    static void ReadKeyedMetadata(byte[] data, int start, int end, ref string? date, ref string? location)
+    {
+        // QuickTime's meta box holds its boxes straight away; MP4's starts with a version and flags.
+        if (end - start >= 8 && Encoding.Latin1.GetString(data, start + 4, 4) != "hdlr") start += 4;
+        var keys = new List<string>();
+        foreach (var (type, boxStart, boxEnd) in Boxes(data, start, end))
+        {
+            if (type == "keys" && boxEnd - boxStart >= 8)
+            {
+                int count = (int)Math.Min(BinaryPrimitives.ReadUInt32BigEndian(data.AsSpan(boxStart + 4)), 1000);
+                for (int i = 0, at = boxStart + 8; i < count && at + 8 <= boxEnd; i++)
+                {
+                    int size = (int)BinaryPrimitives.ReadUInt32BigEndian(data.AsSpan(at));
+                    if (size < 8 || at + size > boxEnd) break;
+                    keys.Add(Encoding.UTF8.GetString(data, at + 8, size - 8));
+                    at += size;
+                }
+            }
+            if (type != "ilst") continue;
+            foreach (var (_, itemStart, itemEnd) in Boxes(data, boxStart, boxEnd))
+            {
+                // Each item's type is the number of its key, from 1.
+                int index = (int)BinaryPrimitives.ReadUInt32BigEndian(data.AsSpan(itemStart - 4)) - 1;
+                if (index < 0 || index >= keys.Count) continue;
+                foreach (var (valueType, valueStart, valueEnd) in Boxes(data, itemStart, itemEnd))
+                {
+                    if (valueType != "data" || valueEnd - valueStart < 8) continue;
+                    string value = Encoding.UTF8.GetString(data, valueStart + 8, valueEnd - valueStart - 8);
+                    if (keys[index] == "com.apple.quicktime.creationdate") date ??= value;
+                    if (keys[index] == "com.apple.quicktime.location.ISO6709") location ??= value;
+                }
+            }
+        }
     }
 
     static readonly TimeSpan EpochGap = TimeSpan.FromSeconds(2082844800);   // between QuickTime's 1904 and Unix's 1970
