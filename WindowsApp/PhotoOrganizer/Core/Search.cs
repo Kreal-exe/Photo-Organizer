@@ -13,6 +13,17 @@ public static class Search
 
     public static int CountIndexed(IEnumerable<PhotoItem> items) => items.Count(i => !i.Video && Vectors(i) != null);
 
+    /// <summary>The stored vector of the whole picture, unit length; null when the file has none.</summary>
+    public static float[]? PictureVector(PhotoItem item)
+    {
+        if (Vectors(item) is not { } vectors) return null;
+        var vector = Recognizer.Unpack(vectors, 0);
+        float norm = TensorPrimitives.Norm(vector);
+        if (norm <= 0) return null;
+        TensorPrimitives.Divide(vector, norm, vector);
+        return vector;
+    }
+
     /// <summary>
     /// Search by object: photos ordered by how close their nearest vector — of the whole picture or one of its parts — is
     /// to the marked object's, closest first.

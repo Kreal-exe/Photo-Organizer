@@ -27,6 +27,22 @@ typedef NS_ENUM(NSInteger, PODayStyle) {
     PODayStyleDayMonth,     // 15 марта
 };
 
+/// What the library is organized by: the date (2024/…), or a first level of folders by type, person or format.
+typedef NS_ENUM(NSInteger, POArrangement) {
+    POArrangementDate,
+    POArrangementType,     // Скриншоты/, Видео/, WhatsApp/, Фото/… (see POMediaTypes)
+    POArrangementPerson,   // a folder per named person; the rest by date
+    POArrangementFormat,   // JPEG/, HEIC/, MOV/…
+};
+
+/// How "Разложить…" of a section (screenshots, a person…) arranges its files inside the section's folder.
+typedef NS_ENUM(NSInteger, POFolderLayout) {
+    POFolderLayoutFlat,          // all files together
+    POFolderLayoutYear,          // Скриншоты/2024/
+    POFolderLayoutYearMonth,     // Скриншоты/2024/2024-03/
+    POFolderLayoutYearMonthDay,  // Скриншоты/2024/2024-03/2024-03-15/
+};
+
 typedef NS_ENUM(NSInteger, POGroupKind) {
     POGroupKindDate,
     POGroupKindTiny,
@@ -52,6 +68,7 @@ typedef NS_ENUM(NSInteger, POGroupKind) {
 
 @property (class, nonatomic, readonly) NSString *defaultDuplicatesFolderName;
 @property (class, nonatomic, readonly) NSString *defaultTinyFolderName;
+@property (class, nonatomic, readonly) NSString *defaultScreenshotsFolderName;
 @property (class, nonatomic, readonly) NSString *undatedFolderName;
 /// The duplicates folder name currently stored in the user defaults (needed before a plan exists).
 @property (class, nonatomic, readonly) NSString *savedDuplicatesFolderName;
@@ -60,7 +77,13 @@ typedef NS_ENUM(NSInteger, POGroupKind) {
 /// Returns nil when nothing usable is left.
 + (nullable NSString *)sanitizedFolderPath:(NSString *)path;
 
+/// The folder everything is organized into: the library's first folder, or another one (-setDestinationURL:).
 @property (nonatomic, readonly) NSURL *rootURL;
+/// The library's folders (several when more than one was opened); by default just rootURL.
+@property (nonatomic, copy) NSArray<NSURL *> *sourceURLs;
+/// Organizes into another folder than the first one of the library: files from all the library's folders are moved
+/// there. Call -rebuild afterwards.
+- (void)setDestinationURL:(NSURL *)url;
 @property (nonatomic, readonly, copy) NSArray<POPhotoItem *> *items;
 @property (nonatomic, readonly, copy) NSArray<POPhotoItem *> *duplicateItems;
 /// Thumbnails: small copies of other photos (see POPhotoItem.tiny).
@@ -76,10 +99,45 @@ typedef NS_ENUM(NSInteger, POGroupKind) {
 @property (nonatomic) BOOL nested;
 /// When off, duplicates / thumbnails are sorted by date like any other file.
 @property (nonatomic) BOOL separateDuplicates;
+/// Copies — exact ones, lesser versions and thumbnails — are left where they are: only one file of each picture, the
+/// original or the best version, is organized.
+@property (nonatomic) BOOL skipDuplicates;
 @property (nonatomic) BOOL separateTiny;
+/// Copies the files into the folders instead of moving them; the originals stay where they are.
+@property (nonatomic) BOOL copiesFiles;
 /// Setting an unusable name restores the default one.
 @property (nonatomic, copy) NSString *duplicatesFolderName;
 @property (nonatomic, copy) NSString *tinyFolderName;
+@property (nonatomic) POArrangement arrangement;
+/// By type, person or format: date folders inside each of those folders (by the options above), or not.
+@property (nonatomic) BOOL datesInside;
+/// Which files are organized: photos, videos, pictures (postcards, memes, drawings… see POIsPicture) and collages
+/// (what Google Photos made, see POIsGooglePhotosCreation). The kinds turned off stay where they are — e.g. only the
+/// real photos go into the year folders, with or without the videos, or only the videos.
+@property (nonatomic) BOOL organizesPhotos;
+/// The same, as remembered, by POMediaKind (photos, videos, pictures, collages): the strip above the library ticks
+/// and unticks these, so organizing takes what the library shows.
++ (BOOL)organizesKind:(NSInteger)kind;
++ (void)setOrganizes:(BOOL)organizes kind:(NSInteger)kind;
+@property (nonatomic) BOOL organizesVideos;
+@property (nonatomic) BOOL organizesPictures;
+@property (nonatomic) BOOL organizesCollages;
+/// Screenshots to a folder of their own, whatever the rest is organized by: one folder at the top with the date
+/// folders inside (Скриншоты/2024/…), or, with screenshotsInEachDate, one inside every date folder (2024/Скриншоты/…).
+@property (nonatomic) BOOL separateScreenshots;
+@property (nonatomic) BOOL screenshotsInEachDate;
+@property (nonatomic, copy) NSString *screenshotsFolderName;
+/// For organizing by person: the files in which exactly one named person was recognised, and that person's name.
+/// Set by the window from the people found; files not in it are organized by date.
+@property (nonatomic, strong, nullable) NSMapTable<POPhotoItem *, NSString *> *personNames;
+
+/// Top-level folders the user filled by hand ("Скриншоты", a person's name…, see "Разложить…" and "Переместить в
+/// папку…"): their files stay where they are when the library is organized by date. Remembered per library.
+@property (nonatomic, readonly) NSSet<NSString *> *keptFolders;
+- (void)keepFolder:(NSString *)folder;
+/// The folder a file goes to inside a section's folder: the folder itself, or its date folders below it (named as
+/// the options above say; undated files go to the "Без даты" folder inside).
+- (NSString *)folderForItem:(POPhotoItem *)item inFolder:(NSString *)folder layout:(POFolderLayout)layout;
 
 /// Renames one destination folder; nil or an empty name restores the generated one.
 - (void)setCustomName:(nullable NSString *)name forGroup:(POGroup *)group;

@@ -7,13 +7,13 @@ DirectX 12 card), or on the processor without one.
 ## Building
 
 ```powershell
-.\build.ps1          # build\PhotoOrganizer-Windows\PhotoOrganizer.exe
-.\build.ps1 run      # build and start
-.\build.ps1 clean    # remove the Windows build output
+.\build.ps1          # → %LOCALAPPDATA%\Programs\PhotoOrganizer\PhotoOrganizer.exe (a running copy is restarted)
+.\build.ps1 -Zip     # also write dist\PhotoOrganizer-Windows-v<version>.zip
 ```
 
-`build.ps1` is in the repository root. It needs the .NET 10 SDK and installs it for the current user when it is missing
-(no administrator rights). The result is one self-contained `PhotoOrganizer.exe`: nothing to install on the user's PC.
+`build.ps1` is in the repository root and needs the .NET 10 SDK; `$env:INSTALL_DIR` installs somewhere else. It
+builds in a temporary folder, so no `bin\` or `obj\` is left in the project. The result is one self-contained
+`PhotoOrganizer.exe`: nothing to install on the user's PC.
 Releases are not built by hand: every push to `main` makes GitHub Actions build the macOS and the Windows app and
 publish both in a new release (see the root README).
 

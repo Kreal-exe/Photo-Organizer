@@ -30,7 +30,7 @@ public static class Onnx
         string directory = Path.Combine(AppData.Directory, "models");
         Directory.CreateDirectory(directory);
         var weights = new FileInfo(Path.Combine(folder, "model.safetensors"));
-        string path = Path.Combine(directory, $"{name}-{weights.Length}-{weights.LastWriteTimeUtc.Ticks}.onnx");
+        string path = Path.Combine(directory, $"{name}-v{VitOnnx.BuildVersion}-{weights.Length}-{weights.LastWriteTimeUtc.Ticks}.onnx");
         if (!File.Exists(path))
         {
             File.WriteAllBytes(path + ".tmp", VitOnnx.Build(folder));

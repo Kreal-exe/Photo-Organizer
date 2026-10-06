@@ -6,7 +6,7 @@
 
 @implementation AppDelegate {
     MainWindowController *_windowController;
-    NSURL *_pendingURL;   // folder passed at launch, before the window exists
+    NSArray<NSURL *> *_pendingURLs;   // folders passed at launch, before the window exists
 }
 
 - (void)applicationWillFinishLaunching:(NSNotification *)notification {
@@ -16,28 +16,33 @@
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
     _windowController = [MainWindowController new];
     [_windowController showWindow:nil];
-    if (_pendingURL) {
-        [_windowController loadFolder:_pendingURL];
-        _pendingURL = nil;
+    if (_pendingURLs.count) {
+        [_windowController loadFolders:_pendingURLs];
+        _pendingURLs = nil;
         return;
     }
-    // The app quit while a folder was still being scanned or recognised: it goes on from where it stopped.
-    NSString *unfinished = [NSUserDefaults.standardUserDefaults stringForKey:POUnfinishedFolderKey];
-    BOOL isDirectory = NO;
-    if (unfinished && [NSFileManager.defaultManager fileExistsAtPath:unfinished isDirectory:&isDirectory] && isDirectory) {
-        [_windowController loadFolder:[NSURL fileURLWithPath:unfinished isDirectory:YES]];
+    // The app quit while folders were still being scanned or recognised: it goes on from where it stopped.
+    id saved = [NSUserDefaults.standardUserDefaults objectForKey:POUnfinishedFolderKey];
+    NSArray *paths = [saved isKindOfClass:NSArray.class] ? saved : [saved isKindOfClass:NSString.class] ? @[saved] : @[];
+    NSMutableArray<NSURL *> *folders = [NSMutableArray array];
+    for (NSString *path in paths) {
+        BOOL isDirectory = NO;
+        if ([path isKindOfClass:NSString.class] && [NSFileManager.defaultManager fileExistsAtPath:path isDirectory:&isDirectory] && isDirectory) {
+            [folders addObject:[NSURL fileURLWithPath:path isDirectory:YES]];
+        }
     }
+    if (folders.count) [_windowController loadFolders:folders];
 }
 
 /// Folder dropped on the Dock icon, opened with "Open With", or passed to `open -a`.
 - (void)application:(NSApplication *)application openURLs:(NSArray<NSURL *> *)urls {
-    NSURL *url = urls.firstObject;
-    if (!url.isFileURL) return;
+    NSArray<NSURL *> *files = [urls filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"isFileURL == YES"]];
+    if (!files.count) return;
     if (_windowController) {
         [_windowController.window makeKeyAndOrderFront:nil];
-        [_windowController loadFolder:url];
+        [_windowController loadFolders:files];
     } else {
-        _pendingURL = url;
+        _pendingURLs = files;
     }
 }
 
@@ -92,6 +97,8 @@ static NSMenu *POSubmenu(NSMenu *mainMenu, NSString *title) {
 
     NSMenu *fileMenu = POSubmenu(mainMenu, POL(@"Файл"));
     POItem(fileMenu, POL(@"Открыть папку…"), @selector(openDocument:), @"o");
+    POItem(fileMenu, POL(@"Добавить папку…"), @selector(addFolder:), @"O");
+    POItem(fileMenu, POL(@"Убрать папку из разбора…"), @selector(removeFolder:), @"");
     POItem(fileMenu, POL(@"Пересканировать"), @selector(rescan:), @"r");
     POItem(fileMenu, POL(@"Показать папку в Finder"), @selector(revealRootInFinder:), @"R");
     [fileMenu addItem:NSMenuItem.separatorItem];

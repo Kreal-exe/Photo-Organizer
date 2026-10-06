@@ -52,25 +52,25 @@ public static class AppData
     [DllImport("kernel32.dll", SetLastError = true)]
     static extern bool GetFileInformationByHandle(SafeFileHandle file, out ByHandleFileInformation information);
 
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    static extern SafeFileHandle CreateFileW(string name, uint access, FileShare share, IntPtr security, FileMode disposition,
+                                             uint flags, IntPtr template);
+
+    const uint ReadAttributes = 0x80;   // FILE_READ_ATTRIBUTES
+
     /// <summary>
     /// Stays the same when the file is moved or renamed on its disk (volume serial and NTFS file id); changes when it is
     /// edited. The same key the Python version wrote, so its data carries over.
     /// </summary>
     public static string? FileKey(string path)
     {
-        try
-        {
-            using var handle = System.IO.File.OpenHandle(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete,
-                                                         FileOptions.None);
-            if (!GetFileInformationByHandle(handle, out var info)) return null;
-            ulong index = ((ulong)info.FileIndexHigh << 32) | info.FileIndexLow;
-            ulong size = ((ulong)info.FileSizeHigh << 32) | info.FileSizeLow;
-            return $"{info.VolumeSerialNumber}-{index}-{size}";
-        }
-        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
-        {
-            return null;
-        }
+        // Opened for its attributes only, not for reading: an antivirus scans every file opened for reading, and on a disk
+        // of photos that made this take tens of milliseconds a file — minutes for a large folder on every analysis.
+        using var handle = CreateFileW(path, ReadAttributes, FileShare.ReadWrite | FileShare.Delete, IntPtr.Zero, FileMode.Open, 0, IntPtr.Zero);
+        if (handle.IsInvalid || !GetFileInformationByHandle(handle, out var info)) return null;
+        ulong index = ((ulong)info.FileIndexHigh << 32) | info.FileIndexLow;
+        ulong size = ((ulong)info.FileSizeHigh << 32) | info.FileSizeLow;
+        return $"{info.VolumeSerialNumber}-{index}-{size}";
     }
 }
 
@@ -106,6 +106,22 @@ public sealed class Settings
     internal static void Reset()
     {
         lock (SharedLock) _shared = null;
+    }
+
+    /// <summary>A stored object (a list, a dictionary…); null when there is none or it can't be read.</summary>
+    public T? GetObject<T>(string key) where T : class
+    {
+        lock (_values)
+        {
+            try
+            {
+                return _values[key]?.Deserialize<T>();
+            }
+            catch (Exception e) when (e is JsonException or InvalidOperationException or NotSupportedException)
+            {
+                return null;
+            }
+        }
     }
 
     public T Get<T>(string key, T fallback)

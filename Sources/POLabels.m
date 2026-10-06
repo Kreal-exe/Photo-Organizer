@@ -126,6 +126,8 @@ BOOL POItemMatchesTokens(POPhotoItem *item, NSArray<NSString *> *tokens) {
             }
             if (found) break;
         }
+        // Then the text written in the picture, then the file's path.
+        if (!found && item.text.length) found = [item.text containsString:token];
         if (!found) {
             if (!path) path = PONormalize(item.relativePath).precomposedStringWithCanonicalMapping;
             found = [path containsString:token];

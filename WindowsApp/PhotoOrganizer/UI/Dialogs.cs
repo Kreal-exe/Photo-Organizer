@@ -25,7 +25,9 @@ public class Dialog : Window
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
         ShowInTaskbar = false;
         Theme.StyleTitleBar(this);
-        Content = Body;
+        // Never taller than the screen: a long dialog (organizing, at 150 % scaling) scrolls instead.
+        MaxHeight = SystemParameters.WorkArea.Height - 20;
+        Content = new ScrollViewer { Content = Body, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
     }
 
     protected void Heading(string text) => Body.Children.Add(new TextBlock { Text = text, Style = (Style)FindResource("Heading"), Margin = new Thickness(0, 0, 0, 4) });
@@ -76,6 +78,113 @@ public sealed class PromptDialog : Dialog
         var dialog = new PromptDialog(owner, title, message, text);
         return dialog.ShowDialog() == true ? dialog._field.Text : null;
     }
+}
+
+/// <summary>
+/// "Разложить…" of a section: the name of the folder, and whether its files lie in it together or in folders by year,
+/// month or day (named as in "Разложить по папкам").
+/// </summary>
+public sealed class ArrangeDialog : Dialog
+{
+    readonly TextBox _name = new() { Height = 32 };
+    readonly ComboBox _layout = new() { Width = 260, HorizontalAlignment = HorizontalAlignment.Left };
+    readonly RadioButton _move = new() { Content = L("Переместить"), GroupName = "arrangeMode", Margin = new Thickness(0, 0, 18, 0) };
+    readonly RadioButton _copy = new() { Content = L("Копировать"), GroupName = "arrangeMode" };
+    readonly TextBlock _destination = new() { TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = VerticalAlignment.Center };
+    readonly CheckBox _skipCopies = new() { Content = L("Не копировать то, что уже есть в папке назначения (сравнивается содержимое файлов)"), Margin = new Thickness(0, 10, 0, 0) };
+    readonly TextBlock _note, _nameLabel;
+    readonly string _defaultName;
+    readonly StackPanel _copyOptions = new();
+    readonly string _root, _rootName;
+    readonly int _count;
+
+    public ArrangeDialog(Window owner, List<PhotoItem> items, string name, string root) : base(owner, L("Разложить по папке"), 520)
+    {
+        _root = root;
+        _rootName = System.IO.Path.GetFileName(root.TrimEnd('\\'));
+        _count = items.Count;
+        Destination = Settings.Shared.GetString("arrangeDestination") is { } saved && System.IO.Directory.Exists(saved) ? saved : root;
+        Heading(L("Разложить по папке"));
+        _note = Note("", "Secondary", 12);
+        var mode = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 10) };
+        mode.Children.Add(_move);
+        mode.Children.Add(_copy);
+        Body.Children.Add(mode);
+
+        // Copies may go anywhere — another disk with an archive by years of its own, which is filled up.
+        var whereLabel = Ui.Text(L("Куда"), "Secondary");
+        whereLabel.Margin = new Thickness(0, 0, 0, 4);
+        _copyOptions.Children.Add(whereLabel);
+        var where = new DockPanel { LastChildFill = true };
+        var choose = Ui.TextButton(L("Выбрать…"), ChooseDestination);
+        choose.Margin = new Thickness(8, 0, 0, 0);
+        DockPanel.SetDock(choose, Dock.Right);
+        where.Children.Add(choose);
+        where.Children.Add(_destination);
+        _copyOptions.Children.Add(where);
+        _skipCopies.IsChecked = Settings.Shared.Get("arrangeSkipCopies", true);
+        _copyOptions.Children.Add(_skipCopies);
+        _copyOptions.Margin = new Thickness(0, 0, 0, 12);
+        Body.Children.Add(_copyOptions);
+
+        _defaultName = name;
+        _nameLabel = Note(L("Название папки"), "Secondary", 4);
+        _name.Text = name;
+        Body.Children.Add(_name);
+        Note(L("Внутри папки"), "Secondary", 4).Margin = new Thickness(0, 12, 0, 4);
+        foreach (string title in new[] { L("Все файлы вместе"), L("По годам"), L("По месяцам"), L("По дням") }) _layout.Items.Add(title);
+        _layout.SelectedIndex = Math.Clamp(Settings.Shared.Get("arrangeLayout", 0), 0, 3);
+        Body.Children.Add(_layout);
+        AddButton(L("Разложить"), () =>
+        {
+            // Without a name the files go straight into the chosen folder (its year folders) — only when copying elsewhere.
+            if (Plan.SanitizedFolderPath(_name.Text) == null && !(Copies && !SameFolder(Destination, _root))) { _name.Focus(); return; }
+            Settings.Shared.Set("arrangeLayout", _layout.SelectedIndex);
+            Settings.Shared.Set("arrangeCopies", Copies);
+            Settings.Shared.Set("arrangeSkipCopies", SkipCopies);
+            if (Copies) Settings.Shared.Set("arrangeDestination", Destination);
+            DialogResult = true;
+        }, primary: true);
+        AddButton(L("Отмена"), () => DialogResult = false).IsCancel = true;
+        Finish();
+        _move.Checked += (_, _) => Update();
+        _copy.Checked += (_, _) => Update();
+        (Settings.Shared.Get("arrangeCopies", false) ? _copy : _move).IsChecked = true;
+        Update();
+        Loaded += (_, _) => { _name.Focus(); _name.SelectAll(); };
+    }
+
+    static bool SameFolder(string a, string b) => string.Equals(a.TrimEnd('\\'), b.TrimEnd('\\'), StringComparison.OrdinalIgnoreCase);
+
+    void ChooseDestination()
+    {
+        var dialog = new Microsoft.Win32.OpenFolderDialog { Title = L("Куда копировать"), InitialDirectory = Destination };
+        if (dialog.ShowDialog(this) != true) return;
+        Destination = dialog.FolderName;
+        Update();
+    }
+
+    void Update()
+    {
+        _copyOptions.Visibility = Copies ? Visibility.Visible : Visibility.Collapsed;
+        // Copies go straight into the chosen folder's own year folders unless a folder is asked for; moves need one.
+        if (Copies && _name.Text == _defaultName) _name.Text = "";
+        else if (!Copies && _name.Text.Trim().Length == 0) _name.Text = _defaultName;
+        _nameLabel.Text = Copies ? L("Подпапка (необязательно — без неё годы будут прямо в выбранной папке)") : L("Название папки");
+        _destination.Text = Destination;
+        _destination.ToolTip = Destination;
+        _note.Text = Copies
+            ? F("%@ будут скопированы, оригиналы останутся на месте. Папки, которые уже есть (в том числе годы — «2015» или «2015 год»), дополняются: ни один файл не заменяется, при совпадении имени копия получит имя «… (2)». Название папки можно оставить пустым — тогда годы прямо в выбранной папке.",
+                Capitalized(FilesDetail(_count)))
+            : F("%@ будут перемещены в папку внутри «%@». Потом общая раскладка по датам эту папку не трогает.", Capitalized(FilesDetail(_count)), _rootName);
+    }
+
+    public string FolderName => _name.Text;
+    public FolderLayout Layout => (FolderLayout)Math.Max(0, _layout.SelectedIndex);
+    public bool Copies => _copy.IsChecked == true;
+    public bool SkipCopies => _skipCopies.IsChecked == true;
+    /// <summary>The folder the section's folder goes into: the library's when moving.</summary>
+    public string Destination { get; private set; }
 }
 
 /// <summary>Gives the selected files a date by hand: a whole date, or only the month or the year when that is all that is known.</summary>
@@ -163,14 +272,18 @@ public sealed class OrganizeDialog : Dialog
 {
     readonly Plan _plan;
     readonly Action _onChange;
-    readonly ComboBox _scheme = new(), _year = new(), _month = new(), _day = new();
-    readonly CheckBox _nested = new(), _duplicates = new(), _tiny = new();
-    readonly TextBox _duplicatesField = new() { Width = 220, Height = 30 }, _tinyField = new() { Width = 220, Height = 30 };
+    readonly TextBlock? _destinationText;
+    readonly ComboBox _arrangement = new(), _screenshotsPlace = new(), _scheme = new(), _year = new(), _month = new(), _day = new();
+    readonly CheckBox _nested = new(), _datesInside = new(), _tiny = new(), _screenshots = new(), _duplicates = new(), _skipDuplicates = new(),
+                      _photos = new(), _videos = new(), _pictures = new(), _collages = new();
+    readonly TextBox _duplicatesField = new() { Width = 220, Height = 30 }, _tinyField = new() { Width = 220, Height = 30 },
+                     _screenshotsField = new() { Width = 220, Height = 30 };
     // Grouped by day, a library makes thousands of folders: only the rows on screen are made.
     readonly PreviewList _preview = new();
     readonly TextBlock _summary = new() { TextWrapping = TextWrapping.Wrap, FontSize = 12 };
     readonly Button _reset;
     readonly Button _confirm;
+    readonly SegmentedControl _mode = new([L("Переместить"), L("Копировать")]);
     bool _updating;
 
     public OrganizeDialog(Window owner, Plan plan, Action onChange) : base(owner, L("Разложить по папкам"), 660)
@@ -178,29 +291,83 @@ public sealed class OrganizeDialog : Dialog
         _plan = plan;
         _onChange = onChange;
         Heading(L("Разложить по папкам"));
-        Note(F("Папки будут созданы внутри «%@». Выберите, как группировать файлы и как назвать папки.", Path.GetFileName(plan.Root.TrimEnd('\\'))), "Secondary", 16);
+        Note(plan.Sources.Count > 1
+                ? F("Файлы из %@ будут сложены в одну папку. Выберите, куда, как группировать файлы и как назвать папки.", Count(plan.Sources.Count, L("папки"), L("папок"), L("папок")))
+                : L("Выберите, куда сложить файлы, как их группировать и как назвать папки."), "Secondary", 12);
+        // Where everything goes: the library's first folder, or another one.
+        var destination = new DockPanel { Margin = new Thickness(0, 0, 0, 14) };
+        var change = Ui.TextButton(L("Изменить…"), () =>
+        {
+            var dialog = new Microsoft.Win32.OpenFolderDialog { Title = L("Куда сложить файлы"), InitialDirectory = _plan.Root };
+            if (dialog.ShowDialog(this) != true) return;
+            _plan.SetDestination(dialog.FolderName);
+            _destinationText!.Text = _plan.Root;
+            PlanChanged();
+        });
+        change.Margin = new Thickness(10, 0, 0, 0);
+        // Move or copy: right of the folder and its button.
+        _mode.Margin = new Thickness(14, 0, 0, 0);
+        _mode.ToolTip = L("Переместить — оригиналы переезжают в новые папки. Копировать — оригиналы остаются на месте, в папках появляются их копии.");
+        _mode.Changed += index =>
+        {
+            _plan.CopiesFiles = index == 1;
+            PlanChanged();
+        };
+        DockPanel.SetDock(_mode, Dock.Right);
+        destination.Children.Add(_mode);
+        DockPanel.SetDock(change, Dock.Right);
+        destination.Children.Add(change);
+        var destinationLabel = new TextBlock { Text = L("Куда сложить:"), VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 10, 0) };
+        DockPanel.SetDock(destinationLabel, Dock.Left);
+        destination.Children.Add(destinationLabel);
+        _destinationText = new TextBlock { Text = plan.Root, VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis, FontWeight = FontWeights.SemiBold, ToolTip = plan.Root };
+        destination.Children.Add(_destinationText);
+        Body.Children.Add(destination);
 
+        Fill(_arrangement, L("По датам"), L("По типам"), L("По людям"), L("По форматам"));
+        _arrangement.ToolTip = L("По типам: скриншоты, записи экрана, WhatsApp, Telegram, видео, анимации, панорамы, RAW, фото. По людям: фото, где узнан ровно один названный человек, — в папку с его именем, остальное по датам. По форматам: JPEG, HEIC, PNG, MOV…");
         Fill(_scheme, L("По годам"), L("По месяцам"), L("По дням"));
+        Fill(_screenshotsPlace, L("Одна папка, даты внутри"), L("Внутри папки каждой даты"));
         Fill(_year, "2024", L("2024 год"));
         Fill(_month, "2024-03", L("2024-03 Март"), L("03 Март"), L("Март 2024"));
         Fill(_day, "2024-03-15", "15", L("15 марта"));
-        _nested.Content = L("Вкладывать папки друг в друга (год → месяц → день)");
+        // Copies: with everything else, in a folder of their own, or not at all ("без").
         _duplicates.Content = L("Дубликаты — в папку:");
+        _skipDuplicates.Content = L("Не переносить дубликаты");
+        _skipDuplicates.ToolTip = L("Точные копии, уменьшенные и пережатые версии и миниатюры остаются где были: раскладывается только один файл каждого снимка — оригинал или лучшая версия.");
+        // Each kind when ticked — unticked, it stays where it is.
+        _photos.Content = L("Фото");
+        _videos.Content = L("Видео");
+        _pictures.Content = L("Картинки");
+        _pictures.ToolTip = L("Открытки, мемы, рисунки, документы — то, что не фотография. Без галочки остаются на месте.");
+        _collages.Content = L("Коллажи");
+        _collages.ToolTip = L("Коллажи, рамки, анимации, фильмы и правки, которые сделал Google Фото. Без галочки остаются на месте.");
+        _nested.Content = L("Вкладывать папки друг в друга (год → месяц → день)");
+        _datesInside.Content = L("Внутри — по датам");
         _tiny.Content = L("Миниатюры — в папку:");
-        foreach (var box in new[] { _nested, _duplicates, _tiny }) box.Click += (_, _) => OptionChanged();
-        foreach (var field in new[] { _duplicatesField, _tinyField })
+        _screenshots.Content = L("Скриншоты — в папку:");
+        foreach (var box in new[] { _nested, _datesInside, _tiny, _screenshots, _duplicates, _skipDuplicates, _photos, _videos, _pictures, _collages }) box.Click += (_, _) => OptionChanged();
+        foreach (var field in new[] { _duplicatesField, _tinyField, _screenshotsField })
         {
             field.LostFocus += (_, _) => OptionChanged();
             field.KeyDown += (_, e) => { if (e.Key == Key.Enter) { OptionChanged(); e.Handled = true; } };
         }
 
+        var kinds = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+        foreach (var box in new[] { _photos, _videos, _pictures, _collages })
+        {
+            box.Margin = new Thickness(0, 0, 16, 0);
+            kinds.Children.Add(box);
+        }
         var form = new Grid { Margin = new Thickness(0, 0, 0, 14) };
         form.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Auto) });
         form.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         var rows = new (FrameworkElement Label, FrameworkElement Control)[]
         {
+            (Label(L("Что раскладывать:")), kinds),
+            (Label(L("Раскладывать:")), _arrangement), (new Border(), _datesInside),
             (Label(L("Группировать:")), _scheme), (Label(L("Название года:")), _year), (Label(L("Название месяца:")), _month),
-            (Label(L("Название дня:")), _day), (new Border(), _nested), (_duplicates, _duplicatesField), (_tiny, _tinyField),
+            (Label(L("Название дня:")), _day), (new Border(), _nested), (_screenshots, _screenshotsField), (new Border(), _screenshotsPlace), (_duplicates, _duplicatesField), (new Border(), _skipDuplicates), (_tiny, _tinyField),
         };
         for (int i = 0; i < rows.Length; i++)
         {
@@ -270,6 +437,14 @@ public sealed class OrganizeDialog : Dialog
     void Refresh()
     {
         _updating = true;
+        _arrangement.SelectedIndex = (int)_plan.Arrangement;
+        _datesInside.IsChecked = _plan.DatesInside;
+        _datesInside.IsEnabled = _plan.Arrangement != Arrangement.Date;
+        _screenshots.IsChecked = _plan.SeparateScreenshots;
+        _screenshotsField.Text = _plan.ScreenshotsFolderName;
+        _screenshotsField.IsEnabled = _plan.SeparateScreenshots;
+        _screenshotsPlace.SelectedIndex = _plan.ScreenshotsInEachDate ? 1 : 0;
+        _screenshotsPlace.IsEnabled = _plan.SeparateScreenshots;
         _scheme.SelectedIndex = (int)_plan.Scheme;
         _year.SelectedIndex = (int)_plan.YearStyle;
         _month.SelectedIndex = (int)_plan.MonthStyle;
@@ -279,18 +454,31 @@ public sealed class OrganizeDialog : Dialog
         _nested.IsChecked = _plan.Nested;
         _nested.IsEnabled = _plan.Scheme != Scheme.Year;
         _duplicates.IsChecked = _plan.SeparateDuplicates;
+        _skipDuplicates.IsChecked = _plan.SkipDuplicates;
         _duplicatesField.Text = _plan.DuplicatesFolderName;
-        _duplicatesField.IsEnabled = _plan.SeparateDuplicates;
+        // Copies left where they are need no folder of their own.
+        _duplicates.IsEnabled = !_plan.SkipDuplicates;
+        _duplicatesField.IsEnabled = _plan.SeparateDuplicates && !_plan.SkipDuplicates;
+        _photos.IsChecked = _plan.OrganizesPhotos;
+        _videos.IsChecked = _plan.OrganizesVideos;
+        _pictures.IsChecked = _plan.OrganizesPictures;
+        _collages.IsChecked = _plan.OrganizesCollages;
         _tiny.IsChecked = _plan.SeparateTiny;
         _tinyField.Text = _plan.TinyFolderName;
         _tinyField.IsEnabled = _plan.SeparateTiny;
         _reset.Visibility = _plan.HasCustomNames ? Visibility.Visible : Visibility.Collapsed;
         _preview.ItemsSource = _plan.Groups.Select((group, index) => new PreviewItem(group, index)).ToList();
         int pending = _plan.PendingItems.Count;
+        bool copies = _plan.CopiesFiles;
+        _mode.Selected = copies ? 1 : 0;
         string what = pending > 0
-            ? F("Будет перемещено %@ из %@ в %@.", Number(pending), Number(_plan.Items.Count), Count(_plan.Groups.Count, L("папку"), L("папки"), L("папок")))
+            ? F(copies ? "Будет скопировано %@ из %@ в %@." : "Будет перемещено %@ из %@ в %@.",
+                Number(pending), Number(_plan.Items.Count), Count(_plan.Groups.Count, L("папку"), L("папки"), L("папок")))
             : L("Все файлы уже лежат на своих местах.");
-        _summary.Text = what + L(" Оригиналы перемещаются, а не копируются; ничего не удаляется и не перезаписывается. Отменить — ⌘Z.").Replace("⌘Z", "Ctrl+Z");
+        _summary.Text = what + (copies
+            ? L(" Оригиналы остаются на месте; копии ничего не перезаписывают, уже скопированные файлы пропускаются. Отменить — ⌘Z.")
+            : L(" Оригиналы перемещаются, а не копируются; ничего не удаляется и не перезаписывается. Отменить — ⌘Z.")).Replace("⌘Z", "Ctrl+Z");
+        _confirm.Content = copies ? L("Скопировать") : L("Разложить");
         _confirm.IsEnabled = pending > 0;
         _updating = false;
     }
@@ -369,12 +557,22 @@ public sealed class OrganizeDialog : Dialog
     void OptionChanged()
     {
         if (_updating) return;
+        _plan.Arrangement = (Arrangement)Math.Max(0, _arrangement.SelectedIndex);
+        _plan.DatesInside = _datesInside.IsChecked == true;
+        _plan.SeparateScreenshots = _screenshots.IsChecked == true;
+        _plan.ScreenshotsInEachDate = _screenshotsPlace.SelectedIndex == 1;
+        _plan.ScreenshotsFolderName = _screenshotsField.Text;
         _plan.Scheme = (Scheme)Math.Max(0, _scheme.SelectedIndex);
         _plan.YearStyle = (YearStyle)Math.Max(0, _year.SelectedIndex);
         _plan.MonthStyle = (MonthStyle)Math.Max(0, _month.SelectedIndex);
         _plan.DayStyle = (DayStyle)Math.Max(0, _day.SelectedIndex);
         _plan.Nested = _nested.IsChecked == true;
         _plan.SeparateDuplicates = _duplicates.IsChecked == true;
+        _plan.SkipDuplicates = _skipDuplicates.IsChecked == true;
+        _plan.OrganizesPhotos = _photos.IsChecked == true;
+        _plan.OrganizesVideos = _videos.IsChecked == true;
+        _plan.OrganizesPictures = _pictures.IsChecked == true;
+        _plan.OrganizesCollages = _collages.IsChecked == true;
         _plan.SeparateTiny = _tiny.IsChecked == true;
         _plan.DuplicatesFolderName = _duplicatesField.Text;
         _plan.TinyFolderName = _tinyField.Text;

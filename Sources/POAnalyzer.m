@@ -6,6 +6,7 @@
 #import "POFaces.h"
 #import "POSimilarCopies.h"
 #import "POObjectIndex.h"
+#import "POPictureText.h"
 #import <Vision/Vision.h>
 #import <ImageIO/ImageIO.h>
 #import <AVFoundation/AVFoundation.h>
@@ -22,7 +23,7 @@ static const NSInteger POMaximumVideoFrames = 5;
 
 #pragma mark - Remembered results
 
-/// identity of a file → {"l": {label: confidence}, "n": {model id: score}, "f": [face embedding], "p": people in the photo, "h": visual hash (0 when the picture is too plain to have one)}. The identity survives moving and
+/// identity of a file → {"l": {label: confidence}, "n": {model id: score}, "f": [face embedding], "p": people in the photo, "h": visual hash (0 when the picture is too plain to have one), "t": the text written in the picture, lower-cased}. The identity survives moving and
 /// renaming the file on its volume, and changes when the file's contents do.
 @interface POAnalysisCache : NSObject
 @property (class, nonatomic, readonly) POAnalysisCache *sharedCache;
@@ -31,6 +32,7 @@ static const NSInteger POMaximumVideoFrames = 5;
 - (void)setLabels:(nullable NSDictionary *)labels nudityScore:(nullable NSNumber *)score model:(nullable NSString *)model
             faces:(nullable NSArray<NSData *> *)faces visualHash:(nullable NSNumber *)visualHash forKey:(NSString *)key;
 - (void)setPeopleCount:(NSInteger)count forKey:(NSString *)key;
+- (void)setText:(NSString *)text forKey:(NSString *)key;
 - (void)save;
 - (void)removeAll;
 @end
@@ -88,6 +90,17 @@ static const NSInteger POMaximumVideoFrames = 5;
         }
         _records[key] = record;
         shouldSave = ++_unsaved >= 500;   // a crash or a quit loses at most this many results
+    }
+    if (shouldSave) [self save];
+}
+
+- (void)setText:(NSString *)text forKey:(NSString *)key {
+    BOOL shouldSave;
+    @synchronized (self) {
+        NSMutableDictionary *record = [_records[key] mutableCopy] ?: [NSMutableDictionary dictionary];
+        record[@"t"] = text;
+        _records[key] = record;
+        shouldSave = ++_unsaved >= 500;
     }
     if (shouldSave) [self save];
 }
@@ -230,13 +243,16 @@ static NSDictionary<NSString *, NSNumber *> *POLabelsForImages(NSArray *images) 
             item.nudityScore = score;
             item.faces = faces;
             item.peopleCount = wantsFaces ? record[@"p"] : nil;
+            item.text = record[@"t"];
+            // Text came later than the rest: files analysed before are completed with it.
+            BOOL needsText = !item.text && POWorthReadingText(item, labels ?: record[@"l"]);
             // Only photos with someone in a group need the count; it came after faces, so older results lack it.
             BOOL needsCount = wantsFaces && faces.count && !item.peopleCount;
             NSNumber *hash = record[@"h"];
             item.visualHash = hash.unsignedLongLongValue ? hash : nil;
             BOOL needsHash = !hash && !item.isVideo;
             BOOL needsObjects = wantsLabels && !item.isVideo && ![objectIndex hasVectorsForKey:key];
-            if ((wantsLabels && !labels) || (modelKey && !score) || (wantsFaces && !faces) || needsCount || needsHash || needsObjects) {
+            if ((wantsLabels && !labels) || (modelKey && !score) || (wantsFaces && !faces) || needsCount || needsHash || needsObjects || needsText) {
                 [pending addObject:item];
                 [pendingKeys addObject:key];
             }
@@ -310,6 +326,23 @@ static NSDictionary<NSString *, NSNumber *> *POLabelsForImages(NSArray *images) 
                 if (wantsLabels && !item.labels) {
                     // Unreadable files get an empty result, so they are not retried on every launch.
                     item.labels = labels = POLabelsForImages(images);
+                }
+                // Text is read from the picture at a size OCR can work with, only where text is likely.
+                if (!item.text && POWorthReadingText(item, item.labels)) {
+                    // Two pictures at a time: reading text is the heaviest part, and the rest of the Mac (the grid's
+                    // thumbnails among it) must not wait for it.
+                    static dispatch_semaphore_t readers;
+                    static dispatch_once_t once;
+                    dispatch_once(&once, ^{ readers = dispatch_semaphore_create(2); });
+                    dispatch_semaphore_wait(readers, DISPATCH_TIME_FOREVER);
+                    NSArray *large = POImagesForItem(item, POTextPixelSize);
+                    NSString *text = POTextInImage((__bridge CGImageRef)large.firstObject);
+                    large = nil;
+                    dispatch_semaphore_signal(readers);
+                    if (text) {   // nil: Vision failed, tried again next time
+                        item.text = text;
+                        [cache setText:text forKey:pendingKeys[index]];
+                    }
                 }
                 if (classifier && !item.nudityScore) {
                     for (id image in images) {

@@ -3,6 +3,7 @@
 #import <unistd.h>
 #import <stdio.h>
 #import <errno.h>
+#import <copyfile.h>
 
 @interface POMoveRecord ()
 - (instancetype)initWithFrom:(NSURL *)from to:(NSURL *)to fileSize:(unsigned long long)fileSize;
@@ -25,6 +26,8 @@
 - (instancetype)initWithRecords:(NSArray<POMoveRecord *> *)records
              createdDirectories:(NSArray<NSURL *> *)createdDirectories
                          errors:(NSArray<NSString *> *)errors;
+@property (nonatomic) BOOL copied;
+@property (nonatomic) NSUInteger alreadyCopied;
 @end
 
 @implementation POOrganizeResult
@@ -87,12 +90,53 @@ static BOOL POIsUnchangedFile(NSURL *url, unsigned long long size, NSFileManager
     return [attributes[NSFileType] isEqual:NSFileTypeRegular] && [attributes[NSFileSize] unsignedLongLongValue] == size;
 }
 
+/// YES when `copy` is already a copy of `original`: a regular file of the same size and modification time (copies
+/// keep it; two seconds of slack for FAT and exFAT drives, which store times that coarsely).
+static BOOL POIsCopyOf(NSURL *copy, NSURL *original, unsigned long long size, NSFileManager *fm) {
+    NSDictionary<NSFileAttributeKey, id> *a = [fm attributesOfItemAtPath:copy.path error:NULL];
+    NSDictionary<NSFileAttributeKey, id> *b = [fm attributesOfItemAtPath:original.path error:NULL];
+    if (![a[NSFileType] isEqual:NSFileTypeRegular] || [a[NSFileSize] unsignedLongLongValue] != size) return NO;
+    NSDate *dateA = a[NSFileModificationDate], *dateB = b[NSFileModificationDate];
+    return dateA && dateB && fabs(dateA.timeIntervalSinceReferenceDate - dateB.timeIntervalSinceReferenceDate) <= 2;
+}
+
+/// YES when `directory` already holds a copy of `original` under its name or a numbered one ("name (2).jpg", …):
+/// another picture that happens to have the same name pushes the copy to the next free number.
+static BOOL POHasCopyIn(NSURL *directory, NSURL *original, unsigned long long size, NSFileManager *fm) {
+    NSString *name = original.lastPathComponent, *base = name.stringByDeletingPathExtension, *extension = name.pathExtension;
+    NSURL *candidate = [directory URLByAppendingPathComponent:name isDirectory:NO];
+    for (NSUInteger index = 2; [fm fileExistsAtPath:candidate.path]; index++) {
+        if (POIsCopyOf(candidate, original, size, fm)) return YES;
+        NSString *numbered = [NSString stringWithFormat:@"%@ (%lu)", base, (unsigned long)index];
+        if (extension.length) numbered = [numbered stringByAppendingPathExtension:extension];
+        candidate = [directory URLByAppendingPathComponent:numbered isDirectory:NO];
+    }
+    return NO;
+}
+
 static BOOL POIsSameDirectory(NSURL *a, NSURL *b) {
     id identifierA = nil, identifierB = nil;
     // Fresh URLs: resource values are cached per NSURL instance.
     [[NSURL fileURLWithPath:a.path] getResourceValue:&identifierA forKey:NSURLFileResourceIdentifierKey error:NULL];
     [[NSURL fileURLWithPath:b.path] getResourceValue:&identifierB forKey:NSURLFileResourceIdentifierKey error:NULL];
     return identifierA && [identifierA isEqual:identifierB];
+}
+
+/// Copies `source` into `directory` as `name` (or "name (2)", …) without ever replacing an existing file. On APFS the
+/// copy is a clone: instant, and it takes no space until one of the two changes. Dates and metadata are kept.
+static NSURL *POCopyExclusively(NSURL *source, NSURL *directory, NSString *name, NSFileManager *fm, NSError **error) {
+    for (int attempt = 0; attempt < 100; attempt++) {
+        NSURL *destination = POUniqueURL(directory, name, fm);
+        if (copyfile(source.fileSystemRepresentation, destination.fileSystemRepresentation, NULL,
+                     COPYFILE_ALL | COPYFILE_EXCL | COPYFILE_CLONE) == 0) return destination;
+        int code = errno;
+        if (code == EEXIST) continue;   // the name was taken since we looked; try the next one
+        unlink(destination.fileSystemRepresentation);   // a half-written copy (disk full, unplugged drive)
+        if (error) *error = [NSError errorWithDomain:NSPOSIXErrorDomain code:code userInfo:nil];
+        return nil;
+    }
+    if (error) *error = POError(POL(@"не удалось подобрать свободное имя"));
+    return nil;
 }
 
 /// Moves `source` into `directory` as `name` (or "name (2)", …) without ever replacing an existing file.
@@ -117,9 +161,44 @@ static NSURL *POMoveExclusively(NSURL *source, NSURL *directory, NSString *name,
 @implementation POOrganizer
 
 + (POOrganizeResult *)applyPlan:(POPlan *)plan progress:(void (^)(NSUInteger, NSUInteger))progress {
-    return [self moveItems:plan.pendingItems rootURL:plan.rootURL progress:progress folder:^NSString *(POPhotoItem *item) {
-        return item.destinationFolder;
-    }];
+    NSString *(^folder)(POPhotoItem *) = ^NSString *(POPhotoItem *item) { return item.destinationFolder; };
+    if (plan.copiesFiles) return [self copyItems:plan.pendingItems rootURL:plan.rootURL progress:progress folder:folder];
+    return [self moveItems:plan.pendingItems rootURL:plan.rootURL progress:progress folder:folder];
+}
+
++ (POOrganizeResult *)copyItems:(NSArray<POPhotoItem *> *)pending rootURL:(NSURL *)rootURL
+                       progress:(void (^)(NSUInteger, NSUInteger))progress folder:(NSString * (^)(POPhotoItem *))folderForItem {
+    NSFileManager *fm = [NSFileManager new];
+    NSMutableArray<POMoveRecord *> *records = [NSMutableArray array];
+    NSMutableArray<NSURL *> *created = [NSMutableArray array];
+    NSMutableArray<NSString *> *errors = [NSMutableArray array];
+    NSUInteger alreadyCopied = 0, done = 0;
+    for (POPhotoItem *item in pending) {
+        @autoreleasepool {
+            NSError *error = nil;
+            NSURL *directory = [rootURL URLByAppendingPathComponent:folderForItem(item) isDirectory:YES];
+            if (!POIsUnchangedFile(item.url, item.fileSize, fm)) {
+                error = POError(POL(@"файл изменился или исчез после сканирования — пропущен"));
+            } else if (POIsSameDirectory(directory, item.url.URLByDeletingLastPathComponent)) {
+                // Already in its folder: a copy next to it would only be a duplicate.
+            } else if (POHasCopyIn(directory, item.url, item.fileSize, fm)) {
+                alreadyCopied++;   // copied by an earlier run, or already on the drive the files are added to
+            } else if (POEnsureDirectory(directory, created, fm, &error)) {
+                NSURL *destination = POCopyExclusively(item.url, directory, item.url.lastPathComponent, fm, &error);
+                if (destination && !POIsUnchangedFile(destination, item.fileSize, fm)) {
+                    error = POError(POL(@"размер копии не совпал с оригиналом — проверьте её вручную"));
+                }
+                if (destination) [records addObject:[[POMoveRecord alloc] initWithFrom:item.url to:destination fileSize:item.fileSize]];
+            }
+            if (error) [errors addObject:[NSString stringWithFormat:@"%@: %@", item.relativePath, error.localizedDescription]];
+        }
+        done++;
+        if (progress && (done % 10 == 0 || done == pending.count)) progress(done, pending.count);
+    }
+    POOrganizeResult *result = [[POOrganizeResult alloc] initWithRecords:records createdDirectories:created errors:errors];
+    result.copied = YES;
+    result.alreadyCopied = alreadyCopied;
+    return result;
 }
 
 + (POOrganizeResult *)moveItems:(NSArray<POPhotoItem *> *)items toFolder:(NSString *)folder rootURL:(NSURL *)rootURL
@@ -178,6 +257,21 @@ static NSURL *POMoveExclusively(NSURL *source, NSURL *directory, NSString *name,
     NSFileManager *fm = [NSFileManager new];
     NSMutableArray<NSString *> *errors = [NSMutableArray array];
     NSMutableArray<POMoveRecord *> *moves = [NSMutableArray array];
+    if (result.copied) {
+        // The originals never moved; only the copies go, to the Trash, and only when nobody has changed them.
+        for (POMoveRecord *record in result.records) {
+            NSError *error = nil;
+            if (!POIsUnchangedFile(record.to, record.fileSize, fm)) {
+                error = POError(POL(@"копия изменилась или исчезла — оставлена как есть"));
+            } else {
+                [fm trashItemAtURL:record.to resultingItemURL:NULL error:&error];
+            }
+            if (error) [errors addObject:[NSString stringWithFormat:@"%@: %@", record.to.lastPathComponent, error.localizedDescription]];
+        }
+        for (NSURL *directory in result.createdDirectories.reverseObjectEnumerator) PORemoveIfEmpty(directory, fm);
+        if (movesOut) *movesOut = @[];
+        return errors;
+    }
     for (POMoveRecord *record in result.records.reverseObjectEnumerator) {
         @autoreleasepool {
             NSError *error = nil;
@@ -208,7 +302,8 @@ static NSURL *POMoveExclusively(NSURL *source, NSURL *directory, NSString *name,
     NSDateFormatter *formatter = [NSDateFormatter new];
     formatter.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
     formatter.dateFormat = @"yyyy-MM-dd HH-mm-ss";
-    NSMutableString *text = [NSMutableString stringWithFormat:@"# %@\n# куда\t← откуда\n", rootURL.path];
+    NSMutableString *text = [NSMutableString stringWithFormat:@"# %@\n# %@\n# куда\t← откуда\n", rootURL.path,
+                             result.copied ? @"копирование (оригиналы на месте)" : @"перемещение"];
     for (POMoveRecord *record in result.records) {
         [text appendFormat:@"%@\t← %@\n", record.to.path, record.from.path];
     }

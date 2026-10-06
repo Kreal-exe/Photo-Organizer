@@ -489,6 +489,7 @@ static NSTextField *POCaptionLabel(NSFont *font, NSColor *color) {
     [[menu addItemWithTitle:POL(@"Скопировать путь") action:@selector(copySelectionPaths:) keyEquivalent:@""] setTarget:self];
     [menu addItem:NSMenuItem.separatorItem];
     // These go up the responder chain to the window controller, which owns the files.
+    [menu addItemWithTitle:POL(@"Показать оригинал") action:@selector(showOriginal:) keyEquivalent:@""];
     [menu addItemWithTitle:POL(@"Показать в медиатеке по дате") action:@selector(showInLibrary:) keyEquivalent:@""];
     [menu addItemWithTitle:POL(@"Задать дату…") action:@selector(setDateForSelection:) keyEquivalent:@""];
     [menu addItemWithTitle:POL(@"Найти похожие") action:@selector(findSimilarToSelection:) keyEquivalent:@""];

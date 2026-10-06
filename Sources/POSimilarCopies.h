@@ -18,8 +18,9 @@ NS_ASSUME_NONNULL_BEGIN
 /// from the scan) are left out. Blocking; safe off the main thread.
 ///
 /// Deliberately strict, because the result is offered for deletion: fingerprints at most 2 bits apart, the
-/// same proportions, and — when both files know when they were shot — the same second. Two frames of a burst
-/// therefore stay two photos.
+/// same proportions, — when both files know when they were shot — the same second, and then the pictures
+/// themselves compared pixel by pixel (which reads the candidate files). Two frames of a burst, or two screenshots
+/// of one app with other numbers, therefore stay two pictures.
 + (NSArray<NSArray<POPhotoItem *> *> *)setsInItems:(NSArray<POPhotoItem *> *)items;
 
 /// Gives every copy in `sets` that has no date of its own the date of a copy in the same set that has one

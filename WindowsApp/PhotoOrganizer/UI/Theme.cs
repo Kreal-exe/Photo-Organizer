@@ -130,6 +130,6 @@ public static class Theme
         ["pause"] = "", ["back"] = "", ["forward"] = "", ["zoom-in"] = "", ["zoom-out"] = "",
         ["photo"] = "", ["video"] = "",
         ["object-search"] = "", ["photo-search"] = "", ["map"] = "", ["tag"] = "", ["explicit"] = "",
-        ["add"] = "", ["viewfinder"] = "", ["download"] = "",
+        ["screenshot"] = "\uE7F4", ["picture"] = "\uE790", ["folder-add"] = "\uE8F4", ["add"] = "", ["viewfinder"] = "", ["download"] = "",
     };
 }

@@ -1,6 +1,79 @@
 #import "POSimilarCopies.h"
+#import <ImageIO/ImageIO.h>
+#import <sys/stat.h>
 
 static const int POMaximumHashDistance = 2;
+/// Pictures that differ in a share of pixels above this are different pictures, however alike their fingerprints:
+/// screenshots of one app with other numbers differ in 1–2 %, recompressed and resized copies in under 0.1 %.
+static const double POMaximumChangedShare = 0.003;
+
+/// The picture as w×h grey values (upright, smoothly scaled); NULL when it can't be read. The caller frees it.
+static uint8_t *POGrayPixels(NSURL *url, size_t w, size_t h) {
+    CGImageSourceRef source = CGImageSourceCreateWithURL((__bridge CFURLRef)url, NULL);
+    if (!source) return NULL;
+    NSDictionary *options = @{(id)kCGImageSourceCreateThumbnailFromImageAlways: @YES,
+                              (id)kCGImageSourceCreateThumbnailWithTransform: @YES,
+                              (id)kCGImageSourceShouldCacheImmediately: @NO,
+                              (id)kCGImageSourceThumbnailMaxPixelSize: @(MAX(w, h) * 3)};
+    CGImageRef image = CGImageSourceCreateThumbnailAtIndex(source, 0, (__bridge CFDictionaryRef)options);
+    CFRelease(source);
+    if (!image) return NULL;
+    uint8_t *pixels = calloc(w * h, 1);
+    CGColorSpaceRef gray = CGColorSpaceCreateDeviceGray();
+    CGContextRef context = CGBitmapContextCreate(pixels, w, h, 8, w, gray, (CGBitmapInfo)kCGImageAlphaNone);
+    CGColorSpaceRelease(gray);
+    if (context) {
+        CGContextSetInterpolationQuality(context, kCGInterpolationHigh);
+        CGContextDrawImage(context, CGRectMake(0, 0, w, h), image);
+        CGContextRelease(context);
+    }
+    CGImageRelease(image);
+    if (!context) {
+        free(pixels);
+        return NULL;
+    }
+    return pixels;
+}
+
+/// Both pictures compared on one grid of up to 160 pixels across (at least two pixels of the smaller one per cell):
+/// the share of pixels that differ clearly (more than 40 of 255, after evening out an overall change of brightness).
+/// Negative when either can't be read.
+static double POChangedShare(POPhotoItem *a, POPhotoItem *b) {
+    POPhotoItem *smaller = (long long)a.pixelWidth * a.pixelHeight <= (long long)b.pixelWidth * b.pixelHeight ? a : b;
+    size_t w = (size_t)MIN(MAX(smaller.pixelWidth / 2, 8), 160);
+    size_t h = (size_t)MAX(8, lround(w * (double)a.pixelHeight / a.pixelWidth));
+    uint8_t *pa = POGrayPixels(a.url, w, h), *pb = POGrayPixels(b.url, w, h);
+    double share = -1;
+    if (pa && pb) {
+        size_t n = w * h;
+        double offset = 0;
+        for (size_t i = 0; i < n; i++) offset += (double)pa[i] - pb[i];
+        offset /= n;
+        size_t changed = 0;
+        for (size_t i = 0; i < n; i++) if (fabs((double)pa[i] - pb[i] - offset) > 40) changed++;
+        share = (double)changed / n;
+    }
+    free(pa);
+    free(pb);
+    return share;
+}
+
+/// Identifies a file as it is now: when it is changed or replaced, an earlier comparison no longer applies.
+static NSString *POFileKey(POPhotoItem *item) {
+    struct stat info;
+    if (stat(item.url.fileSystemRepresentation, &info) != 0) return nil;
+    return [NSString stringWithFormat:@"%d-%llu-%lld-%ld", info.st_dev, (unsigned long long)info.st_ino, (long long)info.st_size,
+            (long)info.st_mtimespec.tv_sec];
+}
+
+/// What the pixel comparison found for each pair of files, kept in Application Support so that it is done once.
+static NSURL *POVerdictsURL(void) {
+    NSURL *support = [NSFileManager.defaultManager URLForDirectory:NSApplicationSupportDirectory inDomain:NSUserDomainMask
+                                                 appropriateForURL:nil create:YES error:NULL];
+    NSURL *folder = [support URLByAppendingPathComponent:@"Photo Organizer" isDirectory:YES];
+    [NSFileManager.defaultManager createDirectoryAtURL:folder withIntermediateDirectories:YES attributes:nil error:NULL];
+    return [folder URLByAppendingPathComponent:@"copies.plist"];
+}
 
 @implementation POSimilarCopies
 
@@ -96,6 +169,7 @@ static BOOL POHasOwnDate(POPhotoItem *item) {
 
     // Two 64-bit values at most 2 bits apart agree on at least two of their four 16-bit quarters, so looking
     // only at files that share a quarter finds every pair without comparing everything with everything.
+    NSMutableSet<NSNumber *> *candidates = [NSMutableSet set];   // (a << 32) | b, a < b
     for (int quarter = 0; quarter < 4; quarter++) {
         int shift = quarter * 16;
         for (NSUInteger i = 0; i < count; i++) order[i] = (uint32_t)i;
@@ -110,14 +184,50 @@ static BOOL POHasOwnDate(POPhotoItem *item) {
             while (end < count && (uint16_t)(hashes[order[end]] >> shift) == key) end++;
             for (NSUInteger i = start; i < end; i++) {
                 for (NSUInteger j = i + 1; j < end; j++) {
-                    uint32_t a = order[i], b = order[j];
+                    uint32_t a = MIN(order[i], order[j]), b = MAX(order[i], order[j]);
                     if (__builtin_popcountll(hashes[a] ^ hashes[b]) > POMaximumHashDistance) continue;
-                    if (find(a) != find(b) && POAreCopies(hashed[a], hashed[b])) parent[find(b)] = find(a);
+                    if (POAreCopies(hashed[a], hashed[b])) [candidates addObject:@(((uint64_t)a << 32) | b)];
                 }
             }
             start = end;
         }
     }
+
+    // The fingerprint is coarse (9×8 pixels): every candidate is checked on the pictures themselves, on several
+    // cores, and what was found is remembered for the next time.
+    NSArray<NSNumber *> *pairs = candidates.allObjects;
+    NSDictionary *saved = [NSDictionary dictionaryWithContentsOfURL:POVerdictsURL()];
+    NSMutableDictionary<NSString *, NSNumber *> *verdicts = [saved isKindOfClass:NSDictionary.class] ? [saved mutableCopy] : [NSMutableDictionary dictionary];
+    NSUInteger before = verdicts.count;
+    BOOL *same = calloc(MAX(pairs.count, 1), sizeof(BOOL));
+    NSObject *lock = [NSObject new];
+    dispatch_apply(pairs.count, dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^(size_t index) {
+        @autoreleasepool {
+            uint64_t pair = pairs[index].unsignedLongLongValue;
+            POPhotoItem *a = hashed[(NSUInteger)(pair >> 32)], *b = hashed[(NSUInteger)(pair & 0xFFFFFFFF)];
+            NSString *keyA = POFileKey(a), *keyB = POFileKey(b);
+            NSString *key = keyA && keyB ? ([keyA compare:keyB] == NSOrderedAscending ? [NSString stringWithFormat:@"%@ %@", keyA, keyB]
+                                                                                   : [NSString stringWithFormat:@"%@ %@", keyB, keyA]) : nil;
+            NSNumber *known;
+            @synchronized (lock) { known = key ? verdicts[key] : nil; }
+            if (known) {
+                same[index] = known.boolValue;
+                return;
+            }
+            double share = POChangedShare(a, b);
+            if (share < 0) return;   // unreadable now: not remembered, asked again next time
+            same[index] = share <= POMaximumChangedShare;
+            if (key) @synchronized (lock) { verdicts[key] = @(same[index]); }
+        }
+    });
+    if (verdicts.count != before) [verdicts writeToURL:POVerdictsURL() atomically:YES];
+    for (NSUInteger index = 0; index < pairs.count; index++) {
+        if (!same[index]) continue;
+        uint64_t pair = pairs[index].unsignedLongLongValue;
+        uint32_t a = (uint32_t)(pair >> 32), b = (uint32_t)(pair & 0xFFFFFFFF);
+        if (find(a) != find(b)) parent[find(b)] = find(a);
+    }
+    free(same);
 
     NSMutableDictionary<NSNumber *, NSMutableArray<POPhotoItem *> *> *groups = [NSMutableDictionary dictionary];
     for (NSUInteger i = 0; i < count; i++) {

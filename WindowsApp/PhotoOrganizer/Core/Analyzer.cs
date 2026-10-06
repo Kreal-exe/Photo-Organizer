@@ -6,21 +6,24 @@ namespace PhotoOrganizer.Core;
 /// </summary>
 public sealed class RecognitionStore
 {
-    const int Version = 2;
+    // 3 added the text read in the picture. 4: faces and nudity scores of older files are dropped, to be found again —
+    // on the graphics card the ViT models gave the same output for every picture (see VitOnnx.LayerNorm).
+    const int Version = 4;
 
     /// <summary>
     /// Null fields were not looked at. Hash: the visual fingerprint (0 when the picture is too plain to have one).
     /// Objects: MobileCLIP vectors of the picture and its parts, half precision. Nudity: model repo → score.
+    /// Text: what is written in the picture (empty when nothing is), null when it was not read.
     /// </summary>
     public sealed record Entry(ulong? Hash, byte[]? Faces, float[]? Boxes, int PeopleCount, Dictionary<string, float>? Labels,
-                               byte[]? Objects, Dictionary<string, float>? Nudity);
+                               byte[]? Objects, Dictionary<string, float>? Nudity, string? Text = null);
 
     static RecognitionStore? _shared;
     static readonly Lock SharedLock = new();
     readonly Dictionary<string, Entry> _entries = [];
     readonly string _path;
     readonly Lock _lock = new();
-    BinaryWriter? _writer;
+    FileStream? _appender;
 
     public static RecognitionStore Shared
     {
@@ -34,29 +37,73 @@ public sealed class RecognitionStore
     {
         _path = AppData.File("recognition.bin");
         int records = 0;
+        bool damaged = false;
         try
         {
-            using var reader = new BinaryReader(File.OpenRead(_path));
-            if (reader.ReadInt32() == Version)
+            using var stream = new FileStream(_path, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 20);
+            using var reader = new BinaryReader(stream);
+            int version = reader.ReadInt32();
+            if (version is >= 2 and <= Version)
             {
-                while (reader.BaseStream.Position < reader.BaseStream.Length)
+                while (stream.Position < stream.Length)
                 {
-                    string key = reader.ReadString();
-                    _entries[key] = Read(reader);
-                    records++;
+                    long start = stream.Position;
+                    try
+                    {
+                        string key = reader.ReadString();
+                        if (!IsKey(key)) throw new InvalidDataException();
+                        var entry = Read(reader, version);
+                        _entries[key] = version < 4 ? entry with { Faces = null, Boxes = null, PeopleCount = 0, Nudity = null } : entry;
+                        records++;
+                    }
+                    catch (Exception e) when (e is EndOfStreamException or FormatException or InvalidDataException or ArgumentException)
+                    {
+                        // A record cut short (the app closed while writing it) with others appended after it: they are
+                        // found again from the next record's key on, and the file is written anew without the damage.
+                        damaged = true;
+                        if (!SkipToNextRecord(stream, start + 1)) break;
+                    }
                 }
+                // Results of an older version are kept: rewritten in the new format, they are only completed.
+                if (version != Version) records = 0;
             }
         }
         catch (Exception e) when (e is IOException or EndOfStreamException or UnauthorizedAccessException)
         {
-            // A missing file, or one cut short by a crash: what was read is kept.
+            // A missing file: nothing is known yet.
         }
-        if (records > _entries.Count * 2 + 100 || !File.Exists(_path) || records == 0) Rewrite();
+        if (damaged || records > _entries.Count * 2 + 100 || !File.Exists(_path) || records == 0) Rewrite();
+    }
+
+    /// <summary>A file key (AppData.FileKey): three numbers joined by hyphens.</summary>
+    static bool IsKey(string key) => key.Length is > 4 and < 64 && key.All(c => char.IsAsciiDigit(c) || c == '-') && key.Count(c => c == '-') == 2;
+
+    /// <summary>Moves the stream to the first place from `from` on where a record's key starts; false when there is none.</summary>
+    static bool SkipToNextRecord(FileStream stream, long from)
+    {
+        var buffer = new byte[1 << 20];
+        for (long at = from; at < stream.Length; at += buffer.Length - 64)
+        {
+            stream.Position = at;
+            int read = stream.ReadAtLeast(buffer, buffer.Length, throwOnEndOfStream: false);
+            for (int i = 0; i + 1 < read; i++)
+            {
+                int length = buffer[i];   // a key is shorter than 128 bytes: its length prefix is one byte
+                if (length is < 5 or >= 64 || i + 1 + length > read) continue;
+                var key = buffer.AsSpan(i + 1, length);
+                if (key.IndexOfAnyExcept("0123456789-"u8) >= 0 || key.Count((byte)'-') != 2) continue;
+                stream.Position = at + i;
+                return true;
+            }
+            if (read < buffer.Length) break;
+        }
+        return false;
     }
 
     static byte[]? Bytes(BinaryReader reader)
     {
         int length = reader.ReadInt32();
+        if (length > reader.BaseStream.Length - reader.BaseStream.Position) throw new EndOfStreamException();
         return length < 0 ? null : reader.ReadBytes(length);
     }
 
@@ -64,12 +111,13 @@ public sealed class RecognitionStore
     {
         int count = reader.ReadInt32();
         if (count < 0) return null;
+        if (count > 100_000) throw new InvalidDataException();
         var map = new Dictionary<string, float>(count);
         for (int i = 0; i < count; i++) map[reader.ReadString()] = reader.ReadSingle();
         return map;
     }
 
-    static Entry Read(BinaryReader reader)
+    static Entry Read(BinaryReader reader, int version)
     {
         ulong? hash = reader.ReadBoolean() ? reader.ReadUInt64() : null;
         byte[]? faces = Bytes(reader);
@@ -77,7 +125,11 @@ public sealed class RecognitionStore
         float[]? boxes = boxBytes == null ? null : new float[boxBytes.Length / 4];
         if (boxes != null) Buffer.BlockCopy(boxBytes!, 0, boxes, 0, boxBytes!.Length);
         int people = reader.ReadInt32();
-        return new Entry(hash, faces, boxes, people, Map(reader), Bytes(reader), Map(reader));
+        var labels = Map(reader);
+        var objects = Bytes(reader);
+        var nudity = Map(reader);
+        string? text = version >= 3 && reader.ReadBoolean() ? reader.ReadString() : null;
+        return new Entry(hash, faces, boxes, people, labels, objects, nudity, text);
     }
 
     static void WriteBytes(BinaryWriter writer, byte[]? bytes)
@@ -113,6 +165,8 @@ public sealed class RecognitionStore
         WriteMap(writer, entry.Labels);
         WriteBytes(writer, entry.Objects);
         WriteMap(writer, entry.Nudity);
+        writer.Write(entry.Text != null);
+        if (entry.Text != null) writer.Write(entry.Text);
     }
 
     void Rewrite()
@@ -138,13 +192,18 @@ public sealed class RecognitionStore
 
     public void Put(string key, Entry entry)
     {
+        // The record goes to the file whole and at once: a buffer flushed halfway when the app closed left half a record,
+        // after which every record appended later could not be read.
+        var record = new MemoryStream();
+        using (var writer = new BinaryWriter(record, System.Text.Encoding.UTF8, leaveOpen: true)) Write(writer, key, entry);
         lock (_lock)
         {
             _entries[key] = entry;
             try
             {
-                _writer ??= new BinaryWriter(new FileStream(_path, FileMode.Append, FileAccess.Write, FileShare.Read));
-                Write(_writer, key, entry);
+                _appender ??= new FileStream(_path, FileMode.Append, FileAccess.Write, FileShare.Read);
+                _appender.Write(record.GetBuffer(), 0, (int)record.Length);
+                _appender.Flush();
             }
             catch (IOException)
             {
@@ -154,7 +213,7 @@ public sealed class RecognitionStore
 
     public void Flush()
     {
-        lock (_lock) _writer?.Flush();
+        lock (_lock) _appender?.Flush();
     }
 
     /// <summary>Forgets every remembered result ("Распознать заново").</summary>
@@ -162,8 +221,8 @@ public sealed class RecognitionStore
     {
         lock (_lock)
         {
-            _writer?.Dispose();
-            _writer = null;
+            _appender?.Dispose();
+            _appender = null;
             _entries.Clear();
             Rewrite();
         }
@@ -183,7 +242,7 @@ public sealed class Analyzer(IReadOnlyList<PhotoItem> items, bool withFaces)
     readonly CancellationTokenSource _cancel = new();
 
     /// <summary>Why something could not be looked at (a model is missing or failed), or null.</summary>
-    public string? Error { get; private set; }
+    public string? Error { get; internal set; }
     public string? Device { get; private set; }
 
     public void Cancel() => _cancel.Cancel();
@@ -194,12 +253,13 @@ public sealed class Analyzer(IReadOnlyList<PhotoItem> items, bool withFaces)
         set => Settings.Shared.Set("analyzesObjects", value);
     }
 
-    sealed record Wanted(Recognizer? Recognizer, NudityClassifier? Nudity, FaceEngine? Faces);
+    sealed record Wanted(Recognizer? Recognizer, NudityClassifier? Nudity, FaceEngine? Faces, bool Text);
 
     static void Apply(PhotoItem item, RecognitionStore.Entry entry, Wanted wanted)
     {
         item.VisualHash = entry.Hash is > 0 ? entry.Hash : null;
         if (wanted.Recognizer != null) item.Labels = entry.Labels;
+        if (entry.Text != null) item.Text = entry.Text.ToLowerInvariant().Replace('ё', 'е');
         if (wanted.Nudity != null && entry.Nudity?.TryGetValue(wanted.Nudity.Repo, out float score) == true) item.NudityScore = score;
         if (wanted.Faces == null || entry.Faces == null) return;
         item.Faces = Enumerable.Range(0, entry.Faces.Length / People.Dimension)
@@ -213,7 +273,8 @@ public sealed class Analyzer(IReadOnlyList<PhotoItem> items, bool withFaces)
         (item.Video || entry.Hash != null)
         && (wanted.Recognizer == null || (entry.Labels != null && (item.Video || entry.Objects != null)))
         && (wanted.Nudity == null || entry.Nudity?.ContainsKey(wanted.Nudity.Repo) == true)
-        && (wanted.Faces == null || item.Video || entry.Faces != null);
+        && (wanted.Faces == null || item.Video || entry.Faces != null)
+        && (!wanted.Text || entry.Text != null || !PictureText.Worth(item, entry.Labels));
 
     T? Load<T>(Func<T> make, string failure) where T : class
     {
@@ -232,33 +293,62 @@ public sealed class Analyzer(IReadOnlyList<PhotoItem> items, bool withFaces)
     public void Run(Action<int, int>? progress)
     {
         var token = _cancel.Token;
-        var store = RecognitionStore.Shared;
+        RecognitionStore store;
+        try
+        {
+            store = RecognitionStore.Shared;
+        }
+        catch (Exception e)
+        {
+            // Shown in the status line instead of the analysis ending silently with nothing found.
+            Error = e.Message;
+            return;
+        }
         var wanted = new Wanted(
             AnalyzesObjects && Recognizer.Model.Ready ? Load(() => Recognizer.Shared, L("Модель распознавания объектов не запустилась")) : null,
             NudityClassifier.Enabled && NudityClassifier.Selected.Model.Ready ? Load(() => NudityClassifier.Shared, L("Модель распознавания наготы не запустилась")) : null,
-            withFaces ? Load(() => FaceEngine.Shared, L("Модель лиц не запустилась")) : null);
+            withFaces ? Load(() => FaceEngine.Shared, L("Модель лиц не запустилась")) : null,
+            PictureText.Enabled && PictureText.Available);
         Device = wanted.Recognizer?.OnGpu == true || wanted.Faces?.Device == L("Видеокарта (DirectML)") ? L("Видеокарта (DirectML)") : wanted.Recognizer != null || wanted.Faces != null ? L("Процессор") : null;
         // First what is already known, so that searching works straight away on a folder seen before.
+        // The count is of all the files, those looked at before included, so that opening the folder again (or a few
+        // files moved) goes on from where it was instead of seeming to start over.
         var todo = new List<(PhotoItem Item, string Key, RecognitionStore.Entry? Old)>();
+        int total = items.Count, done = 0;
         foreach (var item in items)
         {
+            if (token.IsCancellationRequested) return;
+            if (++done % 500 == 0) progress?.Invoke(done - todo.Count, total);
             if (item.CloudOnly || AppData.FileKey(item.Path) is not { } key) continue;   // reading a cloud file would download it
             item.RecognitionKey = key;
             var entry = store.Get(key);
             if (entry != null) Apply(item, entry, wanted);
             if (entry == null || !Complete(item, entry, wanted)) todo.Add((item, key, entry));
         }
-        int total = todo.Count, done = 0;
-        progress?.Invoke(0, total);
+        done = total - todo.Count;
+        progress?.Invoke(done, total);
         try
         {
             // Decoding runs on several cores; the models serialise themselves on the graphics card.
             Parallel.ForEach(todo, new ParallelOptions { MaxDegreeOfParallelism = Math.Clamp(Environment.ProcessorCount / 2, 2, 6), CancellationToken = token },
-                work => Analyse(work.Item, work.Key, work.Old, wanted, store, () =>
+                work =>
                 {
-                    int finished = Interlocked.Increment(ref done);
-                    if (finished % 5 == 0 || finished == total) progress?.Invoke(finished, total);
-                }));
+                    // One file that cannot be read must not end the whole analysis (it did, silently, for the rest).
+                    try
+                    {
+                        Analyse(work.Item, work.Key, work.Old, wanted, store, () =>
+                        {
+                            int finished = Interlocked.Increment(ref done);
+                            if (finished % 5 == 0 || finished == total) progress?.Invoke(finished, total);
+                        });
+                    }
+                    catch (Exception e) when (e is not OperationCanceledException)
+                    {
+                        Error ??= $"{work.Item.Name}: {e.Message}";
+                        int finished = Interlocked.Increment(ref done);
+                        if (finished % 5 == 0 || finished == total) progress?.Invoke(finished, total);
+                    }
+                });
         }
         catch (OperationCanceledException)
         {
@@ -268,6 +358,25 @@ public sealed class Analyzer(IReadOnlyList<PhotoItem> items, bool withFaces)
 
     void Analyse(PhotoItem item, string key, RecognitionStore.Entry? old, Wanted wanted, RecognitionStore store, Action finished)
     {
+        // Looked at before, only the text is new: the picture is read for it alone.
+        if (old != null && wanted.Text && old.Text == null && Complete(item, old, wanted with { Text = false }))
+        {
+            string read;
+            try
+            {
+                read = PictureText.Read(item.Path) ?? "";
+            }
+            catch (Exception e)
+            {
+                Error ??= e.Message;
+                read = "";
+            }
+            var completed = old with { Text = read };
+            store.Put(key, completed);
+            Apply(item, completed, wanted);
+            finished();
+            return;
+        }
         bool needsFaces = wanted.Faces != null && !item.Video && old?.Faces == null;
         var image = item.Video ? Images.VideoFrame(item.Path, AnalysisSide)
                                : Images.Load(item.Path, needsFaces ? FaceEngine.AnalysisSide : AnalysisSide);
@@ -277,6 +386,7 @@ public sealed class Analyzer(IReadOnlyList<PhotoItem> items, bool withFaces)
         int people = old?.PeopleCount ?? 0;
         var labels = old?.Labels;
         var nudity = old?.Nudity is { } scores ? new Dictionary<string, float>(scores) : null;
+        string? text = old?.Text;
         try
         {
             if (image == null)
@@ -286,6 +396,7 @@ public sealed class Analyzer(IReadOnlyList<PhotoItem> items, bool withFaces)
                 if (wanted.Recognizer != null) { labels ??= []; if (!item.Video) objects ??= []; }
                 if (wanted.Nudity != null) (nudity ??= [])[wanted.Nudity.Repo] = 0;
                 if (needsFaces) { faces = []; boxes = []; }
+                if (wanted.Text) text ??= "";
                 return;
             }
             if (!item.Video && hash == null) hash = SimilarCopies.VisualHash(image.Gray9x8()) ?? 0;
@@ -300,6 +411,19 @@ public sealed class Analyzer(IReadOnlyList<PhotoItem> items, bool withFaces)
             if (wanted.Nudity != null && nudity?.ContainsKey(wanted.Nudity.Repo) != true)
             {
                 (nudity ??= [])[wanted.Nudity.Repo] = MathF.Round(wanted.Nudity.Score(image), 3);
+            }
+            // Text is read from the picture at full size (OCR needs it), only where text is likely.
+            if (wanted.Text && text == null && PictureText.Worth(item, labels))
+            {
+                try
+                {
+                    text = PictureText.Read(item.Path) ?? "";
+                }
+                catch (Exception e)
+                {
+                    Error ??= e.Message;
+                    text = "";
+                }
             }
             if (needsFaces)
             {
@@ -325,7 +449,7 @@ public sealed class Analyzer(IReadOnlyList<PhotoItem> items, bool withFaces)
         }
         finally
         {
-            var entry = new RecognitionStore.Entry(hash, faces, boxes, people, labels, objects, nudity);
+            var entry = new RecognitionStore.Entry(hash, faces, boxes, people, labels, objects, nudity, text);
             store.Put(key, entry);
             Apply(item, entry, wanted);
             finished();

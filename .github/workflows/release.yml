@@ -1,5 +1,6 @@
-# Every push to main: the macOS app is tested and built, the Windows app is built, and both are published as a new
-# GitHub release v<VERSION>.<run number> (VERSION holds major.minor). Pull requests are built and tested only.
+# Every push to main: the macOS app is tested and built, the Windows app is built, and both are published as the
+# GitHub release v<VERSION> (the file VERSION). While VERSION stays the same, each push replaces that release's files
+# and moves its tag to the new commit; a new version number makes a new release. Pull requests are built and tested only.
 name: Build and release
 
 on:
@@ -23,24 +24,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - id: version
-        run: echo "version=$(tr -d '[:space:]' < VERSION).${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+        run: echo "version=$(tr -d '[:space:]' < VERSION)" >> "$GITHUB_OUTPUT"
 
   macos:
     needs: version
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
-      - name: Test
-        run: ./build.sh test
-      - name: Build
+      - name: Test and build
         env:
-          VERSION: ${{ needs.version.outputs.version }}
           BUILD_NUMBER: ${{ github.run_number }}
-        run: ./build.sh zip
+          INSTALL_DIR: ${{ runner.temp }}/Applications
+        run: ./build.sh --test --zip
       - uses: actions/upload-artifact@v4
         with:
           name: macos
-          path: build/PhotoOrganizer-${{ needs.version.outputs.version }}.zip
+          path: dist/PhotoOrganizer-macOS-v${{ needs.version.outputs.version }}.zip
 
   windows:
     needs: version
@@ -53,15 +52,14 @@ jobs:
       - name: Build
         shell: pwsh
         env:
-          VERSION: ${{ needs.version.outputs.version }}
+          INSTALL_DIR: ${{ runner.temp }}\PhotoOrganizer
         run: |
-          ./build.ps1
+          ./build.ps1 -Zip
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          Compress-Archive -Path build/PhotoOrganizer-Windows/* -DestinationPath "build/PhotoOrganizer-Windows-$env:VERSION.zip"
       - uses: actions/upload-artifact@v4
         with:
           name: windows
-          path: build/PhotoOrganizer-Windows-${{ needs.version.outputs.version }}.zip
+          path: dist/PhotoOrganizer-Windows-v${{ needs.version.outputs.version }}.zip
 
   release:
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
@@ -78,8 +76,20 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: v${{ needs.version.outputs.version }}
         run: |
-          gh release create "$TAG" dist/*.zip \
-            --target "$GITHUB_SHA" \
-            --title "Photo Organizer $TAG" \
-            --generate-notes \
-            --notes-file .github/release-notes.md
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            # The same version again: the tag moves to this commit and the files are replaced.
+            git tag -f "$TAG" "$GITHUB_SHA"
+            git push -f origin "refs/tags/$TAG"
+            gh release upload "$TAG" dist/*.zip --clobber
+            # Files of an earlier build that this one no longer makes (a renamed archive) are removed.
+            for asset in $(gh release view "$TAG" --json assets -q '.assets[].name'); do
+              [ -e "dist/$asset" ] || gh release delete-asset "$TAG" "$asset" --yes
+            done
+            gh release edit "$TAG" --title "Photo Organizer $TAG" --notes-file .github/release-notes.md
+          else
+            gh release create "$TAG" dist/*.zip \
+              --target "$GITHUB_SHA" \
+              --title "Photo Organizer $TAG" \
+              --generate-notes \
+              --notes-file .github/release-notes.md
+          fi
