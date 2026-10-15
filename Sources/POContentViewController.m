@@ -185,8 +185,10 @@ static NSStackView *POCenteredStack(NSArray<NSView *> *views, NSView *container)
     NSButton *(^tab)(NSString *, NSInteger) = ^NSButton *(NSString *title, NSInteger tag) {
         NSButton *button = [NSButton buttonWithTitle:title target:nil action:@selector(selectQuickFilter:)];
         button.bezelStyle = NSBezelStyleRecessed;
-        [button setButtonType:NSButtonTypePushOnPushOff];
+        button.showsBorderOnlyWhileMouseInside = YES;
         button.tag = tag;
+        button.wantsLayer = YES;
+        button.layer.cornerRadius = 5;
         return button;
     };
     _allButton = tab(POL(@"Медиа"), POQuickFilterAll);
@@ -194,8 +196,9 @@ static NSStackView *POCenteredStack(NSArray<NSView *> *views, NSView *container)
     NSMutableArray<NSView *> *strip = [NSMutableArray arrayWithObject:_allButton];
     NSMutableArray<NSButton *> *buttons = [NSMutableArray array], *boxes = [NSMutableArray array];
     NSArray<NSString *> *tips = @[POL(@"Фотографии"), POL(@"Видео"), POL(@"Открытки, мемы, рисунки, документы — то, что не фотография"),
-                                  POL(@"Коллажи, рамки, анимации, фильмы и эффекты, которые сделал Google Фото")];
-    for (NSInteger kind = POMediaKindPhotos; kind <= POMediaKindCollages; kind++) {
+                                  POL(@"Коллажи, рамки, анимации, фильмы и эффекты, которые сделал Google Фото"),
+                                  POL(@"Снимки экрана телефона и компьютера, и те, что пришли через мессенджер")];
+    for (NSInteger kind = POMediaKindPhotos; kind <= POMediaKindScreenshots; kind++) {
         NSButton *box = [NSButton checkboxWithTitle:@"" target:nil action:@selector(toggleKindIncluded:)];
         box.tag = kind;
         box.toolTip = POL(@"Отмечено — в медиатеке и раскладывается; без галочки — скрыто и остаётся на месте");
@@ -376,6 +379,17 @@ static NSStackView *POCenteredStack(NSArray<NSView *> *views, NSView *container)
     _organizeButton.enabled = canOrganize;
 }
 
+/// A tab of the strip: the one shown filled with the accent colour and white text, so that which one is chosen can't
+/// be missed next to the checkboxes.
+static void POSetTab(NSButton *button, NSString *title, BOOL selected) {
+    NSDictionary *attributes = @{NSFontAttributeName: button.font ?: [NSFont systemFontOfSize:NSFont.systemFontSize],
+                                 NSForegroundColorAttributeName: selected ? NSColor.alternateSelectedControlTextColor : NSColor.labelColor};
+    button.attributedTitle = [[NSAttributedString alloc] initWithString:title attributes:attributes];
+    [button.effectiveAppearance performAsCurrentDrawingAppearance:^{
+        button.layer.backgroundColor = selected ? NSColor.controlAccentColor.CGColor : NSColor.clearColor.CGColor;
+    }];
+}
+
 - (void)setKindCounts:(NSArray<NSNumber *> *)counts included:(NSArray<NSNumber *> *)included selected:(POQuickFilter)selected {
     [self setKindCounts:counts included:included counted:included selected:selected];
 }
@@ -383,20 +397,18 @@ static NSStackView *POCenteredStack(NSArray<NSView *> *views, NSView *container)
 - (void)setKindCounts:(NSArray<NSNumber *> *)counts included:(NSArray<NSNumber *> *)included counted:(NSArray<NSNumber *> *)counted
              selected:(POQuickFilter)selected {
     (void)self.view;
-    NSArray<NSString *> *titles = @[POL(@"Фото"), POL(@"Видео"), POL(@"Картинки"), POL(@"Коллажи")];
-    _allButton.state = selected == POQuickFilterAll ? NSControlStateValueOn : NSControlStateValueOff;
+    NSArray<NSString *> *titles = @[POL(@"Фото"), POL(@"Видео"), POL(@"Картинки"), POL(@"Коллажи"), POL(@"Скриншоты")];
     // "Медиа" counts what the ticked kinds add up to.
     NSInteger ticked = 0;
-    for (NSInteger kind = POMediaKindPhotos; kind <= POMediaKindCollages && kind < (NSInteger)counts.count; kind++) {
+    for (NSInteger kind = POMediaKindPhotos; kind <= POMediaKindScreenshots && kind < (NSInteger)counts.count; kind++) {
         if (kind < (NSInteger)counted.count && counted[kind].boolValue) ticked += counts[kind].integerValue;
     }
-    _allButton.title = [NSString stringWithFormat:@"%@  %@", POL(@"Медиа"), PONumber(ticked)];
-    for (NSInteger kind = POMediaKindPhotos; kind <= POMediaKindCollages; kind++) {
+    POSetTab(_allButton, [NSString stringWithFormat:@"%@  %@", POL(@"Медиа"), PONumber(ticked)], selected == POQuickFilterAll);
+    for (NSInteger kind = POMediaKindPhotos; kind <= POMediaKindScreenshots; kind++) {
         NSInteger count = kind < (NSInteger)counts.count ? counts[kind].integerValue : 0;
         BOOL ticked = kind < (NSInteger)included.count && included[kind].boolValue;
         BOOL shown = selected == POQuickFilterAll + 1 + kind;
-        _kindButtons[kind].title = [NSString stringWithFormat:@"%@  %@", titles[kind], PONumber(count)];
-        _kindButtons[kind].state = shown ? NSControlStateValueOn : NSControlStateValueOff;
+        POSetTab(_kindButtons[kind], [NSString stringWithFormat:@"%@  %@", titles[kind], PONumber(count)], shown);
         _kindBoxes[kind].state = ticked ? NSControlStateValueOn : NSControlStateValueOff;
         _kindButtons[kind].superview.hidden = count == 0 && ticked && !shown;
     }

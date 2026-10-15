@@ -506,6 +506,8 @@
 "Копии перемещены в Корзину: %@." = "Copies moved to the Trash: %@.";
 "Лиц на фото: %@" = "Faces in the photo: %@";
 "Найти этого человека" = "Find This Person";
+"Это картинка" = "This Is a Picture";
+"Это фото" = "This Is a Photo";
 "Ничего не найдено по запросу «%@»." = "Nothing found for “%@”.";
 "Открыть недавние" = "Open Recent";
 "Очистить меню" = "Clear Menu";
@@ -520,3 +522,5 @@
 "в облаке" = "in the cloud";
 "копирование в «%@»" = "Copy into “%@”";
 "после копирования размер файла не совпал — проверьте копию вручную" = "after copying, the file's size differs — please check the copy";
+"Снимки экрана телефона и компьютера, и те, что пришли через мессенджер" = "Screenshots of phones and computers, including those received through a messenger";
+"Снимки экрана, и те, что пришли через мессенджер. Без галочки остаются на месте." = "Screenshots, including those received through a messenger. Unticked, they stay where they are.";

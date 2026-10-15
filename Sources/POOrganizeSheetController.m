@@ -18,7 +18,7 @@
     NSSegmentedControl *_modeControl;
     NSPopUpButton *_arrangementPopup;
     NSButton *_datesInsideCheckbox;
-    NSButton *_photosCheckbox, *_videosCheckbox, *_picturesCheckbox, *_collagesCheckbox;
+    NSButton *_photosCheckbox, *_videosCheckbox, *_picturesCheckbox, *_collagesCheckbox, *_screenshotKindCheckbox;
     NSButton *_screenshotsCheckbox;
     NSTextField *_screenshotsField;
     NSPopUpButton *_screenshotsPlacePopup;
@@ -102,7 +102,10 @@ static NSTextField *POFormLabel(NSString *text) {
     _picturesCheckbox.toolTip = POL(@"Открытки, мемы, рисунки, документы — то, что не фотография. Без галочки остаются на месте.");
     _collagesCheckbox = [NSButton checkboxWithTitle:POL(@"Коллажи") target:self action:@selector(optionChanged:)];
     _collagesCheckbox.toolTip = POL(@"Коллажи, рамки, анимации, фильмы и правки, которые сделал Google Фото. Без галочки остаются на месте.");
-    NSStackView *kinds = [NSStackView stackViewWithViews:@[_photosCheckbox, _videosCheckbox, _picturesCheckbox, _collagesCheckbox]];
+    _screenshotKindCheckbox = [NSButton checkboxWithTitle:POL(@"Скриншоты") target:self action:@selector(optionChanged:)];
+    _screenshotKindCheckbox.toolTip = POL(@"Снимки экрана, и те, что пришли через мессенджер. Без галочки остаются на месте.");
+    NSStackView *kinds = [NSStackView stackViewWithViews:@[_photosCheckbox, _videosCheckbox, _picturesCheckbox, _collagesCheckbox,
+                                                           _screenshotKindCheckbox]];
     kinds.spacing = 16;
     _screenshotsCheckbox = [NSButton checkboxWithTitle:POL(@"Скриншоты — в папку:") target:self action:@selector(optionChanged:)];
     _screenshotsField = [self folderField];
@@ -288,6 +291,7 @@ static NSTextField *POFormLabel(NSString *text) {
     _videosCheckbox.state = _plan.organizesVideos ? NSControlStateValueOn : NSControlStateValueOff;
     _picturesCheckbox.state = _plan.organizesPictures ? NSControlStateValueOn : NSControlStateValueOff;
     _collagesCheckbox.state = _plan.organizesCollages ? NSControlStateValueOn : NSControlStateValueOff;
+    _screenshotKindCheckbox.state = _plan.organizesScreenshots ? NSControlStateValueOn : NSControlStateValueOff;
     _screenshotsCheckbox.state = _plan.separateScreenshots ? NSControlStateValueOn : NSControlStateValueOff;
     _screenshotsField.stringValue = _plan.screenshotsFolderName;
     _screenshotsField.enabled = _plan.separateScreenshots;
@@ -351,6 +355,7 @@ static NSTextField *POFormLabel(NSString *text) {
     _plan.organizesVideos = _videosCheckbox.state == NSControlStateValueOn;
     _plan.organizesPictures = _picturesCheckbox.state == NSControlStateValueOn;
     _plan.organizesCollages = _collagesCheckbox.state == NSControlStateValueOn;
+    _plan.organizesScreenshots = _screenshotKindCheckbox.state == NSControlStateValueOn;
     _plan.separateScreenshots = _screenshotsCheckbox.state == NSControlStateValueOn;
     _plan.screenshotsInEachDate = _screenshotsPlacePopup.indexOfSelectedItem == 1;
     _plan.screenshotsFolderName = _screenshotsField.stringValue;

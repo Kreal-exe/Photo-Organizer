@@ -600,6 +600,9 @@ static NSTextField *POCaptionLabel(NSFont *font, NSColor *color) {
     [menu addItemWithTitle:POL(@"Найти этот предмет на других фото…") action:@selector(findObjectInSelection:) keyEquivalent:@""];
     [menu addItemWithTitle:POL(@"Найти этого человека") action:@selector(findPersonInSelection:) keyEquivalent:@""];
     [menu addItem:NSMenuItem.separatorItem];
+    [menu addItemWithTitle:POL(@"Это картинка") action:@selector(markSelectionAsPicture:) keyEquivalent:@""];
+    [menu addItemWithTitle:POL(@"Это фото") action:@selector(markSelectionAsPhoto:) keyEquivalent:@""];
+    [menu addItem:NSMenuItem.separatorItem];
     [menu addItemWithTitle:POL(@"Переместить в папку…") action:@selector(moveSelectionToFolder:) keyEquivalent:@""];
     [menu addItemWithTitle:POL(@"Переместить в Корзину") action:@selector(trashSelection:) keyEquivalent:@""];
     return menu;

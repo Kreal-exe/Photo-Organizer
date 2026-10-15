@@ -93,6 +93,15 @@ FOUNDATION_EXPORT NSString *POItemDateText(POPhotoItem *item, BOOL withTime);
 @property (atomic, weak, nullable) POPhotoItem *betterCopy;
 /// Set on the best version of a picture that also exists as lesser copies.
 @property (atomic) BOOL bestOfCopies;
+/// What the file's name and folder say about its kind (see PONameTraits in POMediaTypes.h), worked out once: 0 until
+/// then, and again after the file moves.
+@property (atomic) uint32_t nameTraits;
+/// Whether the model learnt on the library itself calls the file a picture rather than a photo (see POPictures.h);
+/// nil until it has been asked — its labels decide then (see POIsPicture).
+@property (atomic, strong, nullable) NSNumber *pictureVerdict;
+/// What the user said the file is ("Это картинка" / "Это фото"): @YES a picture, @NO a photo, nil when they haven't.
+/// Wins over everything else, and teaches the model (see POPictures.h).
+@property (atomic, strong, nullable) NSNumber *pictureMark;
 /// 0…1 from the optional nudity model; nil when not analysed.
 @property (atomic, strong, nullable) NSNumber *nudityScore;
 /// The text written in the picture (a screenshot, a document, a sign), lower-cased for the search; nil when not read.

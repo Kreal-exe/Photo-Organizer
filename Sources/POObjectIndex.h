@@ -24,6 +24,10 @@ NS_ASSUME_NONNULL_BEGIN
 + (CGRect)mostSalientRectInImage:(CGImageRef)image;
 
 - (BOOL)hasVectorsForKey:(NSString *)key;
+/// The print of the whole picture stored for `key`, as `printLength` unit-length float32 values; nil when there is none.
+- (nullable NSData *)wholePrintForKey:(NSString *)key;
+/// Length of one print.
+@property (class, nonatomic, readonly) NSUInteger printLength;
 - (void)setVectors:(NSData *)vectors forKey:(NSString *)key;
 /// Writes what was added since the last save.
 - (void)save;

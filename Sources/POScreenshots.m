@@ -1,4 +1,5 @@
 #import "POScreenshots.h"
+#import "POMediaTypes.h"
 
 /// Screens, as width × height in either orientation: phones, tablets, laptops and monitors.
 static NSSet<NSString *> *POScreenSizes(void) {
@@ -28,8 +29,7 @@ static NSSet<NSString *> *POScreenSizes(void) {
     return sizes;
 }
 
-BOOL POIsScreenshot(POPhotoItem *item) {
-    if (item.isVideo) return NO;
+BOOL POHasScreenshotName(POPhotoItem *item) {
     static NSRegularExpression *name;
     static NSSet<NSString *> *folders;
     static dispatch_once_t once;
@@ -43,6 +43,14 @@ BOOL POIsScreenshot(POPhotoItem *item) {
     for (NSString *folder in [item.currentFolder componentsSeparatedByString:@"/"]) {
         if ([folders containsObject:folder.lowercaseString.precomposedStringWithCanonicalMapping]) return YES;
     }
+    return NO;
+}
+
+BOOL POIsScreenshot(POPhotoItem *item) {
+    if (item.isVideo) return NO;
+    if (PONameTraits(item) & PONameTraitScreenshot) return YES;
+    // A screenshot sent through a messenger comes back as a JPEG without its name: the image labels still see a screen.
+    if (item.labels[@"screenshot"].floatValue >= 0.5f && item.dateSource != PODateSourceEXIF && !item.hasLocation) return YES;
     if (![item.url.pathExtension.lowercaseString isEqualToString:@"png"] || item.pixelWidth <= 0 || item.pixelHeight <= 0) return NO;
     if ([POScreenSizes() containsObject:[NSString stringWithFormat:@"%ldx%ld", (long)item.pixelWidth, (long)item.pixelHeight]]) return YES;
     // Phones keep getting new screens: anything as tall as a phone is one too.
