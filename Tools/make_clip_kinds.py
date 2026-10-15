@@ -29,6 +29,9 @@ PHOTO = [
     "a photo of nature", "a blurry photo", "a photo of a screen", "a photo of a pet", "a photo of a landscape",
     "a photo of a child drawing on a board", "a photo of a child playing", "a photo of a kid with toys", "a photo of a whiteboard",
     "a photo of a book page", "a photo of a person holding paper", "a photo of a tattoo",
+    "a photo of a church service", "a photo of a priest in a church", "a photo of people in a church",
+    "a photo of a person holding a picture",
+    "a photo of a museum", "a photo of a celebration",
 ]
 PICTURE = [
     "a greeting card", "a digital greeting card with text", "a postcard with flowers and text", "a meme", "an image with a quote",

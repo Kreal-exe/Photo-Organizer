@@ -24,7 +24,7 @@ static const NSInteger POMaximumVideoFrames = 5;
 
 #pragma mark - Remembered results
 
-/// identity of a file → {"l": {label: confidence}, "n": {model id: score}, "f": [face embedding], "b": [face box], "p": people in the photo, "h": visual hash (0 when the picture is too plain to have one), "t": the text written in the picture, lower-cased, "k": MobileCLIP's vector of the picture, float16 (see POKinds.h)}. The identity survives moving and
+/// identity of a file → {"l": {label: confidence}, "n": {model id: score}, "f": [face embedding], "b": [face box], "p": people in the photo, "h": visual hash (0 when the picture is too plain to have one), "t": the text written in the picture, lower-cased, "kv": MobileCLIP's vectors of the picture — its centre and the whole of it — float16 (see POKinds.h)}. The identity survives moving and
 /// renaming the file on its volume, and changes when the file's contents do.
 @interface POAnalysisCache : NSObject
 @property (class, nonatomic, readonly) POAnalysisCache *sharedCache;
@@ -35,7 +35,7 @@ static const NSInteger POMaximumVideoFrames = 5;
 - (void)setPeopleCount:(NSInteger)count forKey:(NSString *)key;
 - (void)setFaceBoxes:(NSArray *)boxes forKey:(NSString *)key;
 - (void)setText:(NSString *)text forKey:(NSString *)key;
-- (void)setKindVector:(NSData *)vector forKey:(NSString *)key;
+- (void)setKindVectors:(NSArray<NSData *> *)vectors forKey:(NSString *)key;
 - (void)save;
 - (void)removeAll;
 @end
@@ -108,11 +108,13 @@ static const NSInteger POMaximumVideoFrames = 5;
     if (shouldSave) [self save];
 }
 
-- (void)setKindVector:(NSData *)vector forKey:(NSString *)key {
+- (void)setKindVectors:(NSArray<NSData *> *)vectors forKey:(NSString *)key {
     BOOL shouldSave;
     @synchronized (self) {
         NSMutableDictionary *record = [_records[key] mutableCopy] ?: [NSMutableDictionary dictionary];
-        record[@"k"] = vector;
+        // "k", the centre alone, came first: the two views replace it.
+        [record removeObjectForKey:@"k"];
+        record[@"kv"] = vectors;
         _records[key] = record;
         shouldSave = ++_unsaved >= 500;
     }
@@ -279,10 +281,10 @@ static NSUInteger POResultsGeneration;
             item.faceBoxes = [boxes isKindOfClass:NSArray.class] && boxes.count == faces.count ? boxes : nil;
             item.peopleCount = wantsFaces ? record[@"p"] : nil;
             item.text = record[@"t"];
-            NSData *kindVector = record[@"k"];
-            POSetKindVector(item, kindVector);
+            NSArray<NSData *> *kindVectors = [record[@"kv"] isKindOfClass:NSArray.class] ? record[@"kv"] : nil;
+            POSetKindVectors(item, kindVectors);
             // Pictures and collages are told by MobileCLIP once its model is there; nothing to look at in a video.
-            BOOL needsKinds = wantsKinds && !item.isVideo && !kindVector;
+            BOOL needsKinds = wantsKinds && !item.isVideo && kindVectors.count != 2;
             // Text came later than the rest: files analysed before are completed with it.
             BOOL needsText = !item.text && POWorthReadingText(item, labels ?: record[@"l"]);
             // Only photos with someone in a group need the count; it came after faces, so older results lack it.
@@ -374,10 +376,10 @@ static NSUInteger POResultsGeneration;
                     if (small) CGImageRelease(small);
                 }
                 if (kindEncoder && !item.isVideo && !item.pictureScore && images.count) {
-                    NSData *vector = [kindEncoder vectorForImage:(__bridge CGImageRef)images.firstObject];
-                    if (vector) {
-                        POSetKindVector(item, vector);
-                        [cache setKindVector:vector forKey:pendingKeys[index]];
+                    NSArray<NSData *> *vectors = [kindEncoder vectorsForImage:(__bridge CGImageRef)images.firstObject];
+                    if (vectors) {
+                        POSetKindVectors(item, vectors);
+                        [cache setKindVectors:vectors forKey:pendingKeys[index]];
                     }
                 }
                 if (wantsLabels && !item.labels) {

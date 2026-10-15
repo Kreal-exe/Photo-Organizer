@@ -144,11 +144,13 @@ BOOL POIsPicture(POPhotoItem *item) {
     NSNumber *score = item.pictureScore;
     if (score) {
         float picture = score.floatValue;
-        BOOL wishes = POHasPostcardWords(item.text);
+        BOOL wishes = POHasPostcardWords(item.text), writing = wishes || POLetterCount(item.text) >= POPostcardLetters;
+        // Likely, and with a card's wishes on it — not just any writing: a gravestone, a timetable, a sign in a photo
+        // have some too.
         if (picture < POPictureSure && !(picture >= POPictureLikely && wishes)) return NO;
         // People, animals or a landscape seen surely by the labels: a family photo or a church, unless CLIP is all but
         // certain or there is writing on it — the caption of a meme, the wishes of a card.
-        return !POLooksPhotographed(item.labels) || picture >= POPictureCertain || wishes || POLetterCount(item.text) >= POPostcardLetters;
+        return !POLooksPhotographed(item.labels) || picture >= POPictureCertain || writing;
     }
     return POIsPictureByLabels(item);
 }
