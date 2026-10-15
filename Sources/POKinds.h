@@ -18,16 +18,18 @@ NS_ASSUME_NONNULL_BEGIN
 /// Nil with `error` when the model is not downloaded or can't be loaded.
 + (nullable instancetype)encoderWithError:(NSError **)error;
 
-/// The image's vector, unit length, as float16 — what the analysis keeps; nil when it can't be computed.
-- (nullable NSData *)vectorForImage:(CGImageRef)image;
+/// The image's vectors, unit length, as float16 — what the analysis keeps: one of its centre (as MobileCLIP was
+/// trained) and one of the whole image fitted into the square (a photo of a priest holding an icon is an icon in its
+/// centre). Nil when they can't be computed.
+- (nullable NSArray<NSData *> *)vectorsForImage:(CGImageRef)image;
 
 @end
 
-/// How likely the image with this vector (as POKindEncoder makes it) is a picture and a collage, 0…1 each (the rest is
-/// a photo). NO when the vector or the descriptions can't be read.
-FOUNDATION_EXPORT BOOL POKindScores(NSData *_Nullable vector, float *picture, float *collage);
+/// How likely an image with these vectors (as POKindEncoder makes them) is a picture and a collage, 0…1 each (the rest
+/// is a photo): the mean of what each view says. NO when the vectors or the descriptions can't be read.
+FOUNDATION_EXPORT BOOL POKindScores(NSArray<NSData *> *_Nullable vectors, float *picture, float *collage);
 
-/// What the analysis found, set on `item` (pictureScore, collageScore); clears them for a nil vector.
-FOUNDATION_EXPORT void POSetKindVector(POPhotoItem *item, NSData *_Nullable vector);
+/// What the analysis found, set on `item` (pictureScore, collageScore); clears them for nil vectors.
+FOUNDATION_EXPORT void POSetKindVectors(POPhotoItem *item, NSArray<NSData *> *_Nullable vectors);
 
 NS_ASSUME_NONNULL_END

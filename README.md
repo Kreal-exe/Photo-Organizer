@@ -81,9 +81,10 @@ models are downloaded the same way, nothing else is needed.
     itself has to tell, and what is in it says nothing: a photo of a notebook page is a document, a postcard has
     people on it. On a Mac, MobileCLIP (Apple's, downloaded in *Settings → Recognition*, 23 MB) is asked how the image
     was made, comparing it with descriptions such as "a photo of a child", "a photo of a handwritten notebook page",
-    "a greeting card with text", "a meme" (`Tools/make_clip_kinds.py`). A file is a picture when it is sure, or likely (0.6)
-    and a postcard's wishes are read in it; where people, animals or a landscape are seen, it must be all but certain
-    or have writing on it — the caption of a meme, the wishes of a card. Without the model, the image labels of macOS
+    "a greeting card with text", "a meme" (`Tools/make_clip_kinds.py`), looking both at the centre of the image and at
+    the whole of it (a priest holding an icon is an icon in the centre). A file is a picture when CLIP is sure, or
+    thinks it likely and a card's wishes are read in it; where people, animals or a landscape are seen, it must be all
+    but certain or have writing on it — a meme's caption, a card's wishes. Without the model, the image labels of macOS
     decide, much less well. What a camera took — a capture date of its own, a place, a camera's name — is a photo
     whatever is in it.
 
@@ -313,9 +314,10 @@ open /Applications/PhotoOrganizer.app
     WhatsApp и Viber забивают телефон. У присланных через мессенджер фото нет никаких данных камеры, поэтому решает
     само изображение, причём не то, что на нём: фото тетради — это документ, а на открытке бывают люди. На Mac модель
     MobileCLIP от Apple (загружается в «Настройки» → «Распознавание», 23 МБ) сравнивает изображение с описаниями вроде
-    «фото ребёнка», «фото страницы тетради», «открытка с текстом», «мем» (`Tools/make_clip_kinds.py`). Картинка — когда
-    она уверена или считает это вероятным (от 0,6) и на изображении прочитаны пожелания с открытки; если видны люди, животные
-    или пейзаж, нужна почти полная уверенность или надпись — подпись мема, пожелания открытки. Без модели решают
+    «фото ребёнка», «фото страницы тетради», «открытка с текстом», «мем» (`Tools/make_clip_kinds.py`), глядя и на середину
+    изображения, и на него целиком (священник с иконой в руках посередине — это икона). Картинка — когда CLIP уверен или
+    считает это вероятным и на изображении прочитаны пожелания открытки; если видны люди, животные или пейзаж, нужна
+    почти полная уверенность или надпись — подпись мема, пожелания открытки. Без модели решают
     метки распознавания macOS, заметно хуже. Снятое камерой — со своей датой съёмки, местом или «камерным» именем —
     фото, что бы на нём ни было.
 
