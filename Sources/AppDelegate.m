@@ -3,6 +3,9 @@
 #import "MainWindowController.h"
 #import "POActions.h"
 #import "POSettingsWindowController.h"
+#import "POModel.h"
+#import "POHuggingFace.h"
+#import "POSettings.h"
 
 @interface AppDelegate () <NSMenuDelegate>
 @end
@@ -10,6 +13,7 @@
 @implementation AppDelegate {
     MainWindowController *_windowController;
     NSArray<NSURL *> *_pendingURLs;   // folders passed at launch, before the window exists
+    POHuggingFaceDownload *_pictureModelDownload;   // non-nil while MobileCLIP is being fetched
 }
 
 - (void)applicationWillFinishLaunching:(NSNotification *)notification {
@@ -47,9 +51,24 @@
     return YES;
 }
 
+/// MobileCLIP, which tells pictures and collages from photos, is small (23 MB) and needed by everyone: it is fetched on
+/// its own at launch, and the open folder is recognised again once it is there (the settings change). Tried again at
+/// the next launch when the download fails, offline say.
+- (void)downloadPictureModelIfNeeded {
+    POModel *model = POModel.pictureModel;
+    if (model.snapshotURL || _pictureModelDownload) return;
+    POHuggingFaceDownload *download = [[POHuggingFaceDownload alloc] initWithRepo:model.identifier files:model.files];
+    _pictureModelDownload = download;
+    [download startWithProgress:nil completion:^(NSURL *snapshot, NSError *error) {
+        self->_pictureModelDownload = nil;
+        if (snapshot) [POSettings didChange];
+    }];
+}
+
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
     _windowController = [MainWindowController new];
     [_windowController showWindow:nil];
+    [self downloadPictureModelIfNeeded];
     if (_pendingURLs.count) {
         [_windowController loadFolders:_pendingURLs];
         _pendingURLs = nil;

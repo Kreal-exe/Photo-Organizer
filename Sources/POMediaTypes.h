@@ -55,6 +55,15 @@ static const NSUInteger POPostcardLetters = 25;
 /// whiteboard or a screen has text too, but not these words.
 FOUNDATION_EXPORT BOOL POHasPostcardWords(NSString *_Nullable text);
 
+/// The least MobileCLIP must find a file like a picture for anything — a caption, a card's wishes — to make it one;
+/// below it, its text is not even read.
+FOUNDATION_EXPORT const float POPictureCaptioned;
+
+/// A caption in `text`: at least four words, mostly different, nearly all whole words of one alphabet — what a meme's
+/// caption reads like. What is read off a photo is not: a banner repeats its name, a monument or a sign comes out as
+/// a jumble of letters.
+FOUNDATION_EXPORT BOOL POHasCaption(NSString *_Nullable text);
+
 /// A picture by its labels and text alone: something drawn, printed or written seen surely (0.6), and no person,
 /// animal or landscape seen surely — or, when one is, an unmistakable drawing (0.9) or a postcard's wishes.
 FOUNDATION_EXPORT BOOL POIsPictureByLabels(POPhotoItem *item);

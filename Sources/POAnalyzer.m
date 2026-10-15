@@ -24,7 +24,7 @@ static const NSInteger POMaximumVideoFrames = 5;
 
 #pragma mark - Remembered results
 
-/// identity of a file → {"l": {label: confidence}, "n": {model id: score}, "f": [face embedding], "b": [face box], "p": people in the photo, "h": visual hash (0 when the picture is too plain to have one), "t": the text written in the picture, lower-cased, "kv": MobileCLIP's vectors of the picture — its centre and the whole of it — float16 (see POKinds.h)}. The identity survives moving and
+/// identity of a file → {"l": {label: confidence}, "n": {model id: score}, "f": [face embedding], "b": [face box], "p": people in the photo, "h": visual hash (0 when the picture is too plain to have one), "t": the text written in the picture, lower-cased, "te": whether it is a caption at the top or the bottom, "kv": MobileCLIP's vectors of the picture — its centre and the whole of it — float16 (see POKinds.h)}. The identity survives moving and
 /// renaming the file on its volume, and changes when the file's contents do.
 @interface POAnalysisCache : NSObject
 @property (class, nonatomic, readonly) POAnalysisCache *sharedCache;
@@ -34,7 +34,7 @@ static const NSInteger POMaximumVideoFrames = 5;
             faces:(nullable NSArray<NSData *> *)faces visualHash:(nullable NSNumber *)visualHash forKey:(NSString *)key;
 - (void)setPeopleCount:(NSInteger)count forKey:(NSString *)key;
 - (void)setFaceBoxes:(NSArray *)boxes forKey:(NSString *)key;
-- (void)setText:(NSString *)text forKey:(NSString *)key;
+- (void)setText:(NSString *)text atEdge:(BOOL)atEdge forKey:(NSString *)key;
 - (void)setKindVectors:(NSArray<NSData *> *)vectors forKey:(NSString *)key;
 - (void)save;
 - (void)removeAll;
@@ -97,11 +97,12 @@ static const NSInteger POMaximumVideoFrames = 5;
     if (shouldSave) [self save];
 }
 
-- (void)setText:(NSString *)text forKey:(NSString *)key {
+- (void)setText:(NSString *)text atEdge:(BOOL)atEdge forKey:(NSString *)key {
     BOOL shouldSave;
     @synchronized (self) {
         NSMutableDictionary *record = [_records[key] mutableCopy] ?: [NSMutableDictionary dictionary];
         record[@"t"] = text;
+        record[@"te"] = @(atEdge);
         _records[key] = record;
         shouldSave = ++_unsaved >= 500;
     }
@@ -281,12 +282,14 @@ static NSUInteger POResultsGeneration;
             item.faceBoxes = [boxes isKindOfClass:NSArray.class] && boxes.count == faces.count ? boxes : nil;
             item.peopleCount = wantsFaces ? record[@"p"] : nil;
             item.text = record[@"t"];
+            item.textAtEdge = record[@"te"];
             NSArray<NSData *> *kindVectors = [record[@"kv"] isKindOfClass:NSArray.class] ? record[@"kv"] : nil;
             POSetKindVectors(item, kindVectors);
             // Pictures and collages are told by MobileCLIP once its model is there; nothing to look at in a video.
             BOOL needsKinds = wantsKinds && !item.isVideo && kindVectors.count != 2;
             // Text came later than the rest: files analysed before are completed with it.
-            BOOL needsText = !item.text && POWorthReadingText(item, labels ?: record[@"l"]);
+            // Where the text lies came later still: text read before is read again for it.
+            BOOL needsText = (!item.text || !item.textAtEdge) && POWorthReadingText(item, labels ?: record[@"l"]);
             // Only photos with someone in a group need the count; it came after faces, so older results lack it.
             BOOL needsCount = wantsFaces && faces.count && !item.peopleCount;
             NSNumber *hash = record[@"h"];
@@ -387,7 +390,7 @@ static NSUInteger POResultsGeneration;
                     item.labels = labels = POLabelsForImages(images);
                 }
                 // Text is read from the picture at a size OCR can work with, only where text is likely.
-                if (!item.text && POWorthReadingText(item, item.labels)) {
+                if ((!item.text || !item.textAtEdge) && POWorthReadingText(item, item.labels)) {
                     // Two pictures at a time: reading text is the heaviest part, and the rest of the Mac (the grid's
                     // thumbnails among it) must not wait for it.
                     static dispatch_semaphore_t readers;
@@ -395,12 +398,14 @@ static NSUInteger POResultsGeneration;
                     dispatch_once(&once, ^{ readers = dispatch_semaphore_create(2); });
                     dispatch_semaphore_wait(readers, DISPATCH_TIME_FOREVER);
                     NSArray *large = POImagesForItem(item, POTextPixelSize);
-                    NSString *text = POTextInImage((__bridge CGImageRef)large.firstObject);
+                    BOOL atEdge = NO;
+                    NSString *text = POTextInImage((__bridge CGImageRef)large.firstObject, &atEdge);
                     large = nil;
                     dispatch_semaphore_signal(readers);
                     if (text) {   // nil: Vision failed, tried again next time
                         item.text = text;
-                        [cache setText:text forKey:pendingKeys[index]];
+                        item.textAtEdge = @(atEdge);
+                        [cache setText:text atEdge:atEdge forKey:pendingKeys[index]];
                     }
                 }
                 if (classifier && !item.nudityScore) {

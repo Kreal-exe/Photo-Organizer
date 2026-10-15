@@ -107,6 +107,8 @@ FOUNDATION_EXPORT NSString *POItemDateText(POPhotoItem *item, BOOL withTime);
 @property (atomic, strong, nullable) NSNumber *nudityScore;
 /// The text written in the picture (a screenshot, a document, a sign), lower-cased for the search; nil when not read.
 @property (atomic, copy, nullable) NSString *text;
+/// The text is a band at the top or the bottom of the picture — a caption (see POTextInImage); nil when not known.
+@property (atomic, strong, nullable) NSNumber *textAtEdge;
 
 @property (nonatomic, copy, nullable) NSString *contentHash;
 /// Set on every copy; points to the file that is kept as the original.

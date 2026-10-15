@@ -113,6 +113,27 @@ BOOL POHasPostcardWords(NSString *text) {
     return [words numberOfMatchesInString:text options:0 range:NSMakeRange(0, text.length)] >= 2;
 }
 
+BOOL POHasCaption(NSString *text) {
+    if (!text.length) return NO;
+    static NSRegularExpression *words, *whole;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        words = [NSRegularExpression regularExpressionWithPattern:@"\\p{L}{3,}" options:0 error:NULL];
+        // One alphabet, and a vowel of it.
+        whole = [NSRegularExpression regularExpressionWithPattern:@"^(?=[а-яёіїєґ]+$).*[аеёиоуыэюяіїє]|^(?=[a-z]+$).*[aeiouy]"
+                                                          options:0 error:NULL];
+    });
+    NSString *lower = text.lowercaseString;
+    NSMutableArray<NSString *> *found = [NSMutableArray array];
+    for (NSTextCheckingResult *match in [words matchesInString:lower options:0 range:NSMakeRange(0, lower.length)]) {
+        [found addObject:[lower substringWithRange:match.range]];
+    }
+    if (found.count < 4) return NO;
+    NSUInteger clean = 0;
+    for (NSString *word in found) clean += [whole firstMatchInString:word options:0 range:NSMakeRange(0, word.length)] != nil;
+    return [NSSet setWithArray:found].count >= 0.6 * found.count && clean >= 0.95 * found.count;
+}
+
 BOOL POIsPictureByLabels(POPhotoItem *item) {
     NSDictionary<NSString *, NSNumber *> *labels = item.labels;
     float graphic = POGraphicScore(labels);
@@ -133,7 +154,11 @@ BOOL POIsCollage(POPhotoItem *item) {
 }
 
 /// How sure MobileCLIP must be that a file is a picture; with a postcard's wishes read in it, likely is enough.
-static const float POPictureSure = 0.85f, POPictureLikely = 0.6f, POPictureCertain = 0.97f;
+static const float POPictureSure = 0.85f, POPictureLikely = 0.6f, POPictureCertain = 0.97f, POPictureSuspected = 0.3f,
+                   POPictureSuspectedWithPeople = 0.45f;
+const float POPictureCaptioned = 0.15f;
+/// Letters of a text that is the picture itself rather than a caption.
+static const NSUInteger POLongText = 200;
 
 BOOL POIsPicture(POPhotoItem *item) {
     NSNumber *mark = item.pictureMark;
@@ -144,13 +169,23 @@ BOOL POIsPicture(POPhotoItem *item) {
     NSNumber *score = item.pictureScore;
     if (score) {
         float picture = score.floatValue;
-        BOOL wishes = POHasPostcardWords(item.text), writing = wishes || POLetterCount(item.text) >= POPostcardLetters;
-        // Likely, and with a card's wishes on it — not just any writing: a gravestone, a timetable, a sign in a photo
-        // have some too.
-        if (picture < POPictureSure && !(picture >= POPictureLikely && wishes)) return NO;
-        // People, animals or a landscape seen surely by the labels: a family photo or a church, unless CLIP is all but
-        // certain or there is writing on it — the caption of a meme, the wishes of a card.
-        return !POLooksPhotographed(item.labels) || picture >= POPictureCertain || writing;
+        BOOL wishes = POHasPostcardWords(item.text), caption = POHasCaption(item.text);
+        // People, animals or a landscape seen surely by the labels: a family photo or a church.
+        BOOL photographed = POLooksPhotographed(item.labels);
+        // Sure: a picture — where a photo would be seen, only all but certain or written on (a caption, a card's
+        // wishes; not any writing: a banner or a monument behind people is read as a repetition or a jumble).
+        if (picture >= POPictureSure) return !photographed || picture >= POPictureCertain || wishes || caption;
+        // Likely, and written on.
+        if (picture >= POPictureLikely) return wishes || caption;
+        // Even not much like a picture, a caption above or below an image sent from the web makes one ("Так цветёт
+        // папоротник!!!") — a band at its edge, not what is written in the scene (a T-shirt, a book, a diploma); where
+        // people are seen too (a crowd under "Передавай по цепочке!"), CLIP must suspect it a little more.
+        if (picture < POPictureCaptioned || !caption) return NO;
+        // A long text that reads as one — a message passed on, a poem — is the picture itself.
+        if (picture >= POPictureSuspected && POLetterCount(item.text) >= POLongText) return YES;
+        // With people in it, a card's wishes on the band ("С юбилеем…") say so even when CLIP doubts.
+        return item.textAtEdge.boolValue && (!photographed || picture >= POPictureSuspectedWithPeople ||
+                                             (wishes && picture >= POPictureSuspected));
     }
     return POIsPictureByLabels(item);
 }

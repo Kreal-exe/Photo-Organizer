@@ -31,14 +31,24 @@ PHOTO = [
     "a photo of a book page", "a photo of a person holding paper", "a photo of a tattoo",
     "a photo of a church service", "a photo of a priest in a church", "a photo of people in a church",
     "a photo of a person holding a picture",
-    "a photo of a museum", "a photo of a celebration",
+    "a photo of a museum", "a photo of a celebration", "a photo of framed pictures standing on a table",
+    "a photo of a shelf with icons and flowers", "a photo of a monument", "a photo of people standing in front of a banner",
+    "a photo of a medicine box lying on a table", "a photo of a product package held in a hand", "a photo of a chocolate bar",
+    "a photo of groceries on a table", "a photo of a child's drawing on a sheet of paper", "a photo of a notebook with drawings",
+    "a photo of a woman at a press wall", "a photo of a car parked outside",
 ]
 PICTURE = [
     "a greeting card", "a digital greeting card with text", "a postcard with flowers and text", "a meme", "an image with a quote",
     "a religious icon", "a digital illustration", "a cartoon", "computer graphics", "vector art", "clip art",
     "an advertisement banner", "a poster with text", "an animated sticker", "a text on a colorful background",
     "a greeting card with a photo of a person and text", "a congratulations card", "a quote card", "a happy birthday card",
-    "a good morning card",
+    "a good morning card", "a product listing from an online shop", "a product advertisement with text",
+    "a photo of a product on a white background with a title", "a meme with an old photo and a caption",
+    "an old black and white photo with a text caption above it", "a nostalgic meme about the soviet union",
+    "a demotivator poster", "an infographic", "a table with text comparing symptoms", "an informational poster with a table",
+    "a long text on a white background", "a message to forward with a picture and a caption",
+    "an anime drawing", "a manga illustration", "a painting of a landscape", "an oil painting", "digital art",
+    "a 3d render", "concept art", "fan art of a character",
 ]
 COLLAGE = [
     "a collage of several photos", "a grid of family photos", "a photo collage", "several photos arranged together",

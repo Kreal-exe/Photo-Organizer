@@ -807,6 +807,16 @@ int main(void) {
             postcard.pictureScore = @0.1;
             postcard.collageScore = @0.8;
             CHECK(POIsCollage(postcard) && POIsPicture(postcard));   // several photos put together by an app
+            postcard.collageScore = @0.0;
+            postcard.pictureScore = @0.38;
+            postcard.text = @"так цветет папоротник!!! невероятно красиво";
+            postcard.textAtEdge = @YES;
+            CHECK(POIsPicture(postcard));    // a caption above a picture sent from the web
+            postcard.textAtEdge = @NO;
+            CHECK(!POIsPicture(postcard));   // the same words on a T-shirt or a book in a photo
+            postcard.text = nil;
+            postcard.textAtEdge = nil;
+            postcard.pictureScore = @0.1;
             postcard.collageScore = @0.55;
             CHECK(!POIsCollage(postcard));   // a group photo looks a little like a grid of photos
             {
@@ -885,8 +895,8 @@ int main(void) {
             CGImageRef image = CGBitmapContextCreateImage(context);
             CGContextRelease(context);
             NSDate *started = NSDate.date;
-            NSString *read = POTextInImage(image);
-            for (int i = 0; i < 4; i++) POTextInImage(image);
+            NSString *read = POTextInImage(image, NULL);
+            for (int i = 0; i < 4; i++) POTextInImage(image, NULL);
             NSLog(@"Text: %.0f ms a picture", -[started timeIntervalSinceNow] * 1000 / 5);
             CGImageRelease(image);
             NSLog(@"Text read: %@", [read stringByReplacingOccurrencesOfString:@"\n" withString:@" | "]);

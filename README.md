@@ -79,12 +79,16 @@ models are downloaded the same way, nothing else is needed.
   - *Pictures* are what was made on a computer rather than taken by a camera — postcards, memes, icons, quote cards:
     what WhatsApp and Viber chats fill a phone with. Messenger photos keep no camera metadata at all, so the image
     itself has to tell, and what is in it says nothing: a photo of a notebook page is a document, a postcard has
-    people on it. On a Mac, MobileCLIP (Apple's, downloaded in *Settings → Recognition*, 23 MB) is asked how the image
+    people on it. On a Mac, MobileCLIP (Apple's, 23 MB, downloaded on its own at the first launch) is asked how the image
     was made, comparing it with descriptions such as "a photo of a child", "a photo of a handwritten notebook page",
     "a greeting card with text", "a meme" (`Tools/make_clip_kinds.py`), looking both at the centre of the image and at
     the whole of it (a priest holding an icon is an icon in the centre). A file is a picture when CLIP is sure, or
-    thinks it likely and a card's wishes are read in it; where people, animals or a landscape are seen, it must be all
-    but certain or have writing on it — a meme's caption, a card's wishes. Without the model, the image labels of macOS
+    thinks it likely and there is writing on it — a card's wishes or a caption (several different whole words, not the
+    repeated name on a banner or the jumble read off a monument). Even when CLIP hardly suspects it, a caption in a
+    band above or below the image ("Так цветёт папоротник!!!") or a long text that is the image itself makes a
+    picture; what is written inside a photographed scene — a T-shirt, a book, a diploma — does not. Where people,
+    animals or a landscape are seen, it must be all but certain or written on. Text is read in every image that came
+    without a camera's metadata and CLIP finds at all like a picture. Without the model, the image labels of macOS
     decide, much less well. What a camera took — a capture date of its own, a place, a camera's name — is a photo
     whatever is in it.
 
@@ -313,11 +317,15 @@ open /Applications/PhotoOrganizer.app
   - *«Картинки»* — то, что сделано на компьютере, а не снято камерой: открытки, мемы, иконы, цитаты — то, чем чаты
     WhatsApp и Viber забивают телефон. У присланных через мессенджер фото нет никаких данных камеры, поэтому решает
     само изображение, причём не то, что на нём: фото тетради — это документ, а на открытке бывают люди. На Mac модель
-    MobileCLIP от Apple (загружается в «Настройки» → «Распознавание», 23 МБ) сравнивает изображение с описаниями вроде
+    MobileCLIP от Apple (23 МБ, загружается сама при первом запуске) сравнивает изображение с описаниями вроде
     «фото ребёнка», «фото страницы тетради», «открытка с текстом», «мем» (`Tools/make_clip_kinds.py`), глядя и на середину
     изображения, и на него целиком (священник с иконой в руках посередине — это икона). Картинка — когда CLIP уверен или
-    считает это вероятным и на изображении прочитаны пожелания открытки; если видны люди, животные или пейзаж, нужна
-    почти полная уверенность или надпись — подпись мема, пожелания открытки. Без модели решают
+    считает это вероятным и на изображении есть надпись — пожелания открытки или подпись (несколько разных целых
+    слов, а не повторяющееся название на баннере и не мешанина, прочитанная с памятника). Даже когда CLIP почти не
+    подозревает картинку, её делает подпись полосой над или под изображением («Так цветёт папоротник!!!») или длинный
+    текст, который сам и есть картинка; надпись внутри снятой сцены — на футболке, книге, дипломе — не делает. Если
+    видны люди, животные или пейзаж, нужна почти полная уверенность или надпись. Текст читается у изображений без
+    данных камеры, которые CLIP хоть немного считает картинкой. Без модели решают
     метки распознавания macOS, заметно хуже. Снятое камерой — со своей датой съёмки, местом или «камерным» именем —
     фото, что бы на нём ни было.
 

@@ -1,4 +1,5 @@
 #import "POPictureText.h"
+#import "POMediaTypes.h"
 #import <Vision/Vision.h>
 
 // Enough for the text of a phone screenshot (1170–1290 pixels across) and a page; larger only costs time.
@@ -27,12 +28,16 @@ BOOL POWorthReadingText(POPhotoItem *item, NSDictionary<NSString *, NSNumber *> 
     for (NSString *label in labels) {
         if ([POTextLabels() containsObject:label]) return YES;
     }
-    // What MobileCLIP takes for a picture: a postcard's wishes decide whether it is one.
-    return item.pictureScore.floatValue >= 0.6f;
+    // What came without a camera's metadata (from a messenger, from the web) and MobileCLIP finds at all like a picture:
+    // a meme's caption or a card's wishes decide whether it is one (below POPictureCaptioned nothing does). Family
+    // photos score near nothing, so most messenger images are not read at all.
+    return !POTakenByCamera(item) && item.pictureScore.floatValue >= POPictureCaptioned;
 }
 
 /// One pass of Vision's text recognition; nil when it failed.
-static NSArray<NSString *> *PORecognizedLines(CGImageRef image, NSArray<NSString *> *languages) {
+/// The lines read in `image`, and in `edges` how many of their letters lie in lines wholly within its top or bottom
+/// third, and in `letters` how many there are in all.
+static NSArray<NSString *> *PORecognizedLines(CGImageRef image, NSArray<NSString *> *languages, NSUInteger *edges, NSUInteger *letters) {
     VNRecognizeTextRequest *request = [VNRecognizeTextRequest new];
     request.recognitionLevel = VNRequestTextRecognitionLevelAccurate;
     // Correction guesses at words the dictionary knows; the search wants what is written, and it costs time.
@@ -44,7 +49,13 @@ static NSArray<NSString *> *PORecognizedLines(CGImageRef image, NSArray<NSString
     NSMutableArray<NSString *> *lines = [NSMutableArray array];
     for (VNRecognizedTextObservation *observation in request.results) {
         NSString *line = [observation topCandidates:1].firstObject.string;
-        if (line.length) [lines addObject:line];
+        if (!line.length) continue;
+        [lines addObject:line];
+        NSUInteger count = 0;
+        for (NSUInteger i = 0; i < line.length; i++) count += [NSCharacterSet.letterCharacterSet characterIsMember:[line characterAtIndex:i]];
+        *letters += count;
+        CGRect box = observation.boundingBox;   // normalised, origin bottom-left
+        if (CGRectGetMinY(box) >= 2.0 / 3 || CGRectGetMaxY(box) <= 1.0 / 3) *edges += count;
     }
     return lines;
 }
@@ -64,23 +75,32 @@ static NSArray<NSString *> *POTextLanguages(void) {
     return languages;
 }
 
-NSString *POTextInImage(CGImageRef image) {
+NSString *POTextInImage(CGImageRef image, BOOL *captionAtEdge) {
+    if (captionAtEdge) *captionAtEdge = NO;
     if (!image) return @"";
     // One pass reads both languages; only when this macOS refuses the pair is each read on its own.
     NSArray<NSString *> *languages = POTextLanguages();
-    NSArray<NSString *> *lines = PORecognizedLines(image, languages);
+    NSUInteger edges = 0, letters = 0;
+    NSArray<NSString *> *lines = PORecognizedLines(image, languages, &edges, &letters);
     if (!lines && languages.count > 1) {
         NSMutableArray<NSString *> *merged = [NSMutableArray array];
         BOOL anyPass = NO;
         for (NSString *language in languages) {
-            NSArray<NSString *> *found = PORecognizedLines(image, @[language]);
+            edges = letters = 0;
+            NSArray<NSString *> *found = PORecognizedLines(image, @[language], &edges, &letters);
             if (!found) continue;
             anyPass = YES;
             for (NSString *line in found) if (![merged containsObject:line]) [merged addObject:line];
         }
         lines = anyPass ? merged : nil;
     }
-    if (!lines) lines = PORecognizedLines(image, @[]);   // Vision's own default
+    if (!lines) {
+        edges = letters = 0;
+        lines = PORecognizedLines(image, @[], &edges, &letters);   // Vision's own default
+    }
     if (!lines) return nil;
+    // A caption is a band above or below the image; what is written in a photographed scene — on a T-shirt, a book,
+    // a diploma, a page — lies anywhere.
+    if (captionAtEdge) *captionAtEdge = letters >= 10 && edges >= 0.8 * letters;
     return [[lines componentsJoinedByString:@"\n"].lowercaseString stringByReplacingOccurrencesOfString:@"ё" withString:@"е"];
 }
