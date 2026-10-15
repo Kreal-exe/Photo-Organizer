@@ -56,6 +56,9 @@ NS_ASSUME_NONNULL_BEGIN
 - (IBAction)findObjectInSelection:(nullable id)sender;
 /// Marks another object on the last example photo.
 - (IBAction)pickAnotherObject:(nullable id)sender;
+/// Tells that the selected files are pictures (or photos): they move to that kind, and the model learns from them.
+- (IBAction)markSelectionAsPicture:(nullable id)sender;
+- (IBAction)markSelectionAsPhoto:(nullable id)sender;
 /// Puts the cursor into the search field.
 - (IBAction)focusSearch:(nullable id)sender;
 @end

@@ -23,6 +23,7 @@ static NSString *const PODefaultsOrganizesPhotos = @"organizesPhotos";
 static NSString *const PODefaultsOrganizesVideos = @"organizesVideos";
 static NSString *const PODefaultsOrganizesPictures = @"organizesPictures";
 static NSString *const PODefaultsOrganizesCollages = @"organizesCollages";
+static NSString *const PODefaultsOrganizesScreenshots = @"organizesScreenshots";
 static NSString *const PODefaultsKeptFolders = @"keptFolders";   // library path (lower case) → [top-level folder]
 
 @interface POGroup ()
@@ -67,12 +68,14 @@ static NSString *const PODefaultsKeptFolders = @"keptFolders";   // library path
         PODefaultsOrganizesVideos: @YES,
         PODefaultsOrganizesPictures: @YES,
         PODefaultsOrganizesCollages: @YES,
+        PODefaultsOrganizesScreenshots: @YES,
     }];
 }
 
 + (NSString *)keyForKind:(NSInteger)kind {
-    NSArray<NSString *> *keys = @[PODefaultsOrganizesPhotos, PODefaultsOrganizesVideos, PODefaultsOrganizesPictures, PODefaultsOrganizesCollages];
-    return keys[MIN(MAX(kind, 0), 3)];
+    NSArray<NSString *> *keys = @[PODefaultsOrganizesPhotos, PODefaultsOrganizesVideos, PODefaultsOrganizesPictures, PODefaultsOrganizesCollages,
+                                  PODefaultsOrganizesScreenshots];
+    return keys[MIN(MAX(kind, 0), (NSInteger)keys.count - 1)];
 }
 
 + (BOOL)organizesKind:(NSInteger)kind {
@@ -119,7 +122,7 @@ static NSString *const PODefaultsKeptFolders = @"keptFolders";   // library path
         _tinyFolderName = POPlan.defaultTinyFolderName;
         _screenshotsFolderName = POPlan.defaultScreenshotsFolderName;
         _datesInside = YES;
-        _organizesPhotos = _organizesVideos = _organizesPictures = _organizesCollages = YES;
+        _organizesPhotos = _organizesVideos = _organizesPictures = _organizesCollages = _organizesScreenshots = YES;
         _customNames = [NSMutableDictionary dictionary];
         NSArray *kept = [[NSUserDefaults.standardUserDefaults dictionaryForKey:PODefaultsKeptFolders] objectForKey:rootURL.path.lowercaseString];
         _keptFolders = [NSMutableSet setWithArray:[kept isKindOfClass:NSArray.class] ? kept : @[]];
@@ -162,9 +165,11 @@ static NSString *const PODefaultsKeptFolders = @"keptFolders";   // library path
     return [_keptFolders containsObject:top];
 }
 
-/// Whether the kind of `item` is organized at all (photos, videos, pictures, collages).
+/// Whether the kind of `item` is organized at all (photos, videos, pictures, collages, screenshots) — the same kinds
+/// as the strip above the library (see POMediaKindOfItem).
 - (BOOL)organizesItem:(POPhotoItem *)item {
     return POIsGooglePhotosCreation(item) ? self.organizesCollages
+         : POIsScreenshot(item) && !item.pictureMark ? self.organizesScreenshots
          : POIsPicture(item) ? self.organizesPictures
          : item.isVideo ? self.organizesVideos : self.organizesPhotos;
 }
@@ -252,6 +257,7 @@ static NSString *const PODefaultsKeptFolders = @"keptFolders";   // library path
     self.organizesVideos = [defaults boolForKey:PODefaultsOrganizesVideos];
     self.organizesPictures = [defaults boolForKey:PODefaultsOrganizesPictures];
     self.organizesCollages = [defaults boolForKey:PODefaultsOrganizesCollages];
+    self.organizesScreenshots = [defaults boolForKey:PODefaultsOrganizesScreenshots];
     self.separateScreenshots = [defaults boolForKey:PODefaultsSeparateScreenshots];
     self.screenshotsInEachDate = [defaults boolForKey:PODefaultsScreenshotsInEachDate];
     NSString *screenshots = [defaults stringForKey:PODefaultsScreenshotsFolder];
@@ -282,6 +288,7 @@ static NSString *const PODefaultsKeptFolders = @"keptFolders";   // library path
     [defaults setBool:self.organizesVideos forKey:PODefaultsOrganizesVideos];
     [defaults setBool:self.organizesPictures forKey:PODefaultsOrganizesPictures];
     [defaults setBool:self.organizesCollages forKey:PODefaultsOrganizesCollages];
+    [defaults setBool:self.organizesScreenshots forKey:PODefaultsOrganizesScreenshots];
     [defaults setBool:self.separateScreenshots forKey:PODefaultsSeparateScreenshots];
     [defaults setBool:self.screenshotsInEachDate forKey:PODefaultsScreenshotsInEachDate];
     [defaults setObject:self.screenshotsFolderName forKey:PODefaultsScreenshotsFolder];

@@ -36,17 +36,38 @@ static BOOL POInFolder(POPhotoItem *item, NSString *name) {
 }
 
 BOOL POIsGooglePhotosCreation(POPhotoItem *item) {
-    NSString *base = item.url.lastPathComponent.stringByDeletingPathExtension.precomposedStringWithCanonicalMapping;
-    return POMatches(@"-(collage|photo_frame|animation|effects|mix|snippet|cinematic|stylized)(\\(\\d+\\))?$|^movie(\\(\\d+\\))?$", base);
+    return (PONameTraits(item) & PONameTraitGooglePhotosCreation) != 0;
 }
 
-BOOL POIsPicture(POPhotoItem *item) {
-    if (POIsGooglePhotosCreation(item)) return YES;
-    // What a camera took is a photo, whatever is in it (a painting on the wall, a document): a capture date of its
-    // own, a place, or a camera's name (IMG_20180117_181128, 20220909_145141, PXL_…, DSC…).
-    if (item.isVideo || item.hasLocation || item.dateSource == PODateSourceEXIF || POIsScreenshot(item)) return NO;
-    NSString *base = item.url.lastPathComponent.stringByDeletingPathExtension;
-    if (POMatches(@"^(img|vid|pxl|mvimg)_\\d{8}_\\d{6}|^\\d{8}_\\d{6}|^dsc", base)) return NO;
+PONameTrait PONameTraits(POPhotoItem *item) {
+    PONameTrait traits = item.nameTraits;
+    if (traits & PONameTraitKnown) return traits;
+    traits = PONameTraitKnown;
+    NSString *base = item.url.lastPathComponent.stringByDeletingPathExtension.precomposedStringWithCanonicalMapping;
+    if (POMatches(@"-(collage|photo_frame|animation|effects|mix|snippet|cinematic|stylized)(\\(\\d+\\))?$|^movie(\\(\\d+\\))?$", base)) {
+        traits |= PONameTraitGooglePhotosCreation;
+    }
+    if (POMatches(@"^(img|vid|pxl|mvimg)_\\d{8}_\\d{6}|^\\d{8}_\\d{6}|^dsc", base)) traits |= PONameTraitCamera;
+    if (POHasScreenshotName(item)) traits |= PONameTraitScreenshot;
+    if (POMatches(@"^(rpreplay|screenrecording|screen recording|screen_recording|screenrecorder|запись экрана|record_screen)", base)) {
+        traits |= PONameTraitScreenRecording;
+    }
+    if (POMatches(@"^(img|vid|aud|ptt|stk)-\\d{8}-wa\\d+", base) || POInFolder(item, @"whatsapp")) traits |= PONameTraitWhatsApp;
+    if (POMatches(@"^(photo|video|file)_\\d{4}-\\d{2}-\\d{2}_\\d{2}-\\d{2}-\\d{2}|^telegram-(cloud|peer)-", base) || POInFolder(item, @"telegram")) {
+        traits |= PONameTraitTelegram;
+    }
+    if (POMatches(@"^viber[_ ]", base) || POInFolder(item, @"viber")) traits |= PONameTraitViber;
+    if (POInFolder(item, @"instagram")) traits |= PONameTraitInstagram;
+    if (POMatches(@"^pano[_-]", base)) traits |= PONameTraitPanorama;
+    item.nameTraits = traits;
+    return traits;
+}
+
+BOOL POTakenByCamera(POPhotoItem *item) {
+    return item.hasLocation || item.dateSource == PODateSourceEXIF || (PONameTraits(item) & PONameTraitCamera);
+}
+
+float POGraphicScore(NSDictionary<NSString *, NSNumber *> *labels) {
     // Labels of something drawn, printed or written as a whole — not "art", which a photo of a room with a picture
     // on the wall gets too.
     static NSArray<NSString *> *graphic;
@@ -55,29 +76,37 @@ BOOL POIsPicture(POPhotoItem *item) {
         graphic = @[@"illustrations", @"cartoon", @"document", @"printed_page", @"handwriting", @"chart", @"diagram", @"newspaper",
                     @"receipt", @"whiteboard"];
     });
-    NSDictionary<NSString *, NSNumber *> *labels = item.labels;
     float score = 0;
     for (NSString *label in graphic) score = MAX(score, labels[label].floatValue);
-    return score >= 0.6f;
+    return score;
+}
+
+BOOL POIsPicture(POPhotoItem *item) {
+    NSNumber *mark = item.pictureMark;
+    if (mark && !item.isVideo) return mark.boolValue;
+    if (POIsGooglePhotosCreation(item)) return YES;
+    // What a camera took is a photo, whatever is in it (a painting on the wall, a document).
+    if (item.isVideo || POIsScreenshot(item) || POTakenByCamera(item)) return NO;
+    NSNumber *verdict = item.pictureVerdict;
+    if (verdict) return verdict.boolValue;
+    return POGraphicScore(item.labels) >= 0.6f;
 }
 
 NSString *POTypeFolder(POPhotoItem *item) {
-    NSString *base = item.url.lastPathComponent.stringByDeletingPathExtension.precomposedStringWithCanonicalMapping;
+    PONameTrait traits = PONameTraits(item);
     NSString *extension = item.url.pathExtension.lowercaseString;
-    if (POIsGooglePhotosCreation(item)) return POL(@"Коллажи");
+    if (traits & PONameTraitGooglePhotosCreation) return POL(@"Коллажи");
     if (POIsPicture(item)) return POL(@"Картинки");
     if (POIsScreenshot(item)) return POL(@"Скриншоты");
-    if (item.isVideo && POMatches(@"^(rpreplay|screenrecording|screen recording|screen_recording|screenrecorder|запись экрана|record_screen)", base)) {
-        return POL(@"Записи экрана");
-    }
-    if (POMatches(@"^(img|vid|aud|ptt|stk)-\\d{8}-wa\\d+", base) || POInFolder(item, @"whatsapp")) return @"WhatsApp";
-    if (POMatches(@"^(photo|video|file)_\\d{4}-\\d{2}-\\d{2}_\\d{2}-\\d{2}-\\d{2}|^telegram-(cloud|peer)-", base) || POInFolder(item, @"telegram")) return @"Telegram";
-    if (POMatches(@"^viber[_ ]", base) || POInFolder(item, @"viber")) return @"Viber";
-    if (POInFolder(item, @"instagram")) return @"Instagram";
+    if (item.isVideo && (traits & PONameTraitScreenRecording)) return POL(@"Записи экрана");
+    if (traits & PONameTraitWhatsApp) return @"WhatsApp";
+    if (traits & PONameTraitTelegram) return @"Telegram";
+    if (traits & PONameTraitViber) return @"Viber";
+    if (traits & PONameTraitInstagram) return @"Instagram";
     if (item.isVideo) return POL(@"Видео");
     if ([extension isEqualToString:@"gif"]) return POL(@"Анимации");
     if ([PORawExtensions() containsObject:extension]) return @"RAW";
-    if (POMatches(@"^pano[_-]", base)) return POL(@"Панорамы");
+    if (traits & PONameTraitPanorama) return POL(@"Панорамы");
     // A panorama is wide and large: a narrow tall strip (a crop, a long picture from a messenger) is not one.
     if (item.pixelHeight > 0 && item.pixelWidth >= 2500 && (double)item.pixelWidth / item.pixelHeight >= 2.5) return POL(@"Панорамы");
     return POL(@"Фото");

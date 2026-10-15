@@ -10,6 +10,7 @@ typedef NS_ENUM(NSInteger, POMediaKind) {
     POMediaKindVideos,
     POMediaKindPictures,   // postcards, memes, drawings, documents (see POIsPicture)
     POMediaKindCollages,   // what Google Photos made: collages, frames, animations, movies, effects
+    POMediaKindScreenshots,   // see POIsScreenshot
 };
 
 /// What the strip shows: "Медиа" — every ticked kind — or one kind alone (POQuickFilterAll + 1 + a POMediaKind).
@@ -19,6 +20,7 @@ typedef NS_ENUM(NSInteger, POQuickFilter) {
     POQuickFilterVideos,
     POQuickFilterPictures,
     POQuickFilterCollages,
+    POQuickFilterScreenshots,
 };
 
 NS_ASSUME_NONNULL_BEGIN

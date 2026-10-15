@@ -14,6 +14,7 @@
 #import "POSimilarCopies.h"
 #import "POSimilaritySearch.h"
 #import "POMediaTypes.h"
+#import "POPictures.h"
 #import "POScreenshots.h"
 #import "POPhotoSearchWindowController.h"
 #import "POManualDates.h"
@@ -219,6 +220,13 @@ static POMediaKind POMediaKindOfItem(POPhotoItem *item);
     if (menuItem.action == @selector(showOriginal:)) menuItem.hidden = ![self originalOfSelection];
     // Only for a photo with a face found in it.
     if (menuItem.action == @selector(findPersonInSelection:)) menuItem.hidden = ![self faceOfSelection];
+    // One of the two: "Это фото" when everything selected is already a picture, "Это картинка" otherwise.
+    if (menuItem.action == @selector(markSelectionAsPicture:) || menuItem.action == @selector(markSelectionAsPhoto:)) {
+        NSArray<POPhotoItem *> *items = [self markableSelection];
+        BOOL allPictures = items.count > 0;
+        for (POPhotoItem *item in items) allPictures = allPictures && POIsPicture(item);
+        menuItem.hidden = !items.count || allPictures != (menuItem.action == @selector(markSelectionAsPhoto:));
+    }
     // The grouping of the toolbar, ⌘1 ⌘2 ⌘3.
     if (menuItem.action == @selector(chooseGrouping:)) menuItem.state = menuItem.tag == [self grouping] ? NSControlStateValueOn : NSControlStateValueOff;
     return [self validateAction:menuItem.action];
@@ -252,6 +260,7 @@ static POMediaKind POMediaKindOfItem(POPhotoItem *item);
         return idle && _content.grid.selectedItems.count == 1 && (kind != POFilterKindAll || _content.showsViewer);
     }
     if (action == @selector(findPersonInSelection:)) return idle && [self faceOfSelection] != nil;
+    if (action == @selector(markSelectionAsPicture:) || action == @selector(markSelectionAsPhoto:)) return idle && [self markableSelection].count > 0;
     if (action == @selector(chooseGrouping:)) return _plan && !_scanner && !_organizing;
     if (action == @selector(setDateForSelection:) || action == @selector(acceptDateSuggestions:)) {
         return idle && (_content.grid.selectedItems.count || _content.grid.allItems.count);
@@ -461,7 +470,7 @@ static POMediaKind POMediaKindOfItem(POPhotoItem *item);
 /// `items` of the ticked kinds — what the library shows and counts under "Все" (see the strip above the grid).
 - (NSArray<POPhotoItem *> *)shownIn:(NSArray<POPhotoItem *> *)items {
     NSArray<NSNumber *> *included = [self includedKinds];
-    if (included[0].boolValue && included[1].boolValue && included[2].boolValue && included[3].boolValue) return items;
+    if (![included containsObject:@NO]) return items;
     return [items filteredArrayUsingPredicate:[NSPredicate predicateWithBlock:^BOOL(POPhotoItem *item, NSDictionary *bindings) {
         return included[POMediaKindOfItem(item)].boolValue;
     }]];
@@ -612,7 +621,7 @@ static NSArray<POGridSection *> *POSectionsByFolder(NSArray<POPhotoItem *> *item
 }
 
 - (POQuickFilter)mediaKind {
-    return MIN(MAX([NSUserDefaults.standardUserDefaults integerForKey:POMediaKindKey], POQuickFilterAll), POQuickFilterCollages);
+    return MIN(MAX([NSUserDefaults.standardUserDefaults integerForKey:POMediaKindKey], POQuickFilterAll), POQuickFilterScreenshots);
 }
 
 - (IBAction)selectQuickFilter:(NSButton *)sender {
@@ -623,11 +632,12 @@ static NSArray<POGridSection *> *POSectionsByFolder(NSArray<POPhotoItem *> *item
 /// Which kinds are ticked, by POMediaKind: in the library under "Все", and organized.
 - (NSArray<NSNumber *> *)includedKinds {
     return @[@([POPlan organizesKind:POMediaKindPhotos]), @([POPlan organizesKind:POMediaKindVideos]),
-             @([POPlan organizesKind:POMediaKindPictures]), @([POPlan organizesKind:POMediaKindCollages])];
+             @([POPlan organizesKind:POMediaKindPictures]), @([POPlan organizesKind:POMediaKindCollages]),
+             @([POPlan organizesKind:POMediaKindScreenshots])];
 }
 
 - (IBAction)toggleKindIncluded:(NSButton *)sender {
-    if (sender.tag < POMediaKindPhotos || sender.tag > POMediaKindCollages) return;
+    if (sender.tag < POMediaKindPhotos || sender.tag > POMediaKindScreenshots) return;
     BOOL on = sender.state == NSControlStateValueOn;
     [POPlan setOrganizes:on kind:sender.tag];
     if (_plan) {
@@ -636,6 +646,7 @@ static NSArray<POGridSection *> *POSectionsByFolder(NSArray<POPhotoItem *> *item
             case POMediaKindVideos: _plan.organizesVideos = on; break;
             case POMediaKindPictures: _plan.organizesPictures = on; break;
             case POMediaKindCollages: _plan.organizesCollages = on; break;
+            case POMediaKindScreenshots: _plan.organizesScreenshots = on; break;
         }
         [_plan rebuild];
         [self reloadSidebar];
@@ -647,6 +658,8 @@ static NSArray<POGridSection *> *POSectionsByFolder(NSArray<POPhotoItem *> *item
 /// The kind of a file in the strip — the same one organizing goes by (see POPlan).
 static POMediaKind POMediaKindOfItem(POPhotoItem *item) {
     if (POIsGooglePhotosCreation(item)) return POMediaKindCollages;
+    // What the user called a picture or a photo is that, even when it looks like a screen.
+    if (POIsScreenshot(item) && !item.pictureMark) return POMediaKindScreenshots;
     if (POIsPicture(item)) return POMediaKindPictures;
     return item.isVideo ? POMediaKindVideos : POMediaKindPhotos;
 }
@@ -734,8 +747,8 @@ static POMediaKind POMediaKindOfItem(POPhotoItem *item) {
     POFilter *filter = _sidebar.selectedFilter;
     // "Все": the ticked kinds; one kind: that kind alone, ticked or not. A type row of the sidebar shows all of its type.
     POQuickFilter media = [self mediaKind];
-    NSArray<NSNumber *> *included = filter.kind == POFilterKindType ? @[@YES, @YES, @YES, @YES] : [self includedKinds];
-    BOOL everything = media == POQuickFilterAll && included[0].boolValue && included[1].boolValue && included[2].boolValue && included[3].boolValue;
+    NSArray<NSNumber *> *included = filter.kind == POFilterKindType ? @[@YES, @YES, @YES, @YES, @YES] : [self includedKinds];
+    BOOL everything = media == POQuickFilterAll && ![included containsObject:@NO];
     NSPredicate *kindPredicate = everything ? nil : [NSPredicate predicateWithBlock:^BOOL(POPhotoItem *item, NSDictionary *bindings) {
         POMediaKind kind = POMediaKindOfItem(item);
         return media == POQuickFilterAll ? included[kind].boolValue : (NSInteger)kind == media - 1;
@@ -866,7 +879,7 @@ static POMediaKind POMediaKindOfItem(POPhotoItem *item) {
         for (POPhotoItem *item in items) if ((canAccept = [suggester bestSuggestionForItem:item] != nil)) break;
     }
     [_content setShowsDateButtons:undatedView && items.count > 0 canAcceptSuggestions:canAccept];
-    NSString *gridKey = [NSString stringWithFormat:@"%ld|%@|%ld|%ld|%@", (long)filter.kind, filter.folder, (long)(media * 16 + included[0].intValue + included[1].intValue * 2 + included[2].intValue * 4 + included[3].intValue * 8), (long)[self grouping],
+    NSString *gridKey = [NSString stringWithFormat:@"%ld|%@|%ld|%ld|%@", (long)filter.kind, filter.folder, (long)(media * 32 + included[0].intValue + included[1].intValue * 2 + included[2].intValue * 4 + included[3].intValue * 8 + included[4].intValue * 16), (long)[self grouping],
                          [_searchTokens componentsJoinedByString:@" "]];
     [_content.grid setSections:sections showsOriginalBadge:filter.kind == POFilterKindDuplicates keepScroll:[gridKey isEqualToString:_lastGridKey]];
     _lastGridKey = gridKey;
@@ -884,9 +897,9 @@ static POMediaKind POMediaKindOfItem(POPhotoItem *item) {
     // The strip counts within the selection (and the search), so "Видео 3" means three videos of this year. Its
     // checkboxes show what is ticked, also on a type row, which shows every kind whatever is ticked.
     NSArray<POPhotoItem *> *searched = [self searchResultsIn:base ?: @[]];
-    NSUInteger counts[4] = {0, 0, 0, 0};
+    NSUInteger counts[5] = {0, 0, 0, 0, 0};
     for (POPhotoItem *item in searched) counts[POMediaKindOfItem(item)]++;
-    [_content setKindCounts:@[@(counts[0]), @(counts[1]), @(counts[2]), @(counts[3])] included:[self includedKinds] counted:included selected:media];
+    [_content setKindCounts:@[@(counts[0]), @(counts[1]), @(counts[2]), @(counts[3]), @(counts[4])] included:[self includedKinds] counted:included selected:media];
 }
 
 #pragma mark - Map and library
@@ -1268,6 +1281,57 @@ static NSString *const POObjectFiltersKey = @"objectFilters";
             [self updateUI];
         });
     });
+}
+
+/// Pictures told from photographs by a model learnt on the libraries opened (see POPictures.h): a second or two, in
+/// the background.
+- (void)classifyPictures {
+    POPlan *plan = _plan;
+    if (!plan) return;
+    NSArray<POPhotoItem *> *items = plan.items;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        NSArray *marks = POPictureMarks(items);
+        NSArray *verdicts = POClassifyPictures(items);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (self->_plan != plan || self->_organizing) return;
+            for (NSUInteger i = 0; i < items.count; i++) items[i].pictureMark = marks[i] == NSNull.null ? nil : marks[i];
+            POApplyPictureVerdicts(items, verdicts);
+            [plan rebuild];
+            [self reloadSidebar];
+            [self updateGrid];
+            [self updateUI];
+        });
+    });
+}
+
+/// "Это картинка" / "Это фото": the selected files move to their kind at once, and the model learns from them, so
+/// that files like them follow when it has learnt again (a second or two later).
+- (IBAction)markSelectionAsPicture:(id)sender {
+    [self markSelectionAsPictures:YES];
+}
+
+- (IBAction)markSelectionAsPhoto:(id)sender {
+    [self markSelectionAsPictures:NO];
+}
+
+- (void)markSelectionAsPictures:(BOOL)pictures {
+    NSArray<POPhotoItem *> *items = [self markableSelection];
+    if (!items.count || !_plan) return;
+    for (POPhotoItem *item in items) item.pictureMark = @(pictures);
+    [_plan rebuild];
+    [self reloadSidebar];
+    [self updateGrid];
+    [self updateUI];
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        POMarkPictures(items, pictures);
+        dispatch_async(dispatch_get_main_queue(), ^{ [self classifyPictures]; });
+    });
+}
+
+/// The selected files that can be told a picture or a photo: not videos.
+- (NSArray<POPhotoItem *> *)markableSelection {
+    NSArray<POPhotoItem *> *selection = _content.showsViewer && _content.viewer.currentItem ? @[_content.viewer.currentItem] : _content.grid.selectedItems;
+    return [selection filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"video == NO"]];
 }
 
 /// YES while the file is on the disk with the size the scan saw: the copy that stays when others go to the Trash.
@@ -1961,6 +2025,7 @@ static BOOL POIsStillThere(POPhotoItem *item) {
     [self reloadSidebar];
     [self regroupPeople];
     [self regroupCopies];
+    [self classifyPictures];
     // Refreshing resets the scroll position, so the grid is only rebuilt when the new results change what it shows.
     if (_searchTokens.count || _sidebar.selectedFilter.kind == POFilterKindNudity || POSettings.detectsNudity) {
         [self updateGrid];

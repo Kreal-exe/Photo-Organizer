@@ -77,6 +77,7 @@ NSString *POItemDateText(POPhotoItem *item, BOOL withTime) {
 
 - (void)movedToURL:(NSURL *)url relativePath:(NSString *)relativePath {
     self.url = url;
+    self.nameTraits = 0;
     _relativePath = [relativePath copy];
     _currentFolder = [relativePath.stringByDeletingLastPathComponent copy];
 }

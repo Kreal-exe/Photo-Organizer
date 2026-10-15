@@ -773,10 +773,24 @@ int main(void) {
             CHECK(POIsPicture(postcard));
             postcard.labels = @{@"art": @0.9};
             CHECK(!POIsPicture(postcard));   // a photo of a room with a painting on the wall gets "art" too
+            postcard.pictureVerdict = @YES;
+            CHECK(POIsPicture(postcard));    // the model learnt on the library catches what the labels miss
+            postcard.labels = @{@"illustrations": @0.9};
+            postcard.pictureVerdict = @NO;
+            CHECK(!POIsPicture(postcard));   // and overrules them
+            postcard.pictureVerdict = @YES;
             postcard.dateSource = source;
             postcard.labels = @{@"illustrations": @0.9};
             CHECK(!POIsPicture(postcard));   // what a camera took is a photo, whatever is in it
+            postcard.pictureMark = @YES;
+            CHECK(POIsPicture(postcard));    // unless the user said it is a picture
+            postcard.pictureMark = @NO;
+            postcard.dateSource = PODateSourceFile;
+            CHECK(!POIsPicture(postcard));   // and what they called a photo stays one, whatever the model says
+            postcard.dateSource = source;
+            postcard.pictureMark = nil;
             postcard.labels = nil;
+            postcard.pictureVerdict = nil;
             plan.organizesCollages = YES;
             plan.organizesVideos = NO;
             [plan rebuild];

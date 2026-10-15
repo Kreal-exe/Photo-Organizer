@@ -118,13 +118,14 @@ typedef NS_ENUM(NSInteger, POGroupKind) {
 /// (what Google Photos made, see POIsGooglePhotosCreation). The kinds turned off stay where they are — e.g. only the
 /// real photos go into the year folders, with or without the videos, or only the videos.
 @property (nonatomic) BOOL organizesPhotos;
-/// The same, as remembered, by POMediaKind (photos, videos, pictures, collages): the strip above the library ticks
+/// The same, as remembered, by POMediaKind (photos, videos, pictures, collages, screenshots): the strip above the library ticks
 /// and unticks these, so organizing takes what the library shows.
 + (BOOL)organizesKind:(NSInteger)kind;
 + (void)setOrganizes:(BOOL)organizes kind:(NSInteger)kind;
 @property (nonatomic) BOOL organizesVideos;
 @property (nonatomic) BOOL organizesPictures;
 @property (nonatomic) BOOL organizesCollages;
+@property (nonatomic) BOOL organizesScreenshots;
 /// Screenshots to a folder of their own, whatever the rest is organized by: one folder at the top with the date
 /// folders inside (Скриншоты/2024/…), or, with screenshotsInEachDate, one inside every date folder (2024/Скриншоты/…).
 @property (nonatomic) BOOL separateScreenshots;
