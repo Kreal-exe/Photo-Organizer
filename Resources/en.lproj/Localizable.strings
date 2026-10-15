@@ -495,7 +495,7 @@
 "Удалить дубликаты" = "Remove duplicates";
 "Точные копии и уменьшенные или пережатые версии снимка при переносе уходят в Корзину (при копировании — не копируются): раскладывается только оригинал или лучшая версия. Копия удаляется, только если её оригинал остаётся." = "Exact copies and smaller or recompressed versions of a picture go to the Trash when the files are moved (when copied, they are not copied): only the original or the best version is organized. A copy is removed only while its original stays.";
 " Дубликаты в Корзину: %@." = " Duplicates to the Trash: %@.";
-" Оригиналы перемещаются, а не копируются; ничего не перезаписывается, дубликаты можно вернуть из Корзины. Отменить перенос — ⌘Z." = " The originals are moved, not copied; nothing is overwritten, and the duplicates can be put back from the Trash. Undo the move — ⌘Z.";
+" Оригиналы перемещаются, а не копируются; ничего не перезаписывается, удалённое можно вернуть из Корзины. Отменить перенос — ⌘Z." = " The originals are moved, not copied; nothing is overwritten, and what goes to the Trash can be put back from it. Undo the move — ⌘Z.";
 "Будет скопировано %@ из %@" = "%@ of %@ will be copied";
 "Видео не воспроизводится" = "The video can't be played";
 "Внутри папки" = "Inside the folder";
@@ -540,3 +540,6 @@
 "Иначе — в папку:" = "Otherwise into:";
 "Уменьшенные копии других фото уходят в Корзину, только если их большая версия остаётся." = "Smaller copies of other photos go to the Trash, only while their larger version stays.";
 " В Корзину: %@." = " To the Trash: %@.";
+" Что уже лежит в «%@», остаётся как есть; из других папок добавляется только то, чего в ней нет, а копии того, что в ней есть, идут в Корзину." = " What is already in “%@” stays as it is; from the other folders only what it lacks is added, and copies of what it has go to the Trash.";
+"Неотмеченное — удалить в Корзину" = "Move the unticked to the Trash";
+"Без галочки неотмеченные виды остаются на месте. С ней — уходят в Корзину (при переносе; при копировании ничего не удаляется), их можно вернуть оттуда." = "Unticked, the kinds not ticked stay where they are. Ticked, they go to the Trash (when moving; copying removes nothing), from where they can be put back.";

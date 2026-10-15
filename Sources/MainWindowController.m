@@ -1811,7 +1811,7 @@ static BOOL POIsStillThere(POPhotoItem *item) {
         [self registerUndoOf:result actionName:actionName];
         [POOrganizer writeJournalForResult:result rootURL:rootURL];
     }
-    NSUInteger count = result.fileCount;
+    NSUInteger count = result.records.count;
     // "Готово: перемещено 5 файлов. Отменить — ⌘Z", without the hint when nothing moved.
     NSString *(^done)(NSString *, NSString *, NSString *) = ^NSString *(NSString *one, NSString *few, NSString *many) {
         return [NSString stringWithFormat:count ? POL(@"Готово: %@ %@. Отменить — ⌘Z") : POL(@"Готово: %@ %@."), POPlural(count, one, few, many),
@@ -1891,11 +1891,15 @@ static NSMapTable<POPhotoItem *, POPhotoItem *> *POKeepersOfDuplicates(NSArray<P
 /// Takes `duplicates` to the Trash — each only while the file it is a copy of (in `keepers`, found before the files
 /// moved) is still on the disk, so that no picture loses its last file.
 - (void)trashDuplicates:(NSArray<POPhotoItem *> *)duplicates keepers:(NSMapTable<POPhotoItem *, POPhotoItem *> *)keepers
-                    then:(void (^)(void))then {
+                    also:(NSArray<POPhotoItem *> *)unorganized then:(void (^)(void))then {
     NSMutableArray<POPhotoItem *> *safe = [NSMutableArray array];
     for (POPhotoItem *item in duplicates) {
         POPhotoItem *keeper = [keepers objectForKey:item];
         if (keeper && POIsStillThere(keeper) && [item.url checkResourceIsReachableAndReturnError:NULL]) [safe addObject:item];
+    }
+    // The kinds not organized, asked to go: each as long as it is still the file the scan saw.
+    for (POPhotoItem *item in unorganized) {
+        if (POIsStillThere(item)) [safe addObject:item];
     }
     if (!safe.count) {
         then();
@@ -2117,9 +2121,15 @@ static NSMapTable<POPhotoItem *, POPhotoItem *> *POKeepersOfDuplicates(NSArray<P
 
 #pragma mark - UI state
 
-/// Something to do: files to put in place, or duplicates to take to the Trash ("Удалить дубликаты").
+/// The organize window can be opened whenever a library is open and nothing else is under way: what it would do with
+/// the options as they are — even nothing — it shows itself, and its own button is on when there is something to do.
 - (BOOL)canOrganize {
-    return (_plan.pendingItems.count > 0 || _plan.duplicatesToRemove.count > 0) && !_scanner && !_organizing;
+    return _plan && !_scanner && !_organizing;
+}
+
+/// Something to do: files to put in place, or files to take to the Trash.
+- (BOOL)hasWorkToApply {
+    return _plan.pendingItems.count > 0 || _plan.duplicatesToRemove.count > 0 || _plan.unorganizedToRemove.count > 0;
 }
 
 - (void)updateUI {
@@ -2223,13 +2233,13 @@ static NSMapTable<POPhotoItem *, POPhotoItem *> *POKeepersOfDuplicates(NSArray<P
 }
 
 - (void)applyPlan {
-    if (![self canOrganize]) return;
+    if (![self canOrganize] || ![self hasWorkToApply]) return;
     POPlan *plan = _plan;
     BOOL copies = plan.copiesFiles;
     // Duplicates go to the Trash once the rest is in place ("Удалить дубликаты"). Which file each one is a copy of is
     // taken now: once the files have moved, the copies are compared again in the background, and meanwhile those
     // links are not there to go by.
-    NSArray<POPhotoItem *> *duplicates = plan.duplicatesToRemove;
+    NSArray<POPhotoItem *> *duplicates = plan.duplicatesToRemove, *unorganized = plan.unorganizedToRemove;
     NSMapTable<POPhotoItem *, POPhotoItem *> *keepers = POKeepersOfDuplicates(duplicates);
     [self beginMovingFiles];
     [_content showProgressWithText:copies ? POL(@"Копирование файлов…") : POL(@"Перемещение файлов…") fraction:0 cancellable:NO];
@@ -2249,8 +2259,8 @@ static NSMapTable<POPhotoItem *, POPhotoItem *> *POKeepersOfDuplicates(NSArray<P
             // Then what was to go goes to the Trash, and the library is read again from the disk: it shows what the
             // folders now hold.
             NSString *moved = self->_lastMessage;
-            NSUInteger toTrash = duplicates.count;
-            [self trashDuplicates:duplicates keepers:keepers then:^{
+            NSUInteger toTrash = duplicates.count + unorganized.count;
+            [self trashDuplicates:duplicates keepers:keepers also:unorganized then:^{
                 // One line for the whole run: "Готово: перемещено 8 542 файла. В Корзине: 674 файла…"
                 if (toTrash && moved && self->_lastMessage != moved) {
                     self->_lastMessage = [NSString stringWithFormat:@"%@. %@", moved, self->_lastMessage];

@@ -76,11 +76,6 @@ public sealed class PhotoItem
     /// <summary>On a resized or recompressed copy: the better version of the same picture.</summary>
     public PhotoItem? BetterCopy;
     public bool BestOfCopies;
-    /// <summary>
-    /// The Google Takeout description of the file (its .json, with the date Google Photos knew), when one lies next to
-    /// it: it moves with the file, so that the date stays with it and the old folder empties.
-    /// </summary>
-    public string? SidecarPath;
     public string? ContentHash;
     /// <summary>On every exact copy: the file kept as the original.</summary>
     public PhotoItem? DuplicateOf;

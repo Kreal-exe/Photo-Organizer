@@ -84,6 +84,12 @@ typedef NS_ENUM(NSInteger, POGroupKind) {
 /// Organizes into another folder than the first one of the library: files from all the library's folders are moved
 /// there. Call -rebuild afterwards.
 - (void)setDestinationURL:(NSURL *)url;
+/// Other folders are put together into one of the library's folders (the destination is one of sourceURLs): what is
+/// already in the destination stays as it is — not moved, not removed, and the original of any copy of it; from the
+/// other folders, the files it does not have yet are organized into it and the copies of what it has go to the Trash.
+@property (nonatomic, readonly, getter=isMerging) BOOL merging;
+/// While merging: a file that was already in the destination folder.
+- (BOOL)isInDestination:(POPhotoItem *)item;
 @property (nonatomic, readonly, copy) NSArray<POPhotoItem *> *items;
 @property (nonatomic, readonly, copy) NSArray<POPhotoItem *> *duplicateItems;
 /// Thumbnails: small copies of other photos (see POPhotoItem.tiny).
@@ -108,6 +114,11 @@ typedef NS_ENUM(NSInteger, POGroupKind) {
 @property (nonatomic) BOOL separateTiny;
 /// Thumbnails go to the Trash with the duplicates (see duplicatesToRemove) — only those whose larger version stays.
 @property (nonatomic) BOOL removesTiny;
+/// The kinds not organized (unticked: pictures, collages…) go to the Trash instead of staying where they are — the
+/// files of folders kept by "Разложить…" excepted. Off unless asked for.
+@property (nonatomic) BOOL removesUnorganized;
+/// What -rebuild found to go to the Trash with removesUnorganized (empty when the files are copied).
+@property (nonatomic, readonly) NSArray<POPhotoItem *> *unorganizedToRemove;
 /// Copies the files into the folders instead of moving them; the originals stay where they are.
 @property (nonatomic) BOOL copiesFiles;
 /// Setting an unusable name restores the default one.

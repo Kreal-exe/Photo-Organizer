@@ -9,21 +9,15 @@
 
 @interface POMoveRecord ()
 - (instancetype)initWithFrom:(NSURL *)from to:(NSURL *)to fileSize:(unsigned long long)fileSize;
-- (instancetype)initWithFrom:(NSURL *)from to:(NSURL *)to fileSize:(unsigned long long)fileSize sidecar:(BOOL)sidecar;
 @end
 
 @implementation POMoveRecord
 
 - (instancetype)initWithFrom:(NSURL *)from to:(NSURL *)to fileSize:(unsigned long long)fileSize {
-    return [self initWithFrom:from to:to fileSize:fileSize sidecar:[from.pathExtension caseInsensitiveCompare:@"json"] == NSOrderedSame];
-}
-
-- (instancetype)initWithFrom:(NSURL *)from to:(NSURL *)to fileSize:(unsigned long long)fileSize sidecar:(BOOL)sidecar {
     if ((self = [super init])) {
         _from = from;
         _to = to;
         _fileSize = fileSize;
-        _sidecar = sidecar;
     }
     return self;
 }
@@ -40,12 +34,6 @@
 @end
 
 @implementation POOrganizeResult
-
-- (NSUInteger)fileCount {
-    NSUInteger count = 0;
-    for (POMoveRecord *record in self.records) count += !record.isSidecar;
-    return count;
-}
 
 + (instancetype)resultWithMoves:(NSArray<POMoveRecord *> *)moves {
     return [[POOrganizeResult alloc] initWithRecords:moves createdDirectories:@[] errors:@[]];
@@ -178,21 +166,6 @@ static NSURL *POMoveExclusively(NSURL *source, NSURL *directory, NSString *name,
     return nil;
 }
 
-/// Takes the Google Takeout .json of `item` along to where the file went (see POPhotoItem.sidecarURL), under its own
-/// name, never over another file — only when the file kept its name, for the .json names the file it describes.
-static void POCarrySidecar(POPhotoItem *item, NSURL *destination, BOOL copies, NSMutableArray<POMoveRecord *> *records, NSFileManager *fm) {
-    NSURL *sidecar = item.sidecarURL;
-    if (!sidecar || ![destination.lastPathComponent isEqualToString:item.url.lastPathComponent]) return;
-    NSDictionary<NSFileAttributeKey, id> *attributes = [fm attributesOfItemAtPath:sidecar.path error:NULL];
-    if (![attributes[NSFileType] isEqual:NSFileTypeRegular]) return;
-    NSURL *target = [destination.URLByDeletingLastPathComponent URLByAppendingPathComponent:sidecar.lastPathComponent];
-    if ([fm fileExistsAtPath:target.path]) return;
-    BOOL done = copies ? [fm copyItemAtURL:sidecar toURL:target error:NULL]
-                       : renamex_np(sidecar.fileSystemRepresentation, target.fileSystemRepresentation, RENAME_EXCL) == 0 ||
-                         (errno != EEXIST && [fm moveItemAtURL:sidecar toURL:target error:NULL]);
-    if (done) [records addObject:[[POMoveRecord alloc] initWithFrom:sidecar to:target fileSize:[attributes[NSFileSize] unsignedLongLongValue] sidecar:YES]];
-}
-
 @implementation POOrganizer
 
 + (POOrganizeResult *)applyPlan:(POPlan *)plan progress:(void (^)(NSUInteger, NSUInteger))progress {
@@ -316,7 +289,6 @@ static NSMutableDictionary<NSNumber *, NSMutableArray<NSURL *> *> *POFilesBySize
                 }
                 if (destination) {
                     [records addObject:[[POMoveRecord alloc] initWithFrom:item.url to:destination fileSize:item.fileSize]];
-                    POCarrySidecar(item, destination, YES, records, fm);
                     if (skipSameContent) {
                         // Copied now: the same contents once more in the selection are not copied again.
                         NSMutableArray *list = bySize[size];
@@ -406,7 +378,6 @@ static NSMutableDictionary<NSNumber *, NSMutableArray<NSURL *> *> *POFilesBySize
                 if (destination) {
                     [records addObject:[[POMoveRecord alloc] initWithFrom:item.url to:destination fileSize:item.fileSize]];
                     [sourceDirectories addObject:sourceDirectory];
-                    POCarrySidecar(item, destination, NO, records, fm);
                 }
             }
             if (error) [errors addObject:[NSString stringWithFormat:@"%@: %@", item.relativePath, error.localizedDescription]];

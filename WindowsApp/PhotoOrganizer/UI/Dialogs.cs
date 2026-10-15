@@ -330,7 +330,8 @@ public sealed class OrganizeDialog : Dialog
     readonly TextBlock _destinationText;
     readonly ComboBox _arrangement = new(), _screenshotsPlace = new(), _scheme = new(), _year = new(), _month = new(), _day = new();
     readonly CheckBox _nested = new(), _datesInside = new(), _screenshots = new(), _removeDuplicates = new(), _duplicates = new(),
-                      _removeTiny = new(), _tiny = new(), _photos = new(), _videos = new(), _pictures = new(), _collages = new();
+                      _removeTiny = new(), _tiny = new(), _photos = new(), _videos = new(), _pictures = new(), _collages = new(),
+                      _removeUnorganized = new();
     readonly TextBox _duplicatesField = new() { Width = 200, Height = 30 }, _tinyField = new() { Width = 200, Height = 30 },
                      _screenshotsField = new() { Width = 200, Height = 30 };
     // Grouped by day, a library makes thousands of folders: only the rows on screen are made.
@@ -401,6 +402,8 @@ public sealed class OrganizeDialog : Dialog
         _pictures.ToolTip = L("Открытки, мемы, рисунки, документы — то, что не фотография. Без галочки остаются на месте.");
         _collages.Content = L("Коллажи");
         _collages.ToolTip = L("Коллажи, рамки, анимации, фильмы и правки, которые сделал Google Фото. Без галочки остаются на месте.");
+        _removeUnorganized.Content = L("Неотмеченное — удалить в Корзину");
+        _removeUnorganized.ToolTip = L("Без галочки неотмеченные виды остаются на месте. С ней — уходят в Корзину (при переносе; при копировании ничего не удаляется), их можно вернуть оттуда.");
         _datesInside.Content = L("Внутри — по датам");
         _nested.Content = L("Вкладывать папки друг в друга (год → месяц → день)");
         // Screenshots, duplicates, thumbnails: what happens to each, and under it, set in, where they go otherwise.
@@ -411,7 +414,7 @@ public sealed class OrganizeDialog : Dialog
         _removeTiny.Content = L("Удалить в Корзину");
         _removeTiny.ToolTip = L("Уменьшенные копии других фото уходят в Корзину, только если их большая версия остаётся.");
         _tiny.Content = L("Иначе — в папку:");
-        foreach (var box in new[] { _nested, _datesInside, _screenshots, _removeDuplicates, _duplicates, _removeTiny, _tiny, _photos, _videos, _pictures, _collages })
+        foreach (var box in new[] { _nested, _datesInside, _screenshots, _removeDuplicates, _duplicates, _removeTiny, _tiny, _photos, _videos, _pictures, _collages, _removeUnorganized })
         {
             box.VerticalAlignment = VerticalAlignment.Center;
             box.Click += (_, _) => OptionChanged();
@@ -429,6 +432,7 @@ public sealed class OrganizeDialog : Dialog
         FormRow(L("Куда сложить:"), Row(_destinationText, change));
         FormRow(L("Файлы:"), _mode);
         FormRow(L("Что раскладывать:"), Row(_photos, _videos, _pictures, _collages), gap: 12);
+        FormRow(null, _removeUnorganized);
         FormRow(L("Раскладывать:"), Row(_arrangement, _datesInside), gap: 12);
         FormRow(L("Группировать:"), _scheme);
         FormRow(L("Названия папок:"), Row(_year, _month, _day));
@@ -479,7 +483,7 @@ public sealed class OrganizeDialog : Dialog
         // The buttons and what they will do.
         _summary.SetResourceReference(TextBlock.ForegroundProperty, "Secondary");
         _summary.VerticalAlignment = VerticalAlignment.Center;
-        _confirm = AddButton(L("Разложить"), () => { if (_plan.PendingItems.Count > 0 || _plan.DuplicatesToRemove.Count > 0) DialogResult = true; }, primary: true);
+        _confirm = AddButton(L("Разложить"), () => { if (_plan.PendingItems.Count > 0 || _plan.DuplicatesToRemove.Count > 0 || _plan.UnorganizedToRemove.Count > 0) DialogResult = true; }, primary: true);
         AddButton(L("Отмена"), () => DialogResult = false).IsCancel = true;
         Footer.LastChildFill = true;
         Footer.Children.Add(_summary);   // last: fills what the buttons leave
@@ -580,6 +584,8 @@ public sealed class OrganizeDialog : Dialog
         _videos.IsChecked = _plan.OrganizesVideos;
         _pictures.IsChecked = _plan.OrganizesPictures;
         _collages.IsChecked = _plan.OrganizesCollages;
+        _removeUnorganized.IsChecked = _plan.RemovesUnorganized;
+        _removeUnorganized.IsEnabled = !_plan.CopiesFiles;
         _removeTiny.IsChecked = _plan.RemovesTiny;
         _tiny.IsChecked = _plan.SeparateTiny;
         _tinyField.Text = _plan.TinyFolderName;
@@ -594,12 +600,18 @@ public sealed class OrganizeDialog : Dialog
             ? F(copies ? "Будет скопировано %@ из %@ в %@." : "Будет перемещено %@ из %@ в %@.",
                 Number(pending), Number(_plan.Items.Count), Count(_plan.Groups.Count, L("папку"), L("папки"), L("папок")))
             : L("Все файлы уже лежат на своих местах.");
-        int removed = _plan.DuplicatesToRemove.Count;
+        int removed = _plan.DuplicatesToRemove.Count + _plan.UnorganizedToRemove.Count;
         if (removed > 0) what += F(" В Корзину: %@.", Number(removed));
+        if (_plan.Merging && !copies)
+        {
+            string name = Path.GetFileName(_plan.Root);
+            what += F(" Что уже лежит в «%@», остаётся как есть; из других папок добавляется только то, чего в ней нет, а копии того, что в ней есть, идут в Корзину.",
+                name.Length > 0 ? name : _plan.Root);
+        }
         _summary.Text = what + (copies
             ? L(" Оригиналы остаются на месте; копии ничего не перезаписывают, уже скопированные файлы пропускаются. Отменить — ⌘Z.")
             : removed > 0
-            ? L(" Оригиналы перемещаются, а не копируются; ничего не перезаписывается, дубликаты можно вернуть из Корзины. Отменить перенос — ⌘Z.")
+            ? L(" Оригиналы перемещаются, а не копируются; ничего не перезаписывается, удалённое можно вернуть из Корзины. Отменить перенос — ⌘Z.")
             : L(" Оригиналы перемещаются, а не копируются; ничего не удаляется и не перезаписывается. Отменить — ⌘Z.")).Replace("⌘Z", "Ctrl+Z");
         _confirm.Content = copies ? L("Скопировать") : L("Разложить");
         _confirm.IsEnabled = pending > 0 || removed > 0;
@@ -696,6 +708,7 @@ public sealed class OrganizeDialog : Dialog
         _plan.OrganizesVideos = _videos.IsChecked == true;
         _plan.OrganizesPictures = _pictures.IsChecked == true;
         _plan.OrganizesCollages = _collages.IsChecked == true;
+        _plan.RemovesUnorganized = _removeUnorganized.IsChecked == true;
         _plan.SeparateTiny = _tiny.IsChecked == true;
         _plan.RemovesTiny = _removeTiny.IsChecked == true;
         _plan.DuplicatesFolderName = _duplicatesField.Text;

@@ -59,6 +59,42 @@ public sealed partial class Plan
     }
 
     /// <summary>
+    /// Other folders are put together into one of the library's folders (the destination is one of Sources): what is
+    /// already in the destination stays as it is — not moved, not removed, and the original of any copy of it; from
+    /// the other folders, the files it does not have yet are organized into it and the copies of what it has go to the
+    /// Recycle Bin.
+    /// </summary>
+    public bool Merging => Sources.Count > 1 && Sources.Any(s => string.Equals(s, Root, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>While merging: a file that was already in the destination folder.</summary>
+    public bool InDestination(PhotoItem item) => Merging && string.Equals(item.Root, Root, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// While merging, the original of each set of exact copies is a file of the destination when it has one: the copies
+    /// brought from the other folders are the ones to go, whatever their names and dates.
+    /// </summary>
+    void PreferOriginalsInDestination()
+    {
+        if (!Merging) return;
+        bool changed = false;
+        foreach (var original in Items)
+        {
+            if (original.Duplicates is not { Count: > 0 } || InDestination(original)) continue;
+            int index = original.Duplicates.FindIndex(InDestination);
+            if (index < 0) continue;
+            var keeper = original.Duplicates[index];
+            var copies = original.Duplicates.ToList();
+            copies[index] = original;
+            original.Duplicates = null;
+            keeper.DuplicateOf = null;
+            keeper.Duplicates = copies;
+            foreach (var copy in copies) copy.DuplicateOf = keeper;
+            changed = true;
+        }
+        if (changed) DuplicateItems = Items.Where(i => i.IsDuplicate).ToList();
+    }
+
+    /// <summary>
     /// Top-level folders the user filled by hand ("Скриншоты", a person's name…, see "Разложить…" and "Переместить в
     /// папку…"): their files stay where they are when the library is organized by date. Remembered per library.
     /// </summary>
@@ -130,6 +166,13 @@ public sealed partial class Plan
     public bool SeparateTiny = true;
     /// <summary>Thumbnails go to the Recycle Bin with the duplicates (see DuplicatesToRemove) — only those whose larger version stays.</summary>
     public bool RemovesTiny;
+    /// <summary>
+    /// The kinds not organized (unticked: pictures, collages…) go to the Recycle Bin instead of staying where they are —
+    /// the files of folders kept by "Разложить…" excepted. Off unless asked for.
+    /// </summary>
+    public bool RemovesUnorganized;
+    /// <summary>What Rebuild found to go to the Recycle Bin with RemovesUnorganized (empty when the files are copied).</summary>
+    public List<PhotoItem> UnorganizedToRemove { get; private set; } = [];
     /// <summary>Screenshots to a folder of their own (with date folders inside), whatever the rest is organized by.</summary>
     public bool SeparateScreenshots;
     /// <summary>
@@ -253,6 +296,7 @@ public sealed partial class Plan
         OrganizesCollages = s.Get("organizesCollages", OrganizesPictures);
         SeparateTiny = s.Get("separateTiny", true);
         RemovesTiny = s.Get("removesTiny", false);
+        RemovesUnorganized = s.Get("removesUnorganized", false);
         Arrangement = Clamp<Arrangement>(s.Get("arrangement", 0));
         SeparateScreenshots = s.Get("separateScreenshots", false);
         ScreenshotsInEachDate = s.Get("screenshotsInEachDate", false);
@@ -282,6 +326,7 @@ public sealed partial class Plan
         s.Set("organizesCollages", OrganizesCollages);
         s.Set("separateTiny", SeparateTiny);
         s.Set("removesTiny", RemovesTiny);
+        s.Set("removesUnorganized", RemovesUnorganized);
         s.Set("arrangement", (int)Arrangement);
         s.Set("separateScreenshots", SeparateScreenshots);
         s.Set("screenshotsInEachDate", ScreenshotsInEachDate);
@@ -408,12 +453,16 @@ public sealed partial class Plan
         var generatedFolders = new HashSet<string>();
         var sectionGroups = new List<Group>();
         var pending = new List<PhotoItem>();
+        PreferOriginalsInDestination();
         // Duplicates to remove: copies of the kinds organized whose original (or best version) stays — never the last
-        // file of a picture. They are left where they are until they go to the Recycle Bin.
+        // file of a picture. They are left where they are until they go to the Recycle Bin. While merging, nothing
+        // already in the destination goes, and a copy brought along of what it has goes whatever its kind.
         var removed = new HashSet<PhotoItem>();
         if (RemovesDuplicates || RemovesTiny)
         {
-            var doomed = Items.Where(i => (i.IsDuplicate || i.BetterCopy != null) && Organizes(i) && (i.Tiny ? RemovesTiny : RemovesDuplicates)).ToHashSet();
+            var doomed = Items.Where(i => (i.IsDuplicate || i.BetterCopy != null) && !InDestination(i)
+                && (Organizes(i) || i.DuplicateOf is { } original && InDestination(original))
+                && (i.Tiny ? RemovesTiny : RemovesDuplicates)).ToHashSet();
             foreach (var item in doomed)
             {
                 var keeper = item.DuplicateOf ?? item.BetterCopy;
@@ -422,13 +471,18 @@ public sealed partial class Plan
             }
         }
         DuplicatesToRemove = CopiesFiles ? [] : Items.Where(removed.Contains).ToList();
+        // The kinds not organized, when they are to go too ("Неотмеченное — в Корзину") — not while merging: the
+        // destination is kept as it is, and the other folders' files that are not copies of its own stay where they are.
+        UnorganizedToRemove = RemovesUnorganized && !CopiesFiles && !Merging
+            ? Items.Where(i => !Organizes(i) && !removed.Contains(i) && !InKeptFolder(i)).ToList()
+            : [];
         foreach (var item in Items)
         {
             item.DestinationRoot = Root;
             // Left where they are: sorted by hand into a folder of their own, of a kind not to organize, or a duplicate
-            // to remove (or, when copying, not to copy).
+            // to remove (or, when copying, not to copy) — and, while merging, whatever was in the destination already.
             bool copy = item.IsDuplicate || item.BetterCopy != null;
-            if (!Organizes(item) || InKeptFolder(item) || removed.Contains(item))
+            if (!Organizes(item) || InKeptFolder(item) || removed.Contains(item) || InDestination(item))
             {
                 item.DestinationFolder = item.CurrentFolder;
                 continue;
