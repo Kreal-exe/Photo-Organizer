@@ -3,6 +3,7 @@
 #import "POHuggingFace.h"
 #import "POMLXRuntime.h"
 #import "POSettings.h"
+#import <CoreML/CoreML.h>
 
 @implementation POModel
 
@@ -77,6 +78,23 @@
     return model;
 }
 
++ (POModel *)pictureModel {
+    static POModel *model;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        model = [self modelWithIdentifier:@"apple/coreml-mobileclip"
+                                    title:@"MobileCLIP S0"
+                                  summary:POL(@"Отличает снятое камерой от сделанного на компьютере: открытки, мемы, иконы — от фото (Apple, 256 px).")
+                                  license:@"Apple"
+                                  backend:POModelBackendCoreML
+                                    files:@[@"mobileclip_s0_image.mlpackage/Manifest.json",
+                                            @"mobileclip_s0_image.mlpackage/Data/com.apple.CoreML/model.mlmodel",
+                                            @"mobileclip_s0_image.mlpackage/Data/com.apple.CoreML/weights/weight.bin"]
+                                 byteSize:22871573 inputSize:256 centerCrop:YES];
+    });
+    return model;
+}
+
 + (POModel *)modelWithIdentifier:(NSString *)identifier {
     for (POModel *model in self.allModels) {
         if ([model.identifier isEqualToString:identifier]) return model;
@@ -99,6 +117,34 @@
 
 - (NSURL *)snapshotURL {
     return [POHuggingFace snapshotURLForRepo:self.identifier files:self.files];
+}
+
+- (NSURL *)compiledModelURLWithError:(NSError **)error {
+    NSURL *snapshot = self.snapshotURL;
+    if (!snapshot) return nil;
+    NSFileManager *fm = NSFileManager.defaultManager;
+    NSString *packageName = self.files.firstObject.pathComponents.firstObject;
+    NSURL *support = [fm URLForDirectory:NSApplicationSupportDirectory inDomain:NSUserDomainMask appropriateForURL:nil create:YES error:NULL];
+    NSURL *models = [support URLByAppendingPathComponent:@"Photo Organizer/Models" isDirectory:YES];
+    NSString *compiledName = [NSString stringWithFormat:@"%@-%@.mlmodelc", packageName.stringByDeletingPathExtension, snapshot.lastPathComponent];
+    NSURL *compiled = [models URLByAppendingPathComponent:compiledName isDirectory:YES];
+    @synchronized (POModel.class) {
+        if ([fm fileExistsAtPath:compiled.path]) return compiled;
+        // The cache holds symlinks into blobs/; the compiler wants a plain package, so it gets a real copy.
+        NSURL *scratch = [[NSURL fileURLWithPath:NSTemporaryDirectory()] URLByAppendingPathComponent:NSUUID.UUID.UUIDString isDirectory:YES];
+        for (NSString *file in self.files) {
+            NSURL *destination = [scratch URLByAppendingPathComponent:file];
+            [fm createDirectoryAtURL:destination.URLByDeletingLastPathComponent withIntermediateDirectories:YES attributes:nil error:NULL];
+            NSURL *source = [snapshot URLByAppendingPathComponent:file].URLByResolvingSymlinksInPath;
+            if (![fm copyItemAtURL:source toURL:destination error:error]) return nil;
+        }
+        NSURL *built = [MLModel compileModelAtURL:[scratch URLByAppendingPathComponent:packageName isDirectory:YES] error:error];
+        if (!built) return nil;
+        [fm createDirectoryAtURL:models withIntermediateDirectories:YES attributes:nil error:NULL];
+        BOOL moved = [fm moveItemAtURL:built toURL:compiled error:error];
+        [fm removeItemAtURL:scratch error:NULL];
+        return moved ? compiled : nil;
+    }
 }
 
 - (BOOL)isReady {

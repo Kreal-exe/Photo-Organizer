@@ -7,6 +7,7 @@
 #import "POSimilarCopies.h"
 #import "POObjectIndex.h"
 #import "POPictureText.h"
+#import "POKinds.h"
 #import <Vision/Vision.h>
 #import <ImageIO/ImageIO.h>
 #import <AVFoundation/AVFoundation.h>
@@ -23,7 +24,7 @@ static const NSInteger POMaximumVideoFrames = 5;
 
 #pragma mark - Remembered results
 
-/// identity of a file → {"l": {label: confidence}, "n": {model id: score}, "f": [face embedding], "b": [face box], "p": people in the photo, "h": visual hash (0 when the picture is too plain to have one), "t": the text written in the picture, lower-cased}. The identity survives moving and
+/// identity of a file → {"l": {label: confidence}, "n": {model id: score}, "f": [face embedding], "b": [face box], "p": people in the photo, "h": visual hash (0 when the picture is too plain to have one), "t": the text written in the picture, lower-cased, "k": MobileCLIP's vector of the picture, float16 (see POKinds.h)}. The identity survives moving and
 /// renaming the file on its volume, and changes when the file's contents do.
 @interface POAnalysisCache : NSObject
 @property (class, nonatomic, readonly) POAnalysisCache *sharedCache;
@@ -34,6 +35,7 @@ static const NSInteger POMaximumVideoFrames = 5;
 - (void)setPeopleCount:(NSInteger)count forKey:(NSString *)key;
 - (void)setFaceBoxes:(NSArray *)boxes forKey:(NSString *)key;
 - (void)setText:(NSString *)text forKey:(NSString *)key;
+- (void)setKindVector:(NSData *)vector forKey:(NSString *)key;
 - (void)save;
 - (void)removeAll;
 @end
@@ -100,6 +102,17 @@ static const NSInteger POMaximumVideoFrames = 5;
     @synchronized (self) {
         NSMutableDictionary *record = [_records[key] mutableCopy] ?: [NSMutableDictionary dictionary];
         record[@"t"] = text;
+        _records[key] = record;
+        shouldSave = ++_unsaved >= 500;
+    }
+    if (shouldSave) [self save];
+}
+
+- (void)setKindVector:(NSData *)vector forKey:(NSString *)key {
+    BOOL shouldSave;
+    @synchronized (self) {
+        NSMutableDictionary *record = [_records[key] mutableCopy] ?: [NSMutableDictionary dictionary];
+        record[@"k"] = vector;
         _records[key] = record;
         shouldSave = ++_unsaved >= 500;
     }
@@ -241,6 +254,7 @@ static NSUInteger POResultsGeneration;
     POModel *model = POSettings.detectsNudity ? POModel.selectedModel : nil;
     if (!model.isReady) model = nil;
     BOOL wantsFaces = POSettings.groupsFaces && POModel.faceModel.isReady;
+    BOOL wantsKinds = POModel.pictureModel.isReady;
 
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
         POAnalysisCache *cache = POAnalysisCache.sharedCache;
@@ -265,6 +279,10 @@ static NSUInteger POResultsGeneration;
             item.faceBoxes = [boxes isKindOfClass:NSArray.class] && boxes.count == faces.count ? boxes : nil;
             item.peopleCount = wantsFaces ? record[@"p"] : nil;
             item.text = record[@"t"];
+            NSData *kindVector = record[@"k"];
+            POSetKindVector(item, kindVector);
+            // Pictures and collages are told by MobileCLIP once its model is there; nothing to look at in a video.
+            BOOL needsKinds = wantsKinds && !item.isVideo && !kindVector;
             // Text came later than the rest: files analysed before are completed with it.
             BOOL needsText = !item.text && POWorthReadingText(item, labels ?: record[@"l"]);
             // Only photos with someone in a group need the count; it came after faces, so older results lack it.
@@ -273,7 +291,7 @@ static NSUInteger POResultsGeneration;
             item.visualHash = hash.unsignedLongLongValue ? hash : nil;
             BOOL needsHash = !hash && !item.isVideo;
             BOOL needsObjects = wantsLabels && !item.isVideo && ![objectIndex hasVectorsForKey:key];
-            if ((wantsLabels && !labels) || (modelKey && !score) || (wantsFaces && !faces) || needsCount || needsHash || needsObjects || needsText) {
+            if ((wantsLabels && !labels) || (modelKey && !score) || (wantsFaces && !faces) || needsCount || needsHash || needsObjects || needsText || needsKinds) {
                 [pending addObject:item];
                 [pendingKeys addObject:key];
             }
@@ -292,6 +310,13 @@ static NSUInteger POResultsGeneration;
             NSError *error = nil;
             embedder = [POFaceEmbedder embedderWithError:&error];
             if (!embedder && !errorMessage) errorMessage = error.localizedDescription ?: POL(@"Модель лиц не запустилась");
+        }
+
+        POKindEncoder *kindEncoder = nil;
+        if (wantsKinds && pending.count && !atomic_load(&self->_cancelled)) {
+            NSError *error = nil;
+            kindEncoder = [POKindEncoder encoderWithError:&error];
+            if (!kindEncoder && !errorMessage) errorMessage = error.localizedDescription ?: POL(@"Модель картинок не запустилась");
         }
 
         NSUInteger total = pending.count;
@@ -347,6 +372,13 @@ static NSUInteger POResultsGeneration;
                     }
                     [objectIndex setVectors:[POObjectIndex vectorsForImage:small ?: picture] forKey:pendingKeys[index]];
                     if (small) CGImageRelease(small);
+                }
+                if (kindEncoder && !item.isVideo && !item.pictureScore && images.count) {
+                    NSData *vector = [kindEncoder vectorForImage:(__bridge CGImageRef)images.firstObject];
+                    if (vector) {
+                        POSetKindVector(item, vector);
+                        [cache setKindVector:vector forKey:pendingKeys[index]];
+                    }
                 }
                 if (wantsLabels && !item.labels) {
                     // Unreadable files get an empty result, so they are not retried on every launch.

@@ -27,7 +27,8 @@ BOOL POWorthReadingText(POPhotoItem *item, NSDictionary<NSString *, NSNumber *> 
     for (NSString *label in labels) {
         if ([POTextLabels() containsObject:label]) return YES;
     }
-    return NO;
+    // What MobileCLIP takes for a picture: a postcard's wishes decide whether it is one.
+    return item.pictureScore.floatValue >= 0.5f;
 }
 
 /// One pass of Vision's text recognition; nil when it failed.

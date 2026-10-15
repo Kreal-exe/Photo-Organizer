@@ -66,30 +66,8 @@ static NSData *PORGBData(CGImageRef image, NSInteger size, BOOL centerCrop) {
 - (instancetype)initWithModel:(POModel *)model snapshot:(NSURL *)snapshot error:(NSError **)error {
     if (!(self = [super init])) return nil;
     _model = model;
-    NSFileManager *fm = NSFileManager.defaultManager;
-    NSString *packageName = model.files.firstObject.pathComponents.firstObject;
-
-    // Core ML runs a compiled copy. It is compiled once per downloaded revision and kept next to the app's data.
-    NSURL *support = [fm URLForDirectory:NSApplicationSupportDirectory inDomain:NSUserDomainMask appropriateForURL:nil create:YES error:NULL];
-    NSURL *models = [support URLByAppendingPathComponent:@"Photo Organizer/Models" isDirectory:YES];
-    NSString *compiledName = [NSString stringWithFormat:@"%@-%@.mlmodelc", packageName.stringByDeletingPathExtension, snapshot.lastPathComponent];
-    NSURL *compiled = [models URLByAppendingPathComponent:compiledName isDirectory:YES];
-    if (![fm fileExistsAtPath:compiled.path]) {
-        // The cache holds symlinks into blobs/; the compiler wants a plain package, so it gets a real copy.
-        NSURL *scratch = [[NSURL fileURLWithPath:NSTemporaryDirectory()] URLByAppendingPathComponent:NSUUID.UUID.UUIDString isDirectory:YES];
-        for (NSString *file in model.files) {
-            NSURL *destination = [scratch URLByAppendingPathComponent:file];
-            [fm createDirectoryAtURL:destination.URLByDeletingLastPathComponent withIntermediateDirectories:YES attributes:nil error:NULL];
-            NSURL *source = [snapshot URLByAppendingPathComponent:file].URLByResolvingSymlinksInPath;
-            if (![fm copyItemAtURL:source toURL:destination error:error]) return nil;
-        }
-        NSURL *built = [MLModel compileModelAtURL:[scratch URLByAppendingPathComponent:packageName isDirectory:YES] error:error];
-        if (!built) return nil;
-        [fm createDirectoryAtURL:models withIntermediateDirectories:YES attributes:nil error:NULL];
-        BOOL moved = [fm moveItemAtURL:built toURL:compiled error:error];
-        [fm removeItemAtURL:scratch error:NULL];
-        if (!moved) return nil;
-    }
+    NSURL *compiled = [model compiledModelURLWithError:error];
+    if (!compiled) return nil;
 
     MLModelConfiguration *configuration = [MLModelConfiguration new];
     configuration.computeUnits = MLComputeUnitsAll;

@@ -74,23 +74,23 @@ models are downloaded the same way, nothing else is needed.
   Mac, by what the image labels see: a screenshot sent through WhatsApp or Viber comes back as a JPEG under another name.
   - *Collages* are what Google Photos made rather than a camera took — collages, photo frames, animations, movies,
     video snippets, effects (`…-COLLAGE.jpg`, `…-PHOTO_FRAME.jpg`, `MOVIE.mp4`), told by the names Google Photos and
-    Takeout give them; an edited copy (`…-отредактировано.jpg`) is still a photo.
-  - *Pictures* are postcards, memes, drawings, documents — what WhatsApp and Viber chats fill a phone with. The app
-    learns them on your own library: files the image labels call drawn, printed or written are its examples of
-    pictures, camera photos and messenger photos of people, animals or the sky its examples of photos, and a small
-    model on each file's visual fingerprint sorts the rest (MobileCLIP on Windows, Vision's feature print on a Mac,
-    where the examples of every library opened are remembered, so a folder of saved pictures learns from the camera
-    roll). Messenger photos have lost every bit of camera metadata, so it is the picture itself that tells: the labels
-    must see something drawn, printed or written surely, and no person, animal or landscape — unless the drawing is
-    unmistakable or a postcard's wishes (greetings, holidays, blessings) are read in it — the text of a photographed
-    whiteboard or screen does not count. The model alone only adds postcards whose text was read, so a
-    photo of a child drawing, or with a tattoo, stays a photo,
-    and what a camera took — a capture date of its own, a place, a camera's name — is a photo whatever is in it.
+    Takeout give them, and on a Mac also grids of photos other apps made, as MobileCLIP sees them; an edited copy
+    (`…-отредактировано.jpg`) is still a photo.
+  - *Pictures* are what was made on a computer rather than taken by a camera — postcards, memes, icons, quote cards:
+    what WhatsApp and Viber chats fill a phone with. Messenger photos keep no camera metadata at all, so the image
+    itself has to tell, and what is in it says nothing: a photo of a notebook page is a document, a postcard has
+    people on it. On a Mac, MobileCLIP (Apple's, downloaded in *Settings → Recognition*, 23 MB) is asked how the image
+    was made, comparing it with descriptions such as "a photo of a child", "a photo of a handwritten notebook page",
+    "a greeting card with text", "a meme" (`Tools/make_clip_kinds.py`). A file is a picture when it is sure, or likely
+    and a postcard's wishes are read in it; where people, animals or a landscape are seen, it must be all but certain
+    or have writing on it — the caption of a meme, the wishes of a card. Without the model, the image labels of macOS
+    decide, much less well. What a camera took — a capture date of its own, a place, a camera's name — is a photo
+    whatever is in it.
 
     <p align="center"><img src="docs/screenshots/pictures.png" width="80%" alt="Pictures shown alone"></p>
 
   - **This Is a Picture / This Is a Photo** in the menu of a file (on a Mac) puts it right: the file moves at once,
-    the correction is kept, and it teaches the model, so that files like it follow a second later.
+    and the correction is kept.
   - Above the library: **Media · Photos · Videos · Pictures · Collages · Screenshots** (Screenshots on a Mac), each
     kind with its count and a checkbox; *Media* counts what the ticked kinds add up to. The kind shown is tinted
     blue, checkbox and all. Clicking a kind anywhere but its checkbox shows it alone; ticked, it is in *Media* and gets organized, unticked it is hidden and stays where it
@@ -217,7 +217,7 @@ Windows — WPF UI (C#), WindowsApp/PhotoOrganizer/
 
 | Where | What |
 |---|---|
-| `~/Library/Application Support/Photo Organizer` (macOS), `%APPDATA%\Photo Organizer` (Windows) | what scans read, recognition results, object index, the examples and corrections of pictures and photos, dates set by hand, people’s names, the move journal, the VK sign-in token (readable only by you) |
+| `~/Library/Application Support/Photo Organizer` (macOS), `%APPDATA%\Photo Organizer` (Windows) | what scans read, recognition results, object index, the corrections of pictures and photos, dates set by hand, people’s names, the move journal, the VK sign-in token (readable only by you) |
 | `~/.cache/huggingface/hub` | downloaded models (the standard Hugging Face cache, shared with other apps) |
 
 The photos and videos themselves are never modified — only moved, when you ask.
@@ -306,25 +306,23 @@ open /Applications/PhotoOrganizer.app
   скриншотов или PNG размером с экран телефона, планшета или компьютера (iPhone называет их `IMG_1234.PNG`), а на Mac
   ещё и по меткам распознавания: скриншот, пересланный через WhatsApp или Viber, приходит как JPEG под другим именем.
   - *«Коллажи»* — то, что сделал Google Фото, а не камера: коллажи, рамки, анимации, фильмы, фрагменты видео,
-    эффекты (`…-COLLAGE.jpg`, `…-PHOTO_FRAME.jpg`, `MOVIE.mp4`) — по именам, которые дают им Google Фото и Takeout;
-    отредактированная копия (`…-отредактировано.jpg`) остаётся фото.
-  - *«Картинки»* — открытки, мемы, рисунки, документы: то, чем чаты WhatsApp и Viber забивают телефон. Программа учится
-    на вашей же медиатеке: файлы, которые метки распознавания называют нарисованными, печатными или написанными, —
-    её примеры картинок, снимки с камеры и присланные фото людей, животных или неба — примеры фото, а небольшая модель
-    на «отпечатке» каждого файла разбирает остальное (в Windows — MobileCLIP, на Mac — отпечаток Vision; на Mac
-    примеры всех открытых медиатек запоминаются, поэтому папка сохранённых картинок учится на фото с камеры). Одна
-    модель картинку не делает: в файле должно быть видно нарисованное, печатное или написанное — по меткам или по
-    прочитанному тексту (пожелания на открытке). Если метки уверенно видят человека, животное или пейзаж, это фото —
-    кроме явного рисунка или открытки с пожеланиями (поздравления, праздники, «храни вас Господь»), а не просто
-    текста с доски или экрана в кадре: у присланных через мессенджер фото нет никаких данных камеры, и фото
-    ребёнка, рисующего на доске, остаётся фото. Фото
-    людей, животных или неба, в котором нет ничего нарисованного, остаётся фото, что бы ни сказала модель, а снятое
-    камерой — со своей датой съёмки, местом или «камерным» именем — фото, что бы на нём ни было.
+    эффекты (`…-COLLAGE.jpg`, `…-PHOTO_FRAME.jpg`, `MOVIE.mp4`) — по именам, которые дают им Google Фото и Takeout,
+    а на Mac ещё и сетки фото из других приложений — их узнаёт MobileCLIP; отредактированная копия
+    (`…-отредактировано.jpg`) остаётся фото.
+  - *«Картинки»* — то, что сделано на компьютере, а не снято камерой: открытки, мемы, иконы, цитаты — то, чем чаты
+    WhatsApp и Viber забивают телефон. У присланных через мессенджер фото нет никаких данных камеры, поэтому решает
+    само изображение, причём не то, что на нём: фото тетради — это документ, а на открытке бывают люди. На Mac модель
+    MobileCLIP от Apple (загружается в «Настройки» → «Распознавание», 23 МБ) сравнивает изображение с описаниями вроде
+    «фото ребёнка», «фото страницы тетради», «открытка с текстом», «мем» (`Tools/make_clip_kinds.py`). Картинка — когда
+    она уверена или считает это вероятным и на изображении прочитаны пожелания с открытки; если видны люди, животные
+    или пейзаж, нужна почти полная уверенность или надпись — подпись мема, пожелания открытки. Без модели решают
+    метки распознавания macOS, заметно хуже. Снятое камерой — со своей датой съёмки, местом или «камерным» именем —
+    фото, что бы на нём ни было.
 
     <p align="center"><img src="docs/screenshots/pictures.png" width="80%" alt="Только картинки"></p>
 
-  - **«Это картинка» / «Это фото»** в меню файла (на Mac) исправляет ошибку: файл сразу переходит куда нужно,
-    поправка запоминается и учит модель, так что похожие файлы через секунду переходят следом.
+  - **«Это картинка» / «Это фото»** в меню файла (на Mac) исправляет ошибку: файл сразу переходит куда нужно, а
+    поправка запоминается.
   - Над медиатекой: **Медиа · Фото · Видео · Картинки · Коллажи · Скриншоты** («Скриншоты» — на Mac), у каждого вида —
     счётчик и галочка; «Медиа» — сумма отмеченных. Показанный вид подсвечен голубым вместе с галочкой. Нажатие на вид
     (в любом месте, кроме галочки)
@@ -430,7 +428,7 @@ INSTALL_DIR=~/Applications ./build.sh   # поставить в другое м�
 ## Где хранятся данные
 
 `~/Library/Application Support/Photo Organizer` на Mac и `%APPDATA%\Photo Organizer` в Windows — прочитанное при
-сканировании, результаты распознавания, индекс предметов, примеры и поправки картинок и фото, заданные вручную даты, имена людей, журнал перемещений и
+сканировании, результаты распознавания, индекс предметов, поправки картинок и фото, заданные вручную даты, имена людей, журнал перемещений и
 токен входа ВК (доступен только вам). Скачанные модели — в общем кеше Hugging Face `~/.cache/huggingface/hub`. Сами
 фото и видео приложение не изменяет — только перемещает, когда вы об этом просите.
 

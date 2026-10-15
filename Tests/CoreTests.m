@@ -782,12 +782,33 @@ int main(void) {
             postcard.text = @"loe neatet f niemanta silates ee en modene sechbrd respekt";
             CHECK(!POIsPicture(postcard));   // someone at a whiteboard: text, but not a postcard's
             postcard.text = nil;
-            postcard.pictureVerdict = @YES;
-            CHECK(POIsPicture(postcard));    // the model learnt on the library catches what the labels miss
-            postcard.labels = @{@"illustrations": @0.9};
-            postcard.pictureVerdict = @NO;
-            CHECK(!POIsPicture(postcard));   // and overrules them
-            postcard.pictureVerdict = @YES;
+            // MobileCLIP, once it has looked: how the file was made, whatever the labels say.
+            postcard.labels = @{@"document": @0.9, @"handwriting": @0.9};
+            postcard.pictureScore = @0.0;
+            postcard.collageScore = @0.0;
+            CHECK(!POIsPicture(postcard));   // a photo of a notebook page
+            postcard.labels = nil;
+            postcard.pictureScore = @0.97;
+            CHECK(POIsPicture(postcard));    // a postcard
+            postcard.labels = @{@"adult": @0.9, @"people": @0.9};
+            postcard.pictureScore = @0.92;
+            CHECK(!POIsPicture(postcard));   // a couple at home: people, nothing written
+            postcard.text = @"во время ссоры в женщине просыпается историчка";
+            CHECK(POIsPicture(postcard));    // a meme: people, and its caption
+            postcard.text = nil;
+            postcard.labels = nil;
+            postcard.pictureScore = @0.6;
+            CHECK(!POIsPicture(postcard));   // likely is not enough…
+            postcard.text = @"с днём рождения! желаю счастья и здоровья";
+            CHECK(POIsPicture(postcard));    // …without a postcard's wishes
+            postcard.text = nil;
+            postcard.pictureScore = @0.1;
+            postcard.collageScore = @0.8;
+            CHECK(POIsCollage(postcard) && POIsPicture(postcard));   // several photos put together by an app
+            postcard.collageScore = @0.55;
+            CHECK(!POIsCollage(postcard));   // a group photo looks a little like a grid of photos
+            postcard.pictureScore = @0.97;
+            postcard.collageScore = @0.0;
             postcard.dateSource = source;
             postcard.labels = @{@"illustrations": @0.9};
             CHECK(!POIsPicture(postcard));   // what a camera took is a photo, whatever is in it
@@ -799,7 +820,8 @@ int main(void) {
             postcard.dateSource = source;
             postcard.pictureMark = nil;
             postcard.labels = nil;
-            postcard.pictureVerdict = nil;
+            postcard.pictureScore = nil;
+            postcard.collageScore = nil;
             plan.organizesCollages = YES;
             plan.organizesVideos = NO;
             [plan rebuild];

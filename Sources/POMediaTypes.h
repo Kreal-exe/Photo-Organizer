@@ -30,10 +30,14 @@ FOUNDATION_EXPORT NSString *POTypeFolder(POPhotoItem *item);
 /// and Google Takeout give them. An edited copy ("…-отредактировано.jpg") is still a photo.
 FOUNDATION_EXPORT BOOL POIsGooglePhotosCreation(POPhotoItem *item);
 
-/// A picture rather than a photograph: what Google Photos made (above), or a postcard, meme, drawing, document or the
-/// like. What the user said it is, else what the model learnt on the library says (see POPictures.h), or before it has, a file the image labels call
-/// drawn, printed or written ("illustrations", "document", "printed_page"…). What a camera took — a capture date of
-/// its own, a place, a camera's name — is a photo whatever is in it.
+/// A collage: what Google Photos made (above), or several photos put together by another app — as MobileCLIP sees it
+/// (see POKinds.h). What a camera took is not one.
+FOUNDATION_EXPORT BOOL POIsCollage(POPhotoItem *item);
+
+/// A picture rather than a photograph: a collage (above), or something made on a computer — a postcard, a meme, an
+/// icon, a quote card. What the user said it is (see POPictures.h); else what MobileCLIP sees (sure, or likely and with
+/// a postcard's wishes read in it); before the analysis, what the image labels say. What a camera took — a capture date
+/// of its own, a place, a camera's name — is a photo whatever is in it, and so is a photo of a notebook or a whiteboard.
 FOUNDATION_EXPORT BOOL POIsPicture(POPhotoItem *item);
 
 /// The labels see a person, an animal or a landscape surely enough (0.7): a photo, unless something drawn, printed or
