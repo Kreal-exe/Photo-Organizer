@@ -7,9 +7,6 @@
 
 /// What the labels call graphic (see POGraphicScore) to be a sure picture, and the most a sure photo may have.
 static const float POSureGraphic = 0.6f, POSurePhoto = 0.1f;
-/// What the labels must call graphic, or how many letters of text must be read, for the model's word to count.
-static const float POSomeGraphic = 0.3f;
-static const NSUInteger POPostcardLetters = 25;
 static const NSUInteger POMinimumExamples = 30, POMaximumExamples = 6000, POEpochs = 300;
 static const float POLearningRate = 0.5f, PORegularization = 0.001f, POThreshold = 0.5f;
 /// How many sure examples one file the user marked counts for.
@@ -165,27 +162,6 @@ static void POAddMarkedExample(NSMutableDictionary *examples, NSString *key, BOO
     if (print) examples[picture ? @"pictures" : @"photos"][key] = POHalfPrint(print, dimension);
 }
 
-/// How many letters of text a postcard has at least (a T-shirt's print or a shop sign in a photo has fewer).
-static NSUInteger POLetterCount(NSString *text) {
-    NSUInteger letters = 0;
-    for (NSUInteger i = 0; i < text.length; i++) letters += [NSCharacterSet.letterCharacterSet characterIsMember:[text characterAtIndex:i]];
-    return letters;
-}
-
-/// Labels only a photograph gets — people, animals, the sky — sure enough, and nothing drawn or painted about it: a
-/// family photo sent through a messenger, which lost its date. Without these the model would learn "from a camera"
-/// against "from a messenger" instead of "photo" against "picture", and take every messenger photo for a picture.
-static BOOL POLooksPhotographed(NSDictionary<NSString *, NSNumber *> *labels) {
-    static NSArray<NSString *> *subjects;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        subjects = @[@"people", @"adult", @"child", @"teen", @"baby", @"animal", @"cat", @"dog", @"bird", @"sky", @"outdoor", @"interior_room"];
-    });
-    if (labels[@"art"].floatValue >= 0.2f || labels[@"screenshot"].floatValue >= 0.2f || labels[@"sign"].floatValue >= 0.3f) return NO;
-    for (NSString *subject in subjects) if (labels[subject].floatValue >= 0.7f) return YES;
-    return NO;
-}
-
 #pragma mark - Classification
 
 NSArray *POClassifyPictures(NSArray<POPhotoItem *> *items) {
@@ -219,7 +195,7 @@ NSArray *POClassifyPictures(NSArray<POPhotoItem *> *items) {
             // Remembered up to twice what one training takes, so that a large library does not crowd out the others.
             float graphic = POGraphicScore(labels);
             BOOL dated = item.dateSource == PODateSourceEXIF;
-            if (graphic >= POSureGraphic && !dated && !item.hasLocation) {
+            if (graphic >= POSureGraphic && !dated && !item.hasLocation && !POLooksPhotographed(labels)) {
                 if (!pictures[key] && pictures.count < 2 * POMaximumExamples) {
                     pictures[key] = POHalfPrint(print, dimension);
                     changed = YES;
@@ -249,11 +225,11 @@ NSArray *POClassifyPictures(NSArray<POPhotoItem *> *items) {
         // A photo of people, animals or the sky, with nothing drawn about it, stays a photo whatever the model says:
         // taking a family photo away from the photos is worse than leaving a postcard among them.
         NSUInteger index = candidates[row].unsignedIntegerValue;
-        // And the model alone never makes a picture: it also takes messenger photos for pictures. Something drawn,
-        // printed or written must be seen in it too — by the labels, or as text (a postcard's wishes).
+        // The model alone never makes a picture: it takes messenger photos, which have lost every bit of camera
+        // metadata, for pictures too. What it adds to the labels is a postcard told by its wishes — text read in it.
         POPhotoItem *item = items[index];
-        BOOL evidence = POGraphicScore(item.labels) >= POSomeGraphic || POLetterCount(item.text) >= POPostcardLetters;
-        verdicts[index] = @(probabilities[row] >= POThreshold && evidence && !POLooksPhotographed(item.labels));
+        BOOL byModel = probabilities[row] >= POThreshold && POLetterCount(item.text) >= POPostcardLetters;
+        verdicts[index] = @(POIsPictureByLabels(item) || byModel);
     }
     free(probabilities);
     return verdicts;

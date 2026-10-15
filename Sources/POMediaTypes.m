@@ -81,6 +81,29 @@ float POGraphicScore(NSDictionary<NSString *, NSNumber *> *labels) {
     return score;
 }
 
+BOOL POLooksPhotographed(NSDictionary<NSString *, NSNumber *> *labels) {
+    static NSArray<NSString *> *subjects;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        subjects = @[@"people", @"adult", @"child", @"teen", @"baby", @"animal", @"cat", @"dog", @"bird", @"sky", @"outdoor", @"interior_room"];
+    });
+    for (NSString *subject in subjects) if (labels[subject].floatValue >= 0.7f) return YES;
+    return NO;
+}
+
+NSUInteger POLetterCount(NSString *text) {
+    NSUInteger letters = 0;
+    for (NSUInteger i = 0; i < text.length; i++) letters += [NSCharacterSet.letterCharacterSet characterIsMember:[text characterAtIndex:i]];
+    return letters;
+}
+
+BOOL POIsPictureByLabels(POPhotoItem *item) {
+    NSDictionary<NSString *, NSNumber *> *labels = item.labels;
+    float graphic = POGraphicScore(labels);
+    if (graphic < 0.6f) return NO;
+    return graphic >= 0.8f || !POLooksPhotographed(labels) || POLetterCount(item.text) >= POPostcardLetters;
+}
+
 BOOL POIsPicture(POPhotoItem *item) {
     NSNumber *mark = item.pictureMark;
     if (mark && !item.isVideo) return mark.boolValue;
@@ -89,7 +112,7 @@ BOOL POIsPicture(POPhotoItem *item) {
     if (item.isVideo || POIsScreenshot(item) || POTakenByCamera(item)) return NO;
     NSNumber *verdict = item.pictureVerdict;
     if (verdict) return verdict.boolValue;
-    return POGraphicScore(item.labels) >= 0.6f;
+    return POIsPictureByLabels(item);
 }
 
 NSString *POTypeFolder(POPhotoItem *item) {
