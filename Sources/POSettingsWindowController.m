@@ -327,7 +327,7 @@ static NSStackView *POPane(NSArray<NSView *> *views) {
         POHeading(POL(@"Картинки и коллажи")),
         PONote([NSString stringWithFormat:POL(@"Отличает снятое камерой от сделанного на компьютере: открытки, мемы, иконы и коллажи — от фото, "
                 @"в том числе фото людей, тетрадей и документов, присланных через мессенджеры. Модель %@ (%@, huggingface.co/%@). "
-                @"Без неё картинки определяются по меткам macOS — заметно хуже."),
+                @"Загружается сама при первом запуске; без неё картинки определяются по меткам macOS — заметно хуже."),
                 POModel.pictureModel.title, POSize(POModel.pictureModel.byteSize), POModel.pictureModel.identifier]),
         _pictureInstaller.view,
         PONote([NSString stringWithFormat:POL(@"Модели хранятся в общем кэше Hugging Face (%@) и работают на этом Mac — файлы никуда не отправляются."), cache]),

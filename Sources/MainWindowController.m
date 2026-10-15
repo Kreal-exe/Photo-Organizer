@@ -2000,6 +2000,8 @@ static BOOL POIsStillThere(POPhotoItem *item) {
     [analyzer startWithProgress:^(NSUInteger done, NSUInteger total) {
         typeof(self) me = weakSelf;
         if (!me || me->_analyzer != analyzer) return;
+        // What was known from before is in place: the kinds (pictures, collages…) may have changed with it.
+        if (done == 0) [me kindsDidChange];
         [me->_content setAnalysisStatus:[NSString stringWithFormat:POL(@"Распознавание: %@ из %@"), PONumber(done), PONumber(total)]];
     } completion:^(NSString *errorMessage) {
         typeof(self) me = weakSelf;
@@ -2012,8 +2014,19 @@ static BOOL POIsStillThere(POPhotoItem *item) {
     }];
 }
 
+/// What decides a file's kind (its labels, MobileCLIP's scores, its text) was found or read: the plan, the sidebar
+/// and the grid are brought up to date, the grid keeping its scroll position.
+- (void)kindsDidChange {
+    if (!_plan || _organizing) return;
+    [_plan rebuild];
+    [self reloadSidebar];
+    [self updateGrid];
+    [self updateUI];
+}
+
 - (void)analysisDidFinishWithMessage:(NSString *)message {
     [_content setAnalysisStatus:message ?: @""];
+    [self kindsDidChange];
     [self updateSearchSuggestions];
     [self reloadSidebar];
     [self regroupPeople];

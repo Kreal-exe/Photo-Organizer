@@ -15,6 +15,20 @@ static CGImageRef POCreateDecodedThumbnail(NSURL *url, CGFloat pixels) {
     return image;
 }
 
+/// QuickLook sometimes hands back a thumbnail of the right size with nothing in it, fully transparent: that is no
+/// thumbnail.
+static BOOL POIsBlank(CGImageRef image) {
+    uint8_t pixels[8 * 8 * 4] = {0};
+    CGColorSpaceRef space = CGColorSpaceCreateDeviceRGB();
+    CGContextRef context = CGBitmapContextCreate(pixels, 8, 8, 8, 8 * 4, space, (CGBitmapInfo)kCGImageAlphaPremultipliedLast);
+    CGColorSpaceRelease(space);
+    if (!context) return NO;
+    CGContextDrawImage(context, CGRectMake(0, 0, 8, 8), image);
+    CGContextRelease(context);
+    for (size_t i = 3; i < sizeof(pixels); i += 4) if (pixels[i]) return NO;
+    return YES;
+}
+
 /// What -thumbnailForURL: hands out for -cancel:: a cell scrolled away needs no picture decoded for it.
 @interface POThumbnailToken : NSObject
 @property (nonatomic, strong) QLThumbnailGenerationRequest *request;
@@ -89,7 +103,7 @@ static CGImageRef POCreateDecodedThumbnail(NSURL *url, CGFloat pixels) {
     [QLThumbnailGenerator.sharedGenerator generateBestRepresentationForRequest:request
                                                              completionHandler:^(QLThumbnailRepresentation *thumbnail, NSError *error) {
         CGImageRef image = thumbnail.CGImage;
-        if (image) deliver((__bridge id)image);
+        if (image && !POIsBlank(image)) deliver((__bridge id)image);
         else decode();   // no thumbnail from QuickLook: the app decodes the picture itself
     }];
     // QuickLook works in another process, and while the analysis keeps the Mac busy it may take its time: after a

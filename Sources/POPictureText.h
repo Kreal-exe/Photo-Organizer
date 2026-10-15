@@ -12,7 +12,9 @@ FOUNDATION_EXPORT BOOL POWorthReadingText(POPhotoItem *item, NSDictionary<NSStri
 /// The text written in a picture, read by Vision in Russian and English where this macOS knows them: lines joined by
 /// line breaks, lower-cased and with ё as е, as the search compares. Empty when there is none; nil when Vision
 /// failed, so that the picture is tried again another time instead of being remembered as having no text.
-FOUNDATION_EXPORT NSString *_Nullable POTextInImage(CGImageRef _Nullable image);
+/// `captionAtEdge` receives whether the text is a band at the top or the bottom of the picture — a caption — rather
+/// than written somewhere in a photographed scene.
+FOUNDATION_EXPORT NSString *_Nullable POTextInImage(CGImageRef _Nullable image, BOOL *_Nullable captionAtEdge);
 
 /// The longest side pictures are decoded at for reading text.
 FOUNDATION_EXPORT const NSInteger POTextPixelSize;
