@@ -646,6 +646,13 @@ int main(void) {
             [plan rebuild];
             NSArray<NSString *> *groups = [plan.groups valueForKey:@"folder"];
             CHECK([groups isEqualToArray:(@[@"2020", @"2021", POPlan.defaultTinyFolderName, POPlan.defaultDuplicatesFolderName])], @"%@", groups);
+            // Thumbnails to the Trash: both of them, the original stays; duplicates are left to their own option.
+            plan.removesDuplicates = NO;
+            plan.removesTiny = YES;
+            [plan rebuild];
+            NSArray<NSString *> *trashed = [[plan.duplicatesToRemove valueForKey:@"relativePath"] sortedArrayUsingSelector:@selector(compare:)];
+            CHECK([trashed isEqualToArray:(@[@"small.jpg", @"thumb.jpg"])], @"%@", trashed);
+            plan.removesTiny = NO;
             [fm removeItemAtURL:copies error:NULL];
         }
 

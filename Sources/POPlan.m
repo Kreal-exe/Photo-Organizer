@@ -11,6 +11,7 @@ static NSString *const PODefaultsNested = @"nested";
 static NSString *const PODefaultsSeparateDuplicates = @"separateDuplicates";
 static NSString *const PODefaultsRemovesDuplicates = @"removesDuplicates";
 static NSString *const PODefaultsSeparateTiny = @"separateTiny";
+static NSString *const PODefaultsRemovesTiny = @"removesTiny";
 static NSString *const PODefaultsDuplicatesFolder = @"duplicatesFolderName";
 static NSString *const PODefaultsTinyFolder = @"tinyFolderName";
 static NSString *const PODefaultsCopiesFiles = @"organizeCopiesFiles";
@@ -250,6 +251,7 @@ static NSString *const PODefaultsKeptFolders = @"keptFolders";   // library path
     self.separateDuplicates = [defaults boolForKey:PODefaultsSeparateDuplicates];
     self.removesDuplicates = [defaults boolForKey:PODefaultsRemovesDuplicates];
     self.separateTiny = [defaults boolForKey:PODefaultsSeparateTiny];
+    self.removesTiny = [defaults boolForKey:PODefaultsRemovesTiny];
     self.copiesFiles = [defaults boolForKey:PODefaultsCopiesFiles];
     self.arrangement = MIN(MAX([defaults integerForKey:PODefaultsArrangement], POArrangementDate), POArrangementFormat);
     self.datesInside = [defaults boolForKey:PODefaultsDatesInside];
@@ -281,6 +283,7 @@ static NSString *const PODefaultsKeptFolders = @"keptFolders";   // library path
     [defaults setBool:self.separateDuplicates forKey:PODefaultsSeparateDuplicates];
     [defaults setBool:self.removesDuplicates forKey:PODefaultsRemovesDuplicates];
     [defaults setBool:self.separateTiny forKey:PODefaultsSeparateTiny];
+    [defaults setBool:self.removesTiny forKey:PODefaultsRemovesTiny];
     [defaults setBool:self.copiesFiles forKey:PODefaultsCopiesFiles];
     [defaults setInteger:self.arrangement forKey:PODefaultsArrangement];
     [defaults setBool:self.datesInside forKey:PODefaultsDatesInside];
@@ -431,10 +434,11 @@ static NSString *const PODefaultsKeptFolders = @"keptFolders";   // library path
     // Duplicates to remove: copies of the kinds organized whose original (or best version) stays — never the last
     // file of a picture. They are left where they are until they go to the Trash.
     NSMutableOrderedSet<POPhotoItem *> *removed = [NSMutableOrderedSet orderedSet];
-    if (self.removesDuplicates) {
+    if (self.removesDuplicates || self.removesTiny) {
         NSMutableSet<POPhotoItem *> *doomed = [NSMutableSet set];
         for (POPhotoItem *item in self.items) {
-            if ((item.isDuplicate || item.betterCopy) && !item.isTiny && [self organizesItem:item]) [doomed addObject:item];
+            if (!(item.isDuplicate || item.betterCopy) || ![self organizesItem:item]) continue;
+            if (item.isTiny ? self.removesTiny : self.removesDuplicates) [doomed addObject:item];
         }
         for (POPhotoItem *item in self.items) {
             if (![doomed containsObject:item]) continue;

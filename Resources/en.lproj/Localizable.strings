@@ -530,3 +530,13 @@
 "Модель картинок готова. Открытки, мемы и коллажи разберутся после анализа." = "The pictures model is ready. Postcards, memes and collages are sorted out after the analysis.";
 "Картинки и коллажи" = "Pictures and Collages";
 "Отличает снятое камерой от сделанного на компьютере: открытки, мемы, иконы и коллажи — от фото, в том числе фото людей, тетрадей и документов, присланных через мессенджеры. Модель %@ (%@, huggingface.co/%@). Загружается сама при первом запуске; без неё картинки определяются по меткам macOS — заметно хуже." = "Tells what a camera took from what was made on a computer: postcards, memes, icons and collages from photos — photos of people, notebooks and documents sent through messengers included. Model %@ (%@, huggingface.co/%@). It downloads on its own at the first launch; without it, pictures are told by the macOS image labels — much less well.";
+"Файлы:" = "Files:";
+"Названия папок:" = "Folder names:";
+"Скриншоты:" = "Screenshots:";
+"Дубликаты:" = "Duplicates:";
+"Миниатюры:" = "Thumbnails:";
+"В отдельную папку" = "In a folder of their own";
+"Удалить в Корзину" = "Move to the Trash";
+"Иначе — в папку:" = "Otherwise into:";
+"Уменьшенные копии других фото уходят в Корзину, только если их большая версия остаётся." = "Smaller copies of other photos go to the Trash, only while their larger version stays.";
+" В Корзину: %@." = " To the Trash: %@.";
