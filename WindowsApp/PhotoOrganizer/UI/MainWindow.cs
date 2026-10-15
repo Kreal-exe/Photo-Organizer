@@ -87,6 +87,8 @@ public sealed class MainWindow : Window
     int _searchGeneration;
     CancellationTokenSource? _clipDownload;
     readonly Stack<OrganizeResult> _undo = new(), _redo = new();
+    /// <summary>What follows taking the duplicates to the Recycle Bin after organizing.</summary>
+    Action? _afterTrash;
     bool _busy, _closing;
     string? _lastMessage;
     string[] _searchTokens = [];
@@ -1523,7 +1525,20 @@ public sealed class MainWindow : Window
         _destination = string.Equals(_plan.Root, _root, StringComparison.OrdinalIgnoreCase) ? null : _plan.Root;
         // Duplicates go to the Recycle Bin once the rest is in place ("Удалить дубликаты").
         var duplicates = _plan.DuplicatesToRemove;
-        if (confirmed) RunMoves(progress => Organizer.ApplyPlan(_plan, progress), copying: _plan.CopiesFiles, then: () => TrashDuplicates(duplicates));
+        // Which file each duplicate is a copy of is taken now: once the files have moved, the copies are compared again
+        // in the background, and meanwhile those links are not there to go by.
+        var keepers = KeepersOf(duplicates);
+        bool copies = _plan.CopiesFiles;
+        if (confirmed) RunMoves(progress => Organizer.ApplyPlan(_plan, progress), copying: copies, then: () =>
+        {
+            // Then what was to go goes to the Recycle Bin, and the library is read again from the disk.
+            string? moved = _lastMessage;
+            TrashDuplicates(duplicates, keepers, () =>
+            {
+                if (duplicates.Count > 0 && moved != null && _lastMessage != moved) _lastMessage = moved + ". " + _lastMessage;
+                if (!copies) Rescan();
+            });
+        });
     }
 
     string? AskFolder(List<PhotoItem> items)
@@ -1587,17 +1602,34 @@ public sealed class MainWindow : Window
         RunMoves(progress => Organizer.MoveItems(items, plan.Root, item => plan.SectionFolder(item, kept, layout), progress));
     }
 
-    /// <summary>The duplicates organizing removes: only those whose original (or best version) is still there on the disk.</summary>
-    void TrashDuplicates(List<PhotoItem> duplicates)
+    /// <summary>
+    /// For each duplicate to remove, the file that stays in its place: the original of an exact copy, the best version of
+    /// a lesser one — or, when that goes too, its own best version. Missing when no file of the picture would stay.
+    /// </summary>
+    static Dictionary<PhotoItem, PhotoItem> KeepersOf(List<PhotoItem> duplicates)
     {
         var doomed = duplicates.ToHashSet();
-        var safe = duplicates.Where(item =>
+        var keepers = new Dictionary<PhotoItem, PhotoItem>();
+        foreach (var item in duplicates)
         {
             var keeper = item.DuplicateOf ?? item.BetterCopy;
             if (keeper != null && doomed.Contains(keeper)) keeper = keeper.BetterCopy is { } best && !doomed.Contains(best) ? best : null;
-            return keeper != null && StillThere(keeper) && File.Exists(item.Path);
-        }).ToList();
-        if (safe.Count > 0) Trash(safe);
+            if (keeper != null) keepers[item] = keeper;
+        }
+        return keepers;
+    }
+
+    /// <summary>The duplicates organizing removes: only those whose original (found before the files moved) is still there on the disk.</summary>
+    void TrashDuplicates(List<PhotoItem> duplicates, Dictionary<PhotoItem, PhotoItem> keepers, Action then)
+    {
+        var safe = duplicates.Where(item => keepers.TryGetValue(item, out var keeper) && StillThere(keeper) && File.Exists(item.Path)).ToList();
+        if (safe.Count == 0)
+        {
+            then();
+            return;
+        }
+        _afterTrash = then;
+        Trash(safe);
     }
 
     void RunMoves(Func<Action<int, int>, OrganizeResult> work, bool copying = false, bool stoppable = false, Action? then = null)
@@ -1647,7 +1679,7 @@ public sealed class MainWindow : Window
             _undo.Push(result);
             _redo.Clear();
         }
-        int n = result.Records.Count;
+        int n = result.FileCount;
         // The way back only when there is something to undo.
         _lastMessage = n > 0
             ? F("Готово: %@ %@. Отменить — ⌘Z", Plural(n, L("перемещён"), L("перемещено"), L("перемещено")), Count(n, L("файл"), L("файла"), L("файлов"))).Replace("⌘Z", "Ctrl+Z")
@@ -1671,7 +1703,7 @@ public sealed class MainWindow : Window
             _undo.Push(result);
             _redo.Clear();
         }
-        int n = result.Records.Count;
+        int n = result.FileCount;
         _lastMessage = n > 0
             ? F("Готово: %@ %@. Отменить — ⌘Z", Plural(n, L("скопирован"), L("скопировано"), L("скопировано")), Count(n, L("файл"), L("файла"), L("файлов"))).Replace("⌘Z", "Ctrl+Z")
             : F("Готово: %@ %@.", Plural(n, L("скопирован"), L("скопировано"), L("скопировано")), Count(n, L("файл"), L("файла"), L("файлов")));
@@ -1840,7 +1872,10 @@ public sealed class MainWindow : Window
             else if (trashed.Count > 0) _viewer.Show(left, Math.Min(viewerIndex, left.Count - 1));
         }
         ShowErrors(errors, L("Не все файлы удалось переместить в Корзину"));
-        if (trashed.Count > 0) RegroupCopies();
+        var then = _afterTrash;
+        _afterTrash = null;
+        if (then != null) then();
+        else if (trashed.Count > 0) RegroupCopies();
     }
 
     /// <summary>

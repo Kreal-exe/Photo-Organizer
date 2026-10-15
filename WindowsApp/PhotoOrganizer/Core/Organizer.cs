@@ -4,13 +4,18 @@ using static PhotoOrganizer.Core.Strings;
 
 namespace PhotoOrganizer.Core;
 
-/// <summary>One file put into place. A copy (`IsCopy`) left the original at `From`; undoing it removes `To`.</summary>
-public sealed record MoveRecord(string From, string To, long FileSize, bool IsCopy = false);
+/// <summary>
+/// One file put into place. A copy (`IsCopy`) left the original at `From`; undoing it removes `To`. A Google Takeout
+/// .json that went along with its photo (`IsSidecar`) is undone with it but not counted.
+/// </summary>
+public sealed record MoveRecord(string From, string To, long FileSize, bool IsCopy = false, bool IsSidecar = false);
 
 /// <summary>Everything needed to report on and undo one run of the organizer.</summary>
 public sealed class OrganizeResult
 {
     public List<MoveRecord> Records { get; init; } = [];
+    /// <summary>How many photos and videos moved or were copied: Records without the .json that went along.</summary>
+    public int FileCount => Records.Count(r => !r.IsSidecar);
     /// <summary>The files were copied, not moved: the originals and the library in memory are as they were.</summary>
     public bool IsCopy { get; init; }
     /// <summary>Copy runs: files skipped because a copy of them was already in the destination folder.</summary>
@@ -32,6 +37,27 @@ public sealed class OrganizeResult
 public static class Organizer
 {
     sealed class MoveException(string message) : Exception(message);
+
+    /// <summary>
+    /// Takes the Google Takeout .json of `item` along to where the file went (see PhotoItem.SidecarPath), under its own
+    /// name, never over another file — only when the file kept its name, for the .json names the file it describes.
+    /// </summary>
+    static void CarrySidecar(PhotoItem item, string destination, bool copies, List<MoveRecord> records)
+    {
+        if (item.SidecarPath is not { } sidecar || Path.GetFileName(destination) != Path.GetFileName(item.Path) || !File.Exists(sidecar)) return;
+        string target = Path.Combine(Path.GetDirectoryName(destination)!, Path.GetFileName(sidecar));
+        if (File.Exists(target)) return;
+        try
+        {
+            long size = new FileInfo(sidecar).Length;
+            if (copies) File.Copy(sidecar, target, overwrite: false);
+            else File.Move(sidecar, target, overwrite: false);
+            records.Add(new MoveRecord(sidecar, target, size, IsCopy: copies, IsSidecar: true));
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+        }
+    }
 
     /// <summary>A path in `directory` that nothing exists at yet: "name.jpg", "name (2).jpg", …</summary>
     static string UniquePath(string directory, string name)
@@ -303,6 +329,7 @@ public static class Organizer
                     hashes[destination] = hash ?? item.ContentHash ?? HashOf(item.Path, hashes);
                 }
                 result.Records.Add(new MoveRecord(item.Path, destination, item.FileSize, IsCopy: true));
+                CarrySidecar(item, destination, copies: true, result.Records);
                 // CopyFile keeps the time of the last change but not the creation time: both as on the original.
                 File.SetCreationTimeUtc(destination, File.GetCreationTimeUtc(item.Path));
                 File.SetLastWriteTimeUtc(destination, File.GetLastWriteTimeUtc(item.Path));
@@ -341,6 +368,7 @@ public static class Organizer
                     string destination = MoveExclusively(item.Path, directory, Path.GetFileName(item.Path));
                     result.Records.Add(new MoveRecord(item.Path, destination, item.FileSize));
                     sourceDirectories.Add(sourceDirectory);
+                    CarrySidecar(item, destination, copies: false, result.Records);
                     if (!IsUnchangedFile(destination, item.FileSize)) throw new MoveException(L("после перемещения размер файла не совпал — проверьте его вручную"));
                 }
             }
