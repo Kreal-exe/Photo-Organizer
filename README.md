@@ -80,7 +80,9 @@ models are downloaded the same way, nothing else is needed.
     pictures, camera photos and messenger photos of people, animals or the sky its examples of photos, and a small
     model on each file's visual fingerprint sorts the rest (MobileCLIP on Windows, Vision's feature print on a Mac,
     where the examples of every library opened are remembered, so a folder of saved pictures learns from the camera
-    roll). A photo of people, animals or the sky with nothing drawn about it stays a photo whatever the model says,
+    roll). The model alone never makes a picture: something drawn, printed or written has to be seen in the file
+    too — by the labels, or as text read in it (a postcard's wishes). A photo of people, animals or the sky with nothing
+    drawn about it stays a photo whatever the model says,
     and what a camera took — a capture date of its own, a place, a camera's name — is a photo whatever is in it.
 
     <p align="center"><img src="docs/screenshots/pictures.png" width="80%" alt="Pictures shown alone"></p>
@@ -308,7 +310,9 @@ open /Applications/PhotoOrganizer.app
     на вашей же медиатеке: файлы, которые метки распознавания называют нарисованными, печатными или написанными, —
     её примеры картинок, снимки с камеры и присланные фото людей, животных или неба — примеры фото, а небольшая модель
     на «отпечатке» каждого файла разбирает остальное (в Windows — MobileCLIP, на Mac — отпечаток Vision; на Mac
-    примеры всех открытых медиатек запоминаются, поэтому папка сохранённых картинок учится на фото с камеры). Фото
+    примеры всех открытых медиатек запоминаются, поэтому папка сохранённых картинок учится на фото с камеры). Одна
+    модель картинку не делает: в файле должно быть видно нарисованное, печатное или написанное — по меткам или по
+    прочитанному тексту (пожелания на открытке). Фото
     людей, животных или неба, в котором нет ничего нарисованного, остаётся фото, что бы ни сказала модель, а снятое
     камерой — со своей датой съёмки, местом или «камерным» именем — фото, что бы на нём ни было.
 

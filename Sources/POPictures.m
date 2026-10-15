@@ -7,6 +7,9 @@
 
 /// What the labels call graphic (see POGraphicScore) to be a sure picture, and the most a sure photo may have.
 static const float POSureGraphic = 0.6f, POSurePhoto = 0.1f;
+/// What the labels must call graphic, or how many letters of text must be read, for the model's word to count.
+static const float POSomeGraphic = 0.3f;
+static const NSUInteger POPostcardLetters = 25;
 static const NSUInteger POMinimumExamples = 30, POMaximumExamples = 6000, POEpochs = 300;
 static const float POLearningRate = 0.5f, PORegularization = 0.001f, POThreshold = 0.5f;
 /// How many sure examples one file the user marked counts for.
@@ -162,6 +165,13 @@ static void POAddMarkedExample(NSMutableDictionary *examples, NSString *key, BOO
     if (print) examples[picture ? @"pictures" : @"photos"][key] = POHalfPrint(print, dimension);
 }
 
+/// How many letters of text a postcard has at least (a T-shirt's print or a shop sign in a photo has fewer).
+static NSUInteger POLetterCount(NSString *text) {
+    NSUInteger letters = 0;
+    for (NSUInteger i = 0; i < text.length; i++) letters += [NSCharacterSet.letterCharacterSet characterIsMember:[text characterAtIndex:i]];
+    return letters;
+}
+
 /// Labels only a photograph gets — people, animals, the sky — sure enough, and nothing drawn or painted about it: a
 /// family photo sent through a messenger, which lost its date. Without these the model would learn "from a camera"
 /// against "from a messenger" instead of "photo" against "picture", and take every messenger photo for a picture.
@@ -239,7 +249,11 @@ NSArray *POClassifyPictures(NSArray<POPhotoItem *> *items) {
         // A photo of people, animals or the sky, with nothing drawn about it, stays a photo whatever the model says:
         // taking a family photo away from the photos is worse than leaving a postcard among them.
         NSUInteger index = candidates[row].unsignedIntegerValue;
-        verdicts[index] = @(probabilities[row] >= POThreshold && !POLooksPhotographed(items[index].labels));
+        // And the model alone never makes a picture: it also takes messenger photos for pictures. Something drawn,
+        // printed or written must be seen in it too — by the labels, or as text (a postcard's wishes).
+        POPhotoItem *item = items[index];
+        BOOL evidence = POGraphicScore(item.labels) >= POSomeGraphic || POLetterCount(item.text) >= POPostcardLetters;
+        verdicts[index] = @(probabilities[row] >= POThreshold && evidence && !POLooksPhotographed(item.labels));
     }
     free(probabilities);
     return verdicts;
