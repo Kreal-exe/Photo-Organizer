@@ -68,7 +68,8 @@ static POMediaKind POMediaKindOfItem(POPhotoItem *item);
 
     NSSearchToolbarItem *_searchItem;
     NSArray<NSString *> *_searchTokens;   // words typed into the search field; empty when not searching
-    POAnalyzer *_analyzer;                // non-nil while files are being recognised in the background
+    POAnalyzer *_analyzer;
+    void (^_afterTrash)(void);            // what follows taking the duplicates to the Trash after organizing                // non-nil while files are being recognised in the background
     NSArray<POPerson *> *_people;         // groups of faces found in the folder
     NSArray<NSArray<POPhotoItem *> *> *_copySets;   // resized / recompressed copies of one picture, best first
     NSArray<POPhotoItem *> *_similarItems; // results of the last search by photo, most similar first; nil when none
@@ -1810,7 +1811,7 @@ static BOOL POIsStillThere(POPhotoItem *item) {
         [self registerUndoOf:result actionName:actionName];
         [POOrganizer writeJournalForResult:result rootURL:rootURL];
     }
-    NSUInteger count = result.records.count;
+    NSUInteger count = result.fileCount;
     // "Готово: перемещено 5 файлов. Отменить — ⌘Z", without the hint when nothing moved.
     NSString *(^done)(NSString *, NSString *, NSString *) = ^NSString *(NSString *one, NSString *few, NSString *many) {
         return [NSString stringWithFormat:count ? POL(@"Готово: %@ %@. Отменить — ⌘Z") : POL(@"Готово: %@ %@."), POPlural(count, one, few, many),
@@ -1874,15 +1875,34 @@ static BOOL POIsStillThere(POPhotoItem *item) {
 /// A few files go to the Trash at once; more (thousands of duplicates) in the background, with the library staying
 /// on screen and the progress in the status line.
 /// The duplicates organizing removes: only those whose original (or best version) is still there on the disk.
-- (void)trashDuplicates:(NSArray<POPhotoItem *> *)duplicates {
+/// For each duplicate to remove, the file that stays in its place: the original of an exact copy, the best version of
+/// a lesser one — or, when that goes too, its own best version. Missing when no file of the picture would stay.
+static NSMapTable<POPhotoItem *, POPhotoItem *> *POKeepersOfDuplicates(NSArray<POPhotoItem *> *duplicates) {
     NSSet<POPhotoItem *> *doomed = [NSSet setWithArray:duplicates];
-    NSMutableArray<POPhotoItem *> *safe = [NSMutableArray array];
+    NSMapTable<POPhotoItem *, POPhotoItem *> *keepers = [NSMapTable strongToStrongObjectsMapTable];
     for (POPhotoItem *item in duplicates) {
         POPhotoItem *keeper = item.duplicateOf ?: item.betterCopy;
         if (keeper && [doomed containsObject:keeper]) keeper = keeper.betterCopy && ![doomed containsObject:keeper.betterCopy] ? keeper.betterCopy : nil;
+        if (keeper) [keepers setObject:keeper forKey:item];
+    }
+    return keepers;
+}
+
+/// Takes `duplicates` to the Trash — each only while the file it is a copy of (in `keepers`, found before the files
+/// moved) is still on the disk, so that no picture loses its last file.
+- (void)trashDuplicates:(NSArray<POPhotoItem *> *)duplicates keepers:(NSMapTable<POPhotoItem *, POPhotoItem *> *)keepers
+                    then:(void (^)(void))then {
+    NSMutableArray<POPhotoItem *> *safe = [NSMutableArray array];
+    for (POPhotoItem *item in duplicates) {
+        POPhotoItem *keeper = [keepers objectForKey:item];
         if (keeper && POIsStillThere(keeper) && [item.url checkResourceIsReachableAndReturnError:NULL]) [safe addObject:item];
     }
-    if (safe.count) [self trashItems:safe];
+    if (!safe.count) {
+        then();
+        return;
+    }
+    _afterTrash = then;
+    [self trashItems:safe];
 }
 
 - (void)trashItems:(NSArray<POPhotoItem *> *)items {
@@ -1934,6 +1954,9 @@ static BOOL POIsStillThere(POPhotoItem *item) {
             else if (trashedItems.count) [self->_content.viewer showItems:left atIndex:MIN((NSUInteger)viewerIndex, left.count - 1)];
         }
         [self showErrors:errors title:POL(@"Не все файлы удалось переместить в Корзину")];
+        void (^then)(void) = self->_afterTrash;
+        self->_afterTrash = nil;
+        if (then) then();
     };
     if (items.count <= 20) {
         for (POPhotoItem *item in items) trash(item);
@@ -2203,8 +2226,11 @@ static BOOL POIsStillThere(POPhotoItem *item) {
     if (![self canOrganize]) return;
     POPlan *plan = _plan;
     BOOL copies = plan.copiesFiles;
-    // Duplicates go to the Trash once the rest is in place ("Удалить дубликаты").
+    // Duplicates go to the Trash once the rest is in place ("Удалить дубликаты"). Which file each one is a copy of is
+    // taken now: once the files have moved, the copies are compared again in the background, and meanwhile those
+    // links are not there to go by.
     NSArray<POPhotoItem *> *duplicates = plan.duplicatesToRemove;
+    NSMapTable<POPhotoItem *, POPhotoItem *> *keepers = POKeepersOfDuplicates(duplicates);
     [self beginMovingFiles];
     [_content showProgressWithText:copies ? POL(@"Копирование файлов…") : POL(@"Перемещение файлов…") fraction:0 cancellable:NO];
     [self updateUI];
@@ -2220,7 +2246,17 @@ static BOOL POIsStillThere(POPhotoItem *item) {
         dispatch_async(dispatch_get_main_queue(), ^{
             [self didFinishMoveWithResult:result rootURL:plan.rootURL
                                actionName:copies ? POL(@"копирование по папкам") : POL(@"раскладку по папкам")];
-            [self trashDuplicates:duplicates];
+            // Then what was to go goes to the Trash, and the library is read again from the disk: it shows what the
+            // folders now hold.
+            NSString *moved = self->_lastMessage;
+            NSUInteger toTrash = duplicates.count;
+            [self trashDuplicates:duplicates keepers:keepers then:^{
+                // One line for the whole run: "Готово: перемещено 8 542 файла. В Корзине: 674 файла…"
+                if (toTrash && moved && self->_lastMessage != moved) {
+                    self->_lastMessage = [NSString stringWithFormat:@"%@. %@", moved, self->_lastMessage];
+                }
+                if (!copies) [self startScan];
+            }];
         });
     });
 }

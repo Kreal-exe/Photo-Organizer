@@ -445,6 +445,16 @@ int main(void) {
                     CHECK([item.destinationFolder isEqualToString:@"2016/2016-03"], @"%@", item.destinationFolder);
                 }
             }
+            // A file's own .json goes with it, and comes back with an undo; a copy's borrowed one stays.
+            POPhotoItem *a = [plan.items filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"relativePath ENDSWITH '/a.png'"]].firstObject;
+            CHECK([a.sidecarURL.lastPathComponent isEqualToString:@"a.png.supplemental-metadata.json"], @"%@", a.sidecarURL);
+            POOrganizeResult *carried = [POOrganizer applyPlan:plan progress:nil];
+            NSURL *movedJSON = [export URLByAppendingPathComponent:@"2018/2018-05/2018-05-15/a.png.supplemental-metadata.json"];
+            CHECK([fm fileExistsAtPath:movedJSON.path] && carried.fileCount == plan.pendingItems.count && carried.records.count > carried.fileCount,
+                  @"%lu %lu", (unsigned long)carried.fileCount, (unsigned long)carried.records.count);
+            CHECK([POOrganizer revert:carried].count == 0);
+            CHECK(![fm fileExistsAtPath:movedJSON.path] &&
+                  [fm fileExistsAtPath:[export URLByAppendingPathComponent:@"Photos from 2018/a.png.supplemental-metadata.json"].path]);
             [fm removeItemAtURL:export error:NULL];
 
             // A look-alike copy without a date gets the date of the copy that has one.
