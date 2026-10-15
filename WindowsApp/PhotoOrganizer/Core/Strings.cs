@@ -121,7 +121,7 @@ public static class Strings
         [" Дубликаты в Корзину: %@."] = " Duplicates to the Recycle Bin: %@.",
         ["Медиа"] = "Media",
         ["Отмечено — в медиатеке и раскладывается; без галочки — скрыто и остаётся на месте"] = "Ticked: in the library and organized; unticked: hidden and left where it is",
-        ["Год из папки Google Takeout"] = "Year of the Google Takeout folder",
+        ["Год из названия папки"] = "Year from the folder name",
         ["Коллажи"] = "Collages",
         ["Открытки, мемы, рисунки, документы — то, что не фотография. Без галочки остаются на месте."] = "Postcards, memes, drawings, documents — whatever is not a photograph. Unticked, they stay where they are.",
         ["Коллажи, рамки, анимации, фильмы и правки, которые сделал Google Фото. Без галочки остаются на месте."] = "Collages, frames, animations, movies and edits made by Google Photos. Unticked, they stay where they are.",

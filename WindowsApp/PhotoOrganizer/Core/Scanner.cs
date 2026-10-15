@@ -241,12 +241,13 @@ public sealed partial class Scanner
     [GeneratedRegex(@"-(edited|отредактировано|изменено|bearbeitet|modifié|editado|modificato|bewerkt|edytowane|redigeret|redigerad|muokattu|collage|photo_frame|animation|effects|mix|snippet|cinematic|stylized)$", RegexOptions.IgnoreCase)]
     private static partial Regex EditSuffix();
 
-    [GeneratedRegex(@"^(photos from|фото за|фото) (\d{4})( ?г\.?)?$", RegexOptions.IgnoreCase)]
+    [GeneratedRegex(@"^(?:(?:photos from|фото за|фото) )?(\d{4})(?: ?г\.?| год)?$", RegexOptions.IgnoreCase)]
     private static partial Regex TakeoutYearFolder();
 
     /// <summary>
-    /// The year of the Google Takeout folder a file is in ("Фото 2023 г", "Photos from 2023") for a file nothing else
-    /// dates: Takeout sorts by the date Google Photos gives a file, so the year is Google's own. Only the year — the
+    /// The year of the folder a file is in for a file nothing else dates: a Google Takeout one ("Фото 2023 г", "Photos
+    /// from 2023" — Takeout sorts by the date Google Photos gives a file), or one named by the year itself ("2023",
+    /// "2023 год"), the year folders this app makes among them. Only the year — the
     /// file goes into that year's folder, not into a month — and a copy with a date of its own still wins.
     /// </summary>
     public static void DateFromTakeoutFolders(IEnumerable<PhotoItem> items)
@@ -254,9 +255,10 @@ public sealed partial class Scanner
         foreach (var item in items)
         {
             if (!item.Undated) continue;
-            string folder = item.CurrentFolder.Split('/').Last().Normalize(NormalizationForm.FormC);
-            var match = TakeoutYearFolder().Match(folder);
-            if (!match.Success || !int.TryParse(match.Groups[2].Value, out int year) || year < 1990 || year > 2100) continue;
+            // The folder itself, or one it is in ("2023/2023-05"): the nearest one named by a year.
+            var match = item.CurrentFolder.Split('/').Reverse().Select(part => TakeoutYearFolder().Match(part.Normalize(NormalizationForm.FormC)))
+                            .FirstOrDefault(m => m.Success);
+            if (match == null || !int.TryParse(match.Groups[1].Value, out int year) || year < 1990 || year > 2100) continue;
             item.Date = new DateTime(year, 7, 1, 12, 0, 0, DateTimeKind.Local);
             item.DateSource = DateSource.TakeoutFolder;
         }

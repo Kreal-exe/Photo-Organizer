@@ -12,8 +12,8 @@ typedef NS_ENUM(NSInteger, PODateSource) {
     PODateSourceCopy,        // no date of its own; taken from another copy of the same picture that has one
     PODateSourceNeighborsMonth, // no date of its own; the numbered shots before and after it are from the same month
     PODateSourceManual,      // set by the user in the app (see POManualDates.h)
-    PODateSourceTakeoutFolder,  // nothing else: the year of the Google Takeout folder it is in ("Фото 2023 г",
-                                // "Photos from 2023") — the year Google Photos itself gives it
+    PODateSourceTakeoutFolder,  // nothing else: the year of the folder it is in — a Google Takeout one ("Фото 2023 г",
+                                // "Photos from 2023"), or one named by the year ("2023", "2023 год")
 };
 
 /// How much of the date is actually known.

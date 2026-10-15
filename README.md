@@ -122,8 +122,10 @@ models are downloaded the same way, nothing else is needed.
   - Google Takeout `.json` files next to the media — also for the files Takeout gave none of their own: names cut to
     47 characters, numbered and edited copies (`…(1).jpg`, `…-edited.jpg`), the videos of Live Photos;
   - copies of the same shot, and neighbouring frames of the same numbered series;
-  - and, when nothing else knows, the year of a Google Takeout folder (`Photos from 2016`, `Фото 2016 г`) — the year
-    Google Photos gives the file; it goes into that year's folder, not into a month.
+  - and, when nothing else knows, the year of the folder it is in: a Google Takeout one (`Photos from 2016`,
+    `Фото 2016 г`) — the year Google Photos gives the file — or one named by the year (`2016`, `2016 год`, also as a
+    folder further up: `2016/2016-04`), so organizing a library again keeps it in its year; it goes into that year's
+    folder, not into a month.
   - Other files with no reliable date are **not guessed into a year**: they go to **No Date**, and **Suggested Dates**
     groups them by rule (“from the folder name *2016*”, “like the neighbouring files IMG_0541 and IMG_0543”) with one
     *Confirm* button per rule. Any date can also be set by hand.
@@ -361,8 +363,10 @@ open /Applications/PhotoOrganizer.app
   - файлы `.json` из Google Takeout рядом с медиа — и для файлов, которым Takeout своего не дал: имена, обрезанные
     до 47 знаков, пронумерованные и отредактированные копии (`…(1).jpg`, `…-отредактировано.jpg`), видео из Live Photo;
   - копии того же снимка и соседние кадры одной нумерованной серии;
-  - и, если больше ничего не известно, год папки Google Takeout (`Фото 2016 г`, `Photos from 2016`) — год, который
-    файлу даёт Google Фото; файл попадает в папку этого года, но не в месяц.
+  - и, если больше ничего не известно, год папки, в которой файл лежит: папки Google Takeout (`Фото 2016 г`,
+    `Photos from 2016`) — год, который файлу даёт Google Фото, — или папки, названной годом (`2016`, `2016 год`, в том
+    числе выше по вложенности: `2016/2016-04`), так что повторная раскладка оставляет файл в его году; файл попадает в
+    папку этого года, но не в месяц.
   - Остальным файлам без надёжной даты год **не придумывается**: они попадают в **«Без даты»**, а раздел **«Предполагаемые
     даты»** группирует их по правилам («из названия папки *2016*», «как у соседних файлов IMG_0541 и IMG_0543») с кнопкой
     *«Подтвердить»* для каждого правила. Любую дату можно задать вручную.
