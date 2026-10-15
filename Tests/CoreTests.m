@@ -797,16 +797,24 @@ int main(void) {
             CHECK(POIsPicture(postcard));    // a meme: people, and its caption
             postcard.text = nil;
             postcard.labels = nil;
-            postcard.pictureScore = @0.6;
+            postcard.pictureScore = @0.7;
             CHECK(!POIsPicture(postcard));   // likely is not enough…
             postcard.text = @"с днём рождения! желаю счастья и здоровья";
             CHECK(POIsPicture(postcard));    // …without a postcard's wishes
+            postcard.pictureScore = @0.58;
+            CHECK(!POIsPicture(postcard));   // a photo of a party decorated with "радости", "счастья"
             postcard.text = nil;
             postcard.pictureScore = @0.1;
             postcard.collageScore = @0.8;
             CHECK(POIsCollage(postcard) && POIsPicture(postcard));   // several photos put together by an app
             postcard.collageScore = @0.55;
             CHECK(!POIsCollage(postcard));   // a group photo looks a little like a grid of photos
+            {
+                POPhotoItem *snippet = [[POPhotoItem alloc] initWithURL:[NSURL fileURLWithPath:@"/tmp/2_5418278351175424486-SNIPPET.mp4"]
+                                                          relativePath:@"2_5418278351175424486-SNIPPET.mp4"];
+                snippet.video = YES;
+                CHECK(!POIsCollage(snippet) && !POIsPicture(snippet));   // a snippet Google Photos cut is a video
+            }
             postcard.pictureScore = @0.97;
             postcard.collageScore = @0.0;
             postcard.dateSource = source;

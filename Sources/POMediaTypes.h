@@ -30,8 +30,8 @@ FOUNDATION_EXPORT NSString *POTypeFolder(POPhotoItem *item);
 /// and Google Takeout give them. An edited copy ("…-отредактировано.jpg") is still a photo.
 FOUNDATION_EXPORT BOOL POIsGooglePhotosCreation(POPhotoItem *item);
 
-/// A collage: what Google Photos made (above), or several photos put together by another app — as MobileCLIP sees it
-/// (see POKinds.h). What a camera took is not one.
+/// A collage: an image Google Photos made (above), or several photos put together by another app — as MobileCLIP sees
+/// it (see POKinds.h). What a camera took is not one, and neither is a video (a snippet or a movie is a video).
 FOUNDATION_EXPORT BOOL POIsCollage(POPhotoItem *item);
 
 /// A picture rather than a photograph: a collage (above), or something made on a computer — a postcard, a meme, an

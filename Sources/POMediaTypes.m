@@ -121,8 +121,10 @@ BOOL POIsPictureByLabels(POPhotoItem *item) {
 }
 
 BOOL POIsCollage(POPhotoItem *item) {
+    // A video is a video, whatever Google Photos made it from (a snippet, a cinematic photo, a movie).
+    if (item.isVideo) return NO;
     if (PONameTraits(item) & PONameTraitGooglePhotosCreation) return YES;
-    if (item.isVideo || POTakenByCamera(item) || item.pictureMark) return NO;
+    if (POTakenByCamera(item) || item.pictureMark) return NO;
     NSNumber *collage = item.collageScore, *picture = item.pictureScore;
     if (!collage || !picture) return NO;
     // The likeliest of the three kinds, and likely enough.
@@ -131,7 +133,7 @@ BOOL POIsCollage(POPhotoItem *item) {
 }
 
 /// How sure MobileCLIP must be that a file is a picture; with a postcard's wishes read in it, likely is enough.
-static const float POPictureSure = 0.85f, POPictureLikely = 0.5f, POPictureCertain = 0.97f;
+static const float POPictureSure = 0.85f, POPictureLikely = 0.6f, POPictureCertain = 0.97f;
 
 BOOL POIsPicture(POPhotoItem *item) {
     NSNumber *mark = item.pictureMark;

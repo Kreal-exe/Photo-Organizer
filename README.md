@@ -72,16 +72,16 @@ models are downloaded the same way, nothing else is needed.
   by what the file says — the name the system gave it (`Screenshot 2024-…`, `Снимок экрана…`), a folder of
   screenshots, or a PNG the size of a phone, tablet or computer screen (iPhones name them `IMG_1234.PNG`) — and, on a
   Mac, by what the image labels see: a screenshot sent through WhatsApp or Viber comes back as a JPEG under another name.
-  - *Collages* are what Google Photos made rather than a camera took — collages, photo frames, animations, movies,
-    video snippets, effects (`…-COLLAGE.jpg`, `…-PHOTO_FRAME.jpg`, `MOVIE.mp4`), told by the names Google Photos and
-    Takeout give them, and on a Mac also grids of photos other apps made, as MobileCLIP sees them; an edited copy
-    (`…-отредактировано.jpg`) is still a photo.
+  - *Collages* are images Google Photos made rather than a camera took — collages, photo frames, animations, effects
+    (`…-COLLAGE.jpg`, `…-PHOTO_FRAME.jpg`), told by the names Google Photos and Takeout give them, and on a Mac also
+    grids of photos other apps made, as MobileCLIP sees them. A video is a video, a snippet or a movie Google Photos
+    cut (`…-SNIPPET.mp4`, `MOVIE.mp4`) too; an edited copy (`…-отредактировано.jpg`) is still a photo.
   - *Pictures* are what was made on a computer rather than taken by a camera — postcards, memes, icons, quote cards:
     what WhatsApp and Viber chats fill a phone with. Messenger photos keep no camera metadata at all, so the image
     itself has to tell, and what is in it says nothing: a photo of a notebook page is a document, a postcard has
     people on it. On a Mac, MobileCLIP (Apple's, downloaded in *Settings → Recognition*, 23 MB) is asked how the image
     was made, comparing it with descriptions such as "a photo of a child", "a photo of a handwritten notebook page",
-    "a greeting card with text", "a meme" (`Tools/make_clip_kinds.py`). A file is a picture when it is sure, or likely
+    "a greeting card with text", "a meme" (`Tools/make_clip_kinds.py`). A file is a picture when it is sure, or likely (0.6)
     and a postcard's wishes are read in it; where people, animals or a landscape are seen, it must be all but certain
     or have writing on it — the caption of a meme, the wishes of a card. Without the model, the image labels of macOS
     decide, much less well. What a camera took — a capture date of its own, a place, a camera's name — is a photo
@@ -305,16 +305,16 @@ open /Applications/PhotoOrganizer.app
   узнаются по тому, что говорит сам файл: имя, которое дала система (`Screenshot 2024-…`, `Снимок экрана…`), папка
   скриншотов или PNG размером с экран телефона, планшета или компьютера (iPhone называет их `IMG_1234.PNG`), а на Mac
   ещё и по меткам распознавания: скриншот, пересланный через WhatsApp или Viber, приходит как JPEG под другим именем.
-  - *«Коллажи»* — то, что сделал Google Фото, а не камера: коллажи, рамки, анимации, фильмы, фрагменты видео,
-    эффекты (`…-COLLAGE.jpg`, `…-PHOTO_FRAME.jpg`, `MOVIE.mp4`) — по именам, которые дают им Google Фото и Takeout,
-    а на Mac ещё и сетки фото из других приложений — их узнаёт MobileCLIP; отредактированная копия
-    (`…-отредактировано.jpg`) остаётся фото.
+  - *«Коллажи»* — изображения, которые сделал Google Фото, а не камера: коллажи, рамки, анимации, эффекты
+    (`…-COLLAGE.jpg`, `…-PHOTO_FRAME.jpg`) — по именам, которые дают им Google Фото и Takeout, а на Mac ещё и сетки фото
+    из других приложений — их узнаёт MobileCLIP. Видео остаётся видео, в том числе нарезки и фильмы Google Фото
+    (`…-SNIPPET.mp4`, `MOVIE.mp4`); отредактированная копия (`…-отредактировано.jpg`) остаётся фото.
   - *«Картинки»* — то, что сделано на компьютере, а не снято камерой: открытки, мемы, иконы, цитаты — то, чем чаты
     WhatsApp и Viber забивают телефон. У присланных через мессенджер фото нет никаких данных камеры, поэтому решает
     само изображение, причём не то, что на нём: фото тетради — это документ, а на открытке бывают люди. На Mac модель
     MobileCLIP от Apple (загружается в «Настройки» → «Распознавание», 23 МБ) сравнивает изображение с описаниями вроде
     «фото ребёнка», «фото страницы тетради», «открытка с текстом», «мем» (`Tools/make_clip_kinds.py`). Картинка — когда
-    она уверена или считает это вероятным и на изображении прочитаны пожелания с открытки; если видны люди, животные
+    она уверена или считает это вероятным (от 0,6) и на изображении прочитаны пожелания с открытки; если видны люди, животные
     или пейзаж, нужна почти полная уверенность или надпись — подпись мема, пожелания открытки. Без модели решают
     метки распознавания macOS, заметно хуже. Снятое камерой — со своей датой съёмки, местом или «камерным» именем —
     фото, что бы на нём ни было.
