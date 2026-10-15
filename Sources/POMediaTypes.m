@@ -97,11 +97,27 @@ NSUInteger POLetterCount(NSString *text) {
     return letters;
 }
 
+BOOL POHasPostcardWords(NSString *text) {
+    if (POLetterCount(text) < POPostcardLetters) return NO;
+    static NSRegularExpression *words;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        // Stems, so that endings and the odd misread letter ("с юбипеем") still match.
+        NSString *pattern = @"поздрав|с (днем|днём|дне)|праздник|юби[лп]е|рожд[еє]ств|р[оа]ждеств|пасх|воскрес|благо[св]л|благовещ|"
+                             "сретен|покров|троиц|крещен|успени|икон|святи?[тео]|свят[оаы]|господ|бог[аеу ]|ангел|молитв|матрон|"
+                             "желаю|желаем|пусть|счасть|здоровь|любв|радост|добр(ое|ого|ой|ых) (утр|дн|веч|ноч)|доброе|спокойной|"
+                             "с новым год|наступающ|8 марта|именин|храни|сохрани|спаси|мира и|тепла|улыб|"
+                             "вітаю|щаст|свят[аи]|будь здоров|happy (birthday|new year|easter)|merry|good morning|good night";
+        words = [NSRegularExpression regularExpressionWithPattern:pattern options:NSRegularExpressionCaseInsensitive error:NULL];
+    });
+    return [words numberOfMatchesInString:text options:0 range:NSMakeRange(0, text.length)] >= 2;
+}
+
 BOOL POIsPictureByLabels(POPhotoItem *item) {
     NSDictionary<NSString *, NSNumber *> *labels = item.labels;
     float graphic = POGraphicScore(labels);
-    if (graphic < 0.6f) return NO;
-    return graphic >= 0.8f || !POLooksPhotographed(labels) || POLetterCount(item.text) >= POPostcardLetters;
+    if (!POLooksPhotographed(labels)) return graphic >= 0.6f;
+    return graphic >= 0.9f || (graphic >= 0.3f && POHasPostcardWords(item.text));
 }
 
 BOOL POIsPicture(POPhotoItem *item) {

@@ -82,7 +82,8 @@ models are downloaded the same way, nothing else is needed.
     where the examples of every library opened are remembered, so a folder of saved pictures learns from the camera
     roll). Messenger photos have lost every bit of camera metadata, so it is the picture itself that tells: the labels
     must see something drawn, printed or written surely, and no person, animal or landscape — unless the drawing is
-    unmistakable or a postcard's wishes are read in it. The model alone only adds postcards whose text was read, so a
+    unmistakable or a postcard's wishes (greetings, holidays, blessings) are read in it — the text of a photographed
+    whiteboard or screen does not count. The model alone only adds postcards whose text was read, so a
     photo of a child drawing, or with a tattoo, stays a photo,
     and what a camera took — a capture date of its own, a place, a camera's name — is a photo whatever is in it.
 
@@ -314,7 +315,8 @@ open /Applications/PhotoOrganizer.app
     примеры всех открытых медиатек запоминаются, поэтому папка сохранённых картинок учится на фото с камеры). Одна
     модель картинку не делает: в файле должно быть видно нарисованное, печатное или написанное — по меткам или по
     прочитанному тексту (пожелания на открытке). Если метки уверенно видят человека, животное или пейзаж, это фото —
-    кроме явного рисунка или открытки с текстом: у присланных через мессенджер фото нет никаких данных камеры, и фото
+    кроме явного рисунка или открытки с пожеланиями (поздравления, праздники, «храни вас Господь»), а не просто
+    текста с доски или экрана в кадре: у присланных через мессенджер фото нет никаких данных камеры, и фото
     ребёнка, рисующего на доске, остаётся фото. Фото
     людей, животных или неба, в котором нет ничего нарисованного, остаётся фото, что бы ни сказала модель, а снятое
     камерой — со своей датой съёмки, местом или «камерным» именем — фото, что бы на нём ни было.

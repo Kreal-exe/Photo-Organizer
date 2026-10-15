@@ -228,7 +228,10 @@ NSArray *POClassifyPictures(NSArray<POPhotoItem *> *items) {
         // The model alone never makes a picture: it takes messenger photos, which have lost every bit of camera
         // metadata, for pictures too. What it adds to the labels is a postcard told by its wishes — text read in it.
         POPhotoItem *item = items[index];
-        BOOL byModel = probabilities[row] >= POThreshold && POLetterCount(item.text) >= POPostcardLetters;
+        // Where a person, an animal or a landscape is seen, the text has to be a postcard's wishes, not a photographed
+        // whiteboard or screen.
+        BOOL byModel = probabilities[row] >= POThreshold &&
+                       (POLooksPhotographed(item.labels) ? POHasPostcardWords(item.text) : POLetterCount(item.text) >= POPostcardLetters);
         verdicts[index] = @(POIsPictureByLabels(item) || byModel);
     }
     free(probabilities);
