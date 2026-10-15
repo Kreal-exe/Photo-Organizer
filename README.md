@@ -80,9 +80,10 @@ models are downloaded the same way, nothing else is needed.
     pictures, camera photos and messenger photos of people, animals or the sky its examples of photos, and a small
     model on each file's visual fingerprint sorts the rest (MobileCLIP on Windows, Vision's feature print on a Mac,
     where the examples of every library opened are remembered, so a folder of saved pictures learns from the camera
-    roll). The model alone never makes a picture: something drawn, printed or written has to be seen in the file
-    too — by the labels, or as text read in it (a postcard's wishes). A photo of people, animals or the sky with nothing
-    drawn about it stays a photo whatever the model says,
+    roll). Messenger photos have lost every bit of camera metadata, so it is the picture itself that tells: the labels
+    must see something drawn, printed or written surely, and no person, animal or landscape — unless the drawing is
+    unmistakable or a postcard's wishes are read in it. The model alone only adds postcards whose text was read, so a
+    photo of a child drawing, or with a tattoo, stays a photo,
     and what a camera took — a capture date of its own, a place, a camera's name — is a photo whatever is in it.
 
     <p align="center"><img src="docs/screenshots/pictures.png" width="80%" alt="Pictures shown alone"></p>
@@ -312,7 +313,9 @@ open /Applications/PhotoOrganizer.app
     на «отпечатке» каждого файла разбирает остальное (в Windows — MobileCLIP, на Mac — отпечаток Vision; на Mac
     примеры всех открытых медиатек запоминаются, поэтому папка сохранённых картинок учится на фото с камеры). Одна
     модель картинку не делает: в файле должно быть видно нарисованное, печатное или написанное — по меткам или по
-    прочитанному тексту (пожелания на открытке). Фото
+    прочитанному тексту (пожелания на открытке). Если метки уверенно видят человека, животное или пейзаж, это фото —
+    кроме явного рисунка или открытки с текстом: у присланных через мессенджер фото нет никаких данных камеры, и фото
+    ребёнка, рисующего на доске, остаётся фото. Фото
     людей, животных или неба, в котором нет ничего нарисованного, остаётся фото, что бы ни сказала модель, а снятое
     камерой — со своей датой съёмки, местом или «камерным» именем — фото, что бы на нём ни было.
 

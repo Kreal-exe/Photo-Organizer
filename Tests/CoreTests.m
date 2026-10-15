@@ -773,6 +773,11 @@ int main(void) {
             CHECK(POIsPicture(postcard));
             postcard.labels = @{@"art": @0.9};
             CHECK(!POIsPicture(postcard));   // a photo of a room with a painting on the wall gets "art" too
+            postcard.labels = @{@"child": @0.85, @"illustrations": @0.65};
+            CHECK(!POIsPicture(postcard));   // a child drawing: the drawing is seen, but so is the child
+            postcard.text = @"с юбилеем! желаю счастья, здоровья и добра";
+            CHECK(POIsPicture(postcard));    // unless the wishes of a postcard are written on it
+            postcard.text = nil;
             postcard.pictureVerdict = @YES;
             CHECK(POIsPicture(postcard));    // the model learnt on the library catches what the labels miss
             postcard.labels = @{@"illustrations": @0.9};

@@ -36,6 +36,20 @@ FOUNDATION_EXPORT BOOL POIsGooglePhotosCreation(POPhotoItem *item);
 /// its own, a place, a camera's name — is a photo whatever is in it.
 FOUNDATION_EXPORT BOOL POIsPicture(POPhotoItem *item);
 
+/// The labels see a person, an animal or a landscape surely enough (0.7): a photo, unless something drawn, printed or
+/// written is seen surely (0.8) or a postcard's text is read in it — a photo of a child drawing gets "illustrations"
+/// and "art" at 0.5, a tattoo "art" at 0.6, so the middle of the range says nothing.
+FOUNDATION_EXPORT BOOL POLooksPhotographed(NSDictionary<NSString *, NSNumber *> *_Nullable labels);
+
+/// The letters in `text` (what was read in a picture).
+FOUNDATION_EXPORT NSUInteger POLetterCount(NSString *_Nullable text);
+/// A postcard's wishes have at least this many letters; a T-shirt's print or a shop sign in a photo fewer.
+static const NSUInteger POPostcardLetters = 25;
+
+/// A picture by its labels and text alone: something drawn, printed or written seen surely (0.6), and no person,
+/// animal or landscape seen surely — or seen very surely (0.8), or a postcard's text.
+FOUNDATION_EXPORT BOOL POIsPictureByLabels(POPhotoItem *item);
+
 /// What a camera took: a capture date of its own, a place, or a camera's name (IMG_20180117_181128, PXL_…, DSC…).
 FOUNDATION_EXPORT BOOL POTakenByCamera(POPhotoItem *item);
 
