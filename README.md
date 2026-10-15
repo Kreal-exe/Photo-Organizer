@@ -65,6 +65,10 @@ models are downloaded the same way, nothing else is needed.
     A copy is removed only while its original stays and is still on the disk. Under it, *Otherwise into* puts them in
     a folder of their own instead. Thumbnails have the same pair: *Move to the Trash* (only while the larger version
     stays) or, otherwise, a folder.
+  - **Move the unticked to the Trash** under the kinds: the kinds not ticked (pictures, collages…) go to the Trash
+    instead of staying where they are — off unless asked for; copying removes nothing. Only photos and videos are
+    moved: the .json Google Takeout puts next to them stays where it is.
+  - *Organize into Folders* is always on while a library is open; the window shows what it would do.
   - The organize window opens at half the screen or more: the options on the left, the folders they make on the
     right. It can be moved and resized; made smaller, its options scroll.
   - Files are moved with an atomic “never replace” rename: a name clash gets a new name, nothing is overwritten.
@@ -306,6 +310,10 @@ open /Applications/PhotoOrganizer.app
     а раскладывается только оригинал или лучшая версия (при копировании они просто не копируются). Копия удаляется,
     только если её оригинал остаётся и лежит на диске. Под ней — «Иначе — в папку»: дубликаты в отдельную папку. У
     миниатюр такая же пара: «Удалить в Корзину» (только если большая версия остаётся) или, иначе, в папку.
+  - **«Неотмеченное — удалить в Корзину»** под видами файлов: неотмеченные виды (картинки, коллажи…) уходят в
+    Корзину, а не остаются на месте — только если включить; при копировании ничего не удаляется. Переносятся только
+    фото и видео: .json, которые Google Takeout кладёт рядом с ними, остаются на месте.
+  - Кнопка «Разложить по папкам» активна всегда, когда открыта медиатека; окно показывает, что будет сделано.
   - Окно раскладки открывается на половину экрана и больше: настройки слева, папки, которые получатся, справа. Его
     можно двигать и менять размер: если сделать его меньше, настройки прокручиваются.
   - Перемещение — атомарное переименование «без замены»: при совпадении имён файл получает новое имя, ничего не

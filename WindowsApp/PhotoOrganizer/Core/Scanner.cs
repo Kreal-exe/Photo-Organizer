@@ -365,16 +365,9 @@ public sealed partial class Scanner
             if (!titlesByFolder.TryGetValue(folder, out var titles)) titlesByFolder[folder] = titles = [];
             titles.Add(System.IO.Path.GetFileName(key));
         }
-        var itemPaths = items.Select(i => PathKey(i.Path)).ToHashSet();
         foreach (var item in items)
         {
             string key = TakeoutKey(item.Path, dates, titlesByFolder, item.Video) ?? TakeoutKey(item.Path, places, titlesByFolder, item.Video) ?? "";
-            // Its own .json only — the one that names this very file, or names it in full when Takeout cut its name
-            // short — not one it borrows from another file that is there (a Live Photo's video, an edited copy or a
-            // "(1)" take the date of another file, whose .json stays with it).
-            string exact = PathKey(item.Path);
-            string? matched = files.ContainsKey(exact) ? exact : TakeoutKey(item.Path, files, titlesByFolder, item.Video);
-            item.SidecarPath = matched != null && (matched == exact || !itemPaths.Contains(matched)) ? files[matched] : null;
             if (places.TryGetValue(key, out var place) && !item.HasLocation)
             {
                 (item.Latitude, item.Longitude) = place;

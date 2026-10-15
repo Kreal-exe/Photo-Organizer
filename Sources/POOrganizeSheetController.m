@@ -19,6 +19,7 @@
     NSTextField *_destinationLabel;
     NSSegmentedControl *_modeControl;
     NSButton *_photosCheckbox, *_videosCheckbox, *_screenshotKindCheckbox, *_picturesCheckbox, *_collagesCheckbox;
+    NSButton *_removeUnorganizedCheckbox;
     NSPopUpButton *_arrangementPopup;
     NSButton *_datesInsideCheckbox;
     NSPopUpButton *_schemePopup, *_yearPopup, *_monthPopup, *_dayPopup;
@@ -121,6 +122,8 @@ static NSStackView *POIndented(NSArray<NSView *> *views) {
     kinds.alignment = NSLayoutAttributeLeading;
     kinds.spacing = 6;
     for (NSStackView *row in kinds.arrangedSubviews) row.spacing = 16;
+    _removeUnorganizedCheckbox = [self checkbox:POL(@"Неотмеченное — удалить в Корзину")];
+    _removeUnorganizedCheckbox.toolTip = POL(@"Без галочки неотмеченные виды остаются на месте. С ней — уходят в Корзину (при переносе; при копировании ничего не удаляется), их можно вернуть оттуда.");
 
     // How.
     _arrangementPopup = [self popupWithTitles:@[POL(@"По датам"), POL(@"По типам"), POL(@"По людям"), POL(@"По форматам")]];
@@ -150,6 +153,7 @@ static NSStackView *POIndented(NSArray<NSView *> *views) {
         @[POFormLabel(POL(@"Куда сложить:")), PORow(@[_destinationLabel, changeDestination])],
         @[POFormLabel(POL(@"Файлы:")), _modeControl],
         @[POFormLabel(POL(@"Что раскладывать:")), kinds],
+        @[NSGridCell.emptyContentView, _removeUnorganizedCheckbox],
         @[POFormLabel(POL(@"Раскладывать:")), PORow(@[_arrangementPopup, _datesInsideCheckbox])],
         @[POFormLabel(POL(@"Группировать:")), _schemePopup],
         @[POFormLabel(POL(@"Названия папок:")), PORow(@[_yearPopup, _monthPopup, _dayPopup])],
@@ -167,7 +171,7 @@ static NSStackView *POIndented(NSArray<NSView *> *views) {
     [form columnAtIndex:0].xPlacement = NSGridCellPlacementTrailing;
     [form columnAtIndex:1].xPlacement = NSGridCellPlacementLeading;
     // Room between the groups: where and what, how, and the special files.
-    for (NSNumber *row in @[@2, @3, @7]) [form rowAtIndex:row.integerValue].topPadding = 10;
+    for (NSNumber *row in @[@2, @4, @8]) [form rowAtIndex:row.integerValue].topPadding = 10;
     // A grid takes whatever room it is given; it keeps its own size.
     NSSize formSize = form.fittingSize;
     [form.widthAnchor constraintEqualToConstant:formSize.width].active = YES;
@@ -333,6 +337,8 @@ static NSStackView *POIndented(NSArray<NSView *> *views) {
     _picturesCheckbox.state = _plan.organizesPictures ? NSControlStateValueOn : NSControlStateValueOff;
     _collagesCheckbox.state = _plan.organizesCollages ? NSControlStateValueOn : NSControlStateValueOff;
     _screenshotKindCheckbox.state = _plan.organizesScreenshots ? NSControlStateValueOn : NSControlStateValueOff;
+    _removeUnorganizedCheckbox.state = _plan.removesUnorganized ? NSControlStateValueOn : NSControlStateValueOff;
+    _removeUnorganizedCheckbox.enabled = !_plan.copiesFiles;
     _screenshotsCheckbox.state = _plan.separateScreenshots ? NSControlStateValueOn : NSControlStateValueOff;
     _screenshotsField.stringValue = _plan.screenshotsFolderName;
     _screenshotsField.enabled = _plan.separateScreenshots;
@@ -367,16 +373,21 @@ static NSStackView *POIndented(NSArray<NSView *> *views) {
         ? [NSString stringWithFormat:copies ? POL(@"Будет скопировано %@ из %@ в %@.") : POL(@"Будет перемещено %@ из %@ в %@."),
            PONumber(pending), PONumber(_plan.items.count), POCount(_plan.groups.count, POL(@"папку"), POL(@"папки"), POL(@"папок"))]
         : POL(@"Все файлы уже лежат на своих местах.");
-    if (_plan.duplicatesToRemove.count) {
-        what = [what stringByAppendingFormat:POL(@" В Корзину: %@."), PONumber(_plan.duplicatesToRemove.count)];
+    NSUInteger toTrash = _plan.duplicatesToRemove.count + _plan.unorganizedToRemove.count;
+    if (toTrash) {
+        what = [what stringByAppendingFormat:POL(@" В Корзину: %@."), PONumber(toTrash)];
+    }
+    if (_plan.merging && !copies) {
+        what = [what stringByAppendingFormat:POL(@" Что уже лежит в «%@», остаётся как есть; из других папок добавляется только то, чего в ней нет, а копии того, что в ней есть, идут в Корзину."),
+                _plan.rootURL.lastPathComponent];
     }
     _summaryLabel.stringValue = [what stringByAppendingString:copies
         ? POL(@" Оригиналы остаются на месте; копии ничего не перезаписывают, уже скопированные файлы пропускаются. Отменить — ⌘Z.")
-        : _plan.duplicatesToRemove.count
-        ? POL(@" Оригиналы перемещаются, а не копируются; ничего не перезаписывается, дубликаты можно вернуть из Корзины. Отменить перенос — ⌘Z.")
+        : toTrash
+        ? POL(@" Оригиналы перемещаются, а не копируются; ничего не перезаписывается, удалённое можно вернуть из Корзины. Отменить перенос — ⌘Z.")
         : POL(@" Оригиналы перемещаются, а не копируются; ничего не удаляется и не перезаписывается. Отменить — ⌘Z.")];
     _confirmButton.title = copies ? POL(@"Скопировать") : POL(@"Разложить");
-    _confirmButton.enabled = pending > 0 || _plan.duplicatesToRemove.count > 0;
+    _confirmButton.enabled = pending > 0 || toTrash > 0;
 }
 
 - (void)modeChanged:(id)sender {
@@ -399,6 +410,7 @@ static NSStackView *POIndented(NSArray<NSView *> *views) {
     _plan.organizesPictures = _picturesCheckbox.state == NSControlStateValueOn;
     _plan.organizesCollages = _collagesCheckbox.state == NSControlStateValueOn;
     _plan.organizesScreenshots = _screenshotKindCheckbox.state == NSControlStateValueOn;
+    _plan.removesUnorganized = _removeUnorganizedCheckbox.state == NSControlStateValueOn;
     _plan.separateScreenshots = _screenshotsCheckbox.state == NSControlStateValueOn;
     _plan.screenshotsInEachDate = _screenshotsPlacePopup.indexOfSelectedItem == 1;
     _plan.screenshotsFolderName = _screenshotsField.stringValue;
@@ -445,7 +457,7 @@ static NSStackView *POIndented(NSArray<NSView *> *views) {
     // Commits a folder name that is still being typed.
     if (![self.view.window makeFirstResponder:nil]) return;
     // Files to put in place, or only duplicates to take to the Trash ("Удалить дубликаты").
-    if (_plan.pendingItems.count || _plan.duplicatesToRemove.count) [self finish:YES];
+    if (_plan.pendingItems.count || _plan.duplicatesToRemove.count || _plan.unorganizedToRemove.count) [self finish:YES];
 }
 
 #pragma mark - Table view

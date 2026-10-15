@@ -12,6 +12,7 @@ static NSString *const PODefaultsSeparateDuplicates = @"separateDuplicates";
 static NSString *const PODefaultsRemovesDuplicates = @"removesDuplicates";
 static NSString *const PODefaultsSeparateTiny = @"separateTiny";
 static NSString *const PODefaultsRemovesTiny = @"removesTiny";
+static NSString *const PODefaultsRemovesUnorganized = @"removesUnorganized";
 static NSString *const PODefaultsDuplicatesFolder = @"duplicatesFolderName";
 static NSString *const PODefaultsTinyFolder = @"tinyFolderName";
 static NSString *const PODefaultsCopiesFiles = @"organizeCopiesFiles";
@@ -130,6 +131,7 @@ static NSString *const PODefaultsKeptFolders = @"keptFolders";   // library path
         _groups = @[];
         _pendingItems = @[];
         _duplicatesToRemove = @[];
+        _unorganizedToRemove = @[];
         // Folder names must not depend on the user's calendar (Buddhist, Japanese, …).
         _calendar = [[NSCalendar alloc] initWithCalendarIdentifier:NSCalendarIdentifierGregorian];
     }
@@ -144,6 +146,41 @@ static NSString *const PODefaultsKeptFolders = @"keptFolders";   // library path
     _rootURL = url;
     NSArray *kept = [[NSUserDefaults.standardUserDefaults dictionaryForKey:PODefaultsKeptFolders] objectForKey:url.path.lowercaseString];
     _keptFolders = [NSMutableSet setWithArray:[kept isKindOfClass:NSArray.class] ? kept : @[]];
+}
+
+- (BOOL)isMerging {
+    if (self.sourceURLs.count < 2) return NO;
+    for (NSURL *source in self.sourceURLs) {
+        if ([source.path isEqualToString:self.rootURL.path]) return YES;
+    }
+    return NO;
+}
+
+- (BOOL)isInDestination:(POPhotoItem *)item {
+    return self.merging && item.rootURL && [item.rootURL.path isEqualToString:self.rootURL.path];
+}
+
+/// While merging, the original of each set of exact copies is a file of the destination when it has one: the copies
+/// brought from the other folders are the ones to go, whatever their names and dates.
+- (void)preferOriginalsInDestination {
+    if (!self.merging) return;
+    BOOL changed = NO;
+    for (POPhotoItem *original in self.items) {
+        if (!original.duplicates.count || [self isInDestination:original]) continue;
+        NSUInteger index = [original.duplicates indexOfObjectPassingTest:^BOOL(POPhotoItem *copy, NSUInteger i, BOOL *stop) {
+            return [self isInDestination:copy];
+        }];
+        if (index == NSNotFound) continue;
+        POPhotoItem *keeper = original.duplicates[index];
+        NSMutableArray<POPhotoItem *> *copies = [original.duplicates mutableCopy];
+        [copies replaceObjectAtIndex:index withObject:original];
+        original.duplicates = nil;
+        keeper.duplicateOf = nil;
+        keeper.duplicates = copies;
+        for (POPhotoItem *copy in copies) copy.duplicateOf = keeper;
+        changed = YES;
+    }
+    if (changed) _duplicateItems = [_items filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"duplicate == YES"]];
 }
 
 - (NSSet<NSString *> *)keptFolders {
@@ -252,6 +289,7 @@ static NSString *const PODefaultsKeptFolders = @"keptFolders";   // library path
     self.removesDuplicates = [defaults boolForKey:PODefaultsRemovesDuplicates];
     self.separateTiny = [defaults boolForKey:PODefaultsSeparateTiny];
     self.removesTiny = [defaults boolForKey:PODefaultsRemovesTiny];
+    self.removesUnorganized = [defaults boolForKey:PODefaultsRemovesUnorganized];
     self.copiesFiles = [defaults boolForKey:PODefaultsCopiesFiles];
     self.arrangement = MIN(MAX([defaults integerForKey:PODefaultsArrangement], POArrangementDate), POArrangementFormat);
     self.datesInside = [defaults boolForKey:PODefaultsDatesInside];
@@ -284,6 +322,7 @@ static NSString *const PODefaultsKeptFolders = @"keptFolders";   // library path
     [defaults setBool:self.removesDuplicates forKey:PODefaultsRemovesDuplicates];
     [defaults setBool:self.separateTiny forKey:PODefaultsSeparateTiny];
     [defaults setBool:self.removesTiny forKey:PODefaultsRemovesTiny];
+    [defaults setBool:self.removesUnorganized forKey:PODefaultsRemovesUnorganized];
     [defaults setBool:self.copiesFiles forKey:PODefaultsCopiesFiles];
     [defaults setInteger:self.arrangement forKey:PODefaultsArrangement];
     [defaults setBool:self.datesInside forKey:PODefaultsDatesInside];
@@ -431,13 +470,16 @@ static NSString *const PODefaultsKeptFolders = @"keptFolders";   // library path
         return group;
     };
 
+    [self preferOriginalsInDestination];
     // Duplicates to remove: copies of the kinds organized whose original (or best version) stays — never the last
-    // file of a picture. They are left where they are until they go to the Trash.
+    // file of a picture. They are left where they are until they go to the Trash. While merging, nothing already in
+    // the destination goes, and a copy brought along of what it has goes whatever its kind.
     NSMutableOrderedSet<POPhotoItem *> *removed = [NSMutableOrderedSet orderedSet];
     if (self.removesDuplicates || self.removesTiny) {
         NSMutableSet<POPhotoItem *> *doomed = [NSMutableSet set];
         for (POPhotoItem *item in self.items) {
-            if (!(item.isDuplicate || item.betterCopy) || ![self organizesItem:item]) continue;
+            if (!(item.isDuplicate || item.betterCopy) || [self isInDestination:item]) continue;
+            if (![self organizesItem:item] && !(item.isDuplicate && [self isInDestination:item.duplicateOf])) continue;
             if (item.isTiny ? self.removesTiny : self.removesDuplicates) [doomed addObject:item];
         }
         for (POPhotoItem *item in self.items) {
@@ -448,12 +490,21 @@ static NSString *const PODefaultsKeptFolders = @"keptFolders";   // library path
         }
     }
     _duplicatesToRemove = self.copiesFiles ? @[] : removed.array;
+    // The kinds not organized, when they are to go too ("Неотмеченное — в Корзину") — not while merging: the
+    // destination is kept as it is, and the other folders' files that are not copies of its own stay where they are.
+    NSMutableArray<POPhotoItem *> *unorganized = [NSMutableArray array];
+    if (self.removesUnorganized && !self.copiesFiles && !self.merging) {
+        for (POPhotoItem *item in self.items) {
+            if (![self organizesItem:item] && ![removed containsObject:item] && ![self isInKeptFolder:item]) [unorganized addObject:item];
+        }
+    }
+    _unorganizedToRemove = unorganized;
 
     for (POPhotoItem *item in self.items) {
         item.destinationRootURL = self.rootURL;
         // Left where they are: sorted by hand into a folder of their own, of a kind not to organize, or a duplicate to
-        // remove (or, when copying, not to copy).
-        if (![self organizesItem:item] || [removed containsObject:item] || [self isInKeptFolder:item]) {
+        // remove (or, when copying, not to copy) — and, while merging, whatever was in the destination already.
+        if (![self organizesItem:item] || [removed containsObject:item] || [self isInKeptFolder:item] || [self isInDestination:item]) {
             item.destinationFolder = item.currentFolder;
             continue;
         }

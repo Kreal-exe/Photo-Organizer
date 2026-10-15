@@ -1290,7 +1290,9 @@ public sealed class MainWindow : Window
         _grouping.IsEnabled = _search.IsEnabled = hasPlan;
         int pending = _plan?.PendingItems.Count ?? 0;
         // Something to do: files to put in place, or only duplicates to remove ("Удалить дубликаты").
-        _organize.IsEnabled = hasPlan && (pending > 0 || _plan!.DuplicatesToRemove.Count > 0);
+        // The organize window opens whenever a library is open: it shows what it would do, and its own button is on
+        // when there is something to do.
+        _organize.IsEnabled = hasPlan;
         // What organizing would do comes first, as on the Mac; the last message while there is nothing to do.
         _status.Text = _plan == null ? ""
             : _plan.Items.Count == 0 ? L("В этой папке нет фото и видео")
@@ -1525,6 +1527,7 @@ public sealed class MainWindow : Window
         _destination = string.Equals(_plan.Root, _root, StringComparison.OrdinalIgnoreCase) ? null : _plan.Root;
         // Duplicates go to the Recycle Bin once the rest is in place ("Удалить дубликаты").
         var duplicates = _plan.DuplicatesToRemove;
+        var unorganized = _plan.UnorganizedToRemove;
         // Which file each duplicate is a copy of is taken now: once the files have moved, the copies are compared again
         // in the background, and meanwhile those links are not there to go by.
         var keepers = KeepersOf(duplicates);
@@ -1533,9 +1536,9 @@ public sealed class MainWindow : Window
         {
             // Then what was to go goes to the Recycle Bin, and the library is read again from the disk.
             string? moved = _lastMessage;
-            TrashDuplicates(duplicates, keepers, () =>
+            TrashDuplicates(duplicates, keepers, unorganized, () =>
             {
-                if (duplicates.Count > 0 && moved != null && _lastMessage != moved) _lastMessage = moved + ". " + _lastMessage;
+                if (duplicates.Count + unorganized.Count > 0 && moved != null && _lastMessage != moved) _lastMessage = moved + ". " + _lastMessage;
                 if (!copies) Rescan();
             });
         });
@@ -1620,9 +1623,11 @@ public sealed class MainWindow : Window
     }
 
     /// <summary>The duplicates organizing removes: only those whose original (found before the files moved) is still there on the disk.</summary>
-    void TrashDuplicates(List<PhotoItem> duplicates, Dictionary<PhotoItem, PhotoItem> keepers, Action then)
+    void TrashDuplicates(List<PhotoItem> duplicates, Dictionary<PhotoItem, PhotoItem> keepers, List<PhotoItem> unorganized, Action then)
     {
         var safe = duplicates.Where(item => keepers.TryGetValue(item, out var keeper) && StillThere(keeper) && File.Exists(item.Path)).ToList();
+        // The kinds not organized, asked to go: each as long as it is still the file the scan saw.
+        safe.AddRange(unorganized.Where(StillThere));
         if (safe.Count == 0)
         {
             then();
@@ -1679,7 +1684,7 @@ public sealed class MainWindow : Window
             _undo.Push(result);
             _redo.Clear();
         }
-        int n = result.FileCount;
+        int n = result.Records.Count;
         // The way back only when there is something to undo.
         _lastMessage = n > 0
             ? F("Готово: %@ %@. Отменить — ⌘Z", Plural(n, L("перемещён"), L("перемещено"), L("перемещено")), Count(n, L("файл"), L("файла"), L("файлов"))).Replace("⌘Z", "Ctrl+Z")
@@ -1703,7 +1708,7 @@ public sealed class MainWindow : Window
             _undo.Push(result);
             _redo.Clear();
         }
-        int n = result.FileCount;
+        int n = result.Records.Count;
         _lastMessage = n > 0
             ? F("Готово: %@ %@. Отменить — ⌘Z", Plural(n, L("скопирован"), L("скопировано"), L("скопировано")), Count(n, L("файл"), L("файла"), L("файлов"))).Replace("⌘Z", "Ctrl+Z")
             : F("Готово: %@ %@.", Plural(n, L("скопирован"), L("скопировано"), L("скопировано")), Count(n, L("файл"), L("файла"), L("файлов")));

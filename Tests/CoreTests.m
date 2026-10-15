@@ -454,21 +454,11 @@ int main(void) {
                     CHECK([item.destinationFolder isEqualToString:@"2016/2016-03"], @"%@", item.destinationFolder);
                 }
             }
-            // A file's own .json goes with it, and comes back with an undo; a copy's borrowed one stays.
-            POPhotoItem *a = [plan.items filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"relativePath ENDSWITH '/a.png'"]].firstObject;
-            CHECK([a.sidecarURL.lastPathComponent isEqualToString:@"a.png.supplemental-metadata.json"], @"%@", a.sidecarURL);
-            for (POPhotoItem *item in plan.items) {
-                // A name cut short owns the .json that names it in full; an edited copy only borrows the original's date.
-                if ([item.relativePath containsString:@"ftband"]) CHECK([item.sidecarURL.lastPathComponent hasSuffix:@"ftband..json"], @"%@", item.sidecarURL);
-                if ([item.relativePath containsString:@"-отредактировано"]) CHECK(item.sidecarURL == nil, @"%@", item.sidecarURL);
-            }
+            // Only the photos and videos move: the .json Takeout put next to them stays where it is.
             POOrganizeResult *carried = [POOrganizer applyPlan:plan progress:nil];
-            NSURL *movedJSON = [export URLByAppendingPathComponent:@"2018/2018-05/2018-05-15/a.png.supplemental-metadata.json"];
-            CHECK([fm fileExistsAtPath:movedJSON.path] && carried.fileCount == plan.pendingItems.count && carried.records.count > carried.fileCount,
-                  @"%lu %lu", (unsigned long)carried.fileCount, (unsigned long)carried.records.count);
-            CHECK([POOrganizer revert:carried].count == 0);
-            CHECK(![fm fileExistsAtPath:movedJSON.path] &&
+            CHECK(carried.records.count == plan.pendingItems.count &&
                   [fm fileExistsAtPath:[export URLByAppendingPathComponent:@"Photos from 2018/a.png.supplemental-metadata.json"].path]);
+            CHECK([POOrganizer revert:carried].count == 0);
             [fm removeItemAtURL:export error:NULL];
 
             // A look-alike copy without a date gets the date of the copy that has one.
@@ -761,6 +751,58 @@ int main(void) {
             [fm removeItemAtURL:[root URLByAppendingPathComponent:@"multi"] error:NULL];
         }
 
+        // A folder merged into another of the library: what the destination has stays as it is (not moved, not taken
+        // as a copy, not removed); from the other folder only what is new is organized in, its copies go.
+        {
+            NSURL *library = [root URLByAppendingPathComponent:@"merge/Бабулины фотки"], *mix = [root URLByAppendingPathComponent:@"merge/Mix"];
+            WriteImage([library URLByAppendingPathComponent:@"2023/IMG_20230113_212514.jpg"], UTTypeJPEG, 900, 700, 0.1, @"2023:01:13 21:25:14");
+            // Dated 2019 but kept in 2023 by hand: merging must not re-sort the destination.
+            WriteImage([library URLByAppendingPathComponent:@"2023/IMG-20190317-WA0003.jpg"], UTTypeJPEG, 900, 700, 0.2, @"2019:03:17 10:00:00");
+            WriteImage([library URLByAppendingPathComponent:@"2023/IMG_20230201_152441-отредактировано.jpg"], UTTypeJPEG, 700, 500, 0.3, @"2023:02:01 15:24:41");
+            // The same file under the same name (a shorter path than the destination's: it used to win as the original)
+            // and under another name; a new photo; the original of the edited one; a kind not organized.
+            [fm createDirectoryAtURL:mix withIntermediateDirectories:YES attributes:nil error:NULL];
+            [fm copyItemAtURL:[library URLByAppendingPathComponent:@"2023/IMG_20230113_212514.jpg"] toURL:[mix URLByAppendingPathComponent:@"IMG_20230113_212514.jpg"] error:NULL];
+            [fm copyItemAtURL:[library URLByAppendingPathComponent:@"2023/IMG-20190317-WA0003.jpg"] toURL:[mix URLByAppendingPathComponent:@"other name.jpg"] error:NULL];
+            WriteImage([mix URLByAppendingPathComponent:@"IMG_20220610_184840.jpg"], UTTypeJPEG, 900, 700, 0.4, @"2022:06:10 18:48:40");
+            WriteImage([mix URLByAppendingPathComponent:@"IMG_20230201_152441.jpg"], UTTypeJPEG, 1400, 1000, 0.3, @"2023:02:01 15:24:41");
+            WriteImage([mix URLByAppendingPathComponent:@"Screenshot_20230330-203538.png"], UTTypePNG, 1080, 2340, 0.5, nil);
+            NSArray<NSString *> *before = Tree(library);
+            POScanner *scanner = [[POScanner alloc] initWithRootURLs:@[library, mix]];
+            NSArray<POPhotoItem *> *items = [scanner scanWithProgress:nil];
+            POPlan *plan = [[POPlan alloc] initWithRootURL:scanner.rootURL items:items];
+            plan.sourceURLs = scanner.rootURLs;
+            plan.removesDuplicates = YES;
+            plan.removesUnorganized = YES;
+            plan.separateDuplicates = NO;
+            plan.organizesScreenshots = NO;
+            POPhotoItem *(^named)(NSString *) = ^POPhotoItem *(NSString *name) {
+                return [plan.items filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"url.lastPathComponent == %@", name]].firstObject;
+            };
+            // The edited version is a lesser copy of the original the other folder brings.
+            named(@"IMG_20230201_152441-отредактировано.jpg").betterCopy = named(@"IMG_20230201_152441.jpg");
+            [plan rebuild];
+            CHECK(plan.merging);
+            NSArray<NSString *> *gone = [[plan.duplicatesToRemove valueForKeyPath:@"url.lastPathComponent"] sortedArrayUsingSelector:@selector(compare:)];
+            NSArray<NSString *> *copies = @[@"IMG_20230113_212514.jpg", @"other name.jpg"];
+            CHECK([gone isEqualToArray:copies], @"%@", gone);
+            for (POPhotoItem *item in plan.duplicatesToRemove) {
+                CHECK([item.rootURL.lastPathComponent isEqualToString:@"Mix"] && [plan isInDestination:item.duplicateOf], @"%@", item.url.path);
+            }
+            CHECK(plan.unorganizedToRemove.count == 0, @"%@", [plan.unorganizedToRemove valueForKey:@"relativePath"]);
+            NSArray<NSString *> *moving = [[plan.pendingItems valueForKey:@"relativePath"] sortedArrayUsingSelector:@selector(compare:)];
+            NSArray<NSString *> *added = @[@"IMG_20220610_184840.jpg", @"IMG_20230201_152441.jpg"];
+            CHECK([moving isEqualToArray:added], @"%@", moving);
+            POOrganizeResult *merged = [POOrganizer applyPlan:plan progress:nil];
+            CHECK(merged.records.count == 2 && merged.errors.count == 0, @"%@", merged.errors);
+            NSArray<NSString *> *after = Tree(library);
+            for (NSString *path in before) CHECK([after containsObject:path], @"%@ gone", path);
+            CHECK([after containsObject:@"2022/IMG_20220610_184840.jpg"] && [after containsObject:@"2023/IMG_20230201_152441.jpg"], @"%@", after);
+            CHECK(after.count == before.count + 3, @"%@", after);   // two files and the 2022 folder
+            CHECK([fm fileExistsAtPath:[mix URLByAppendingPathComponent:@"Screenshot_20230330-203538.png"].path]);
+            [fm removeItemAtURL:[root URLByAppendingPathComponent:@"merge"] error:NULL];
+        }
+
         // Organizing by type, by format, by person, and screenshots to a folder of their own.
         {
             NSURL *kinds = [root URLByAppendingPathComponent:@"kinds"];
@@ -796,6 +838,18 @@ int main(void) {
             plan.organizesCollages = NO;
             [plan rebuild];
             CHECK([folderOf(@"IMG_20230704_101010-COLLAGE.jpg") isEqualToString:@""], @"%@", folderOf(@"IMG_20230704_101010-COLLAGE.jpg"));
+            // Unticked kinds stay where they are — or, when asked, go to the Trash; copying removes nothing.
+            CHECK(plan.unorganizedToRemove.count == 0);
+            plan.removesUnorganized = YES;
+            [plan rebuild];
+            CHECK([[plan.unorganizedToRemove valueForKey:@"relativePath"] containsObject:@"IMG_20230704_101010-COLLAGE.jpg"],
+                  @"%@", [plan.unorganizedToRemove valueForKey:@"relativePath"]);
+            plan.copiesFiles = YES;
+            [plan rebuild];
+            CHECK(plan.unorganizedToRemove.count == 0);
+            plan.copiesFiles = NO;
+            plan.removesUnorganized = NO;
+            [plan rebuild];
             CHECK([folderOf(@"IMG_0001.JPG") isEqualToString:[POL(@"Фото") stringByAppendingString:@"/2023"]], @"%@", folderOf(@"IMG_0001.JPG"));
             POPhotoItem *postcard = [plan.items filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"relativePath == 'IMG-20240502-WA0001.jpg'"]].firstObject;
             PODateSource source = postcard.dateSource;
