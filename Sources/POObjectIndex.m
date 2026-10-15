@@ -55,23 +55,6 @@ static const NSUInteger POMaximumObjects = 3;
     }
 }
 
-+ (NSUInteger)printLength {
-    return PODim;
-}
-
-- (NSData *)wholePrintForKey:(NSString *)key {
-    NSData *stored;
-    @synchronized (self) {
-        stored = _vectors[key];
-    }
-    if (stored.length < PODim * 2) return nil;
-    NSMutableData *print = [NSMutableData dataWithLength:PODim * 4];
-    vImage_Buffer source = {(void *)stored.bytes, 1, PODim, PODim * 2};
-    vImage_Buffer destination = {print.mutableBytes, 1, PODim, PODim * 4};
-    vImageConvert_Planar16FtoPlanarF(&source, &destination, 0);
-    return print;
-}
-
 - (void)setVectors:(NSData *)vectors forKey:(NSString *)key {
     BOOL shouldSave;
     @synchronized (self) {

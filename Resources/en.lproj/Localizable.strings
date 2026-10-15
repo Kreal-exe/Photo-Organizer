@@ -524,3 +524,9 @@
 "после копирования размер файла не совпал — проверьте копию вручную" = "after copying, the file's size differs — please check the copy";
 "Снимки экрана телефона и компьютера, и те, что пришли через мессенджер" = "Screenshots of phones and computers, including those received through a messenger";
 "Снимки экрана, и те, что пришли через мессенджер. Без галочки остаются на месте." = "Screenshots, including those received through a messenger. Unticked, they stay where they are.";
+"Отличает снятое камерой от сделанного на компьютере: открытки, мемы, иконы — от фото (Apple, 256 px)." = "Tells what a camera took from what was made on a computer: postcards, memes, icons from photos (Apple, 256 px).";
+"Модель картинок не загружена — «Настройки»" = "The pictures model is not downloaded — Settings";
+"Модель картинок не запустилась" = "The pictures model did not start";
+"Модель картинок готова. Открытки, мемы и коллажи разберутся после анализа." = "The pictures model is ready. Postcards, memes and collages are sorted out after the analysis.";
+"Картинки и коллажи" = "Pictures and Collages";
+"Отличает снятое камерой от сделанного на компьютере: открытки, мемы, иконы и коллажи — от фото, в том числе фото людей, тетрадей и документов, присланных через мессенджеры. Модель %@ (%@, huggingface.co/%@). Без неё картинки определяются по меткам macOS — заметно хуже." = "Tells what a camera took from what was made on a computer: postcards, memes, icons and collages from photos — photos of people, notebooks and documents sent through messengers included. Model %@ (%@, huggingface.co/%@). Without it, pictures are told by the macOS image labels — much less well.";

@@ -657,7 +657,7 @@ static NSArray<POGridSection *> *POSectionsByFolder(NSArray<POPhotoItem *> *item
 
 /// The kind of a file in the strip — the same one organizing goes by (see POPlan).
 static POMediaKind POMediaKindOfItem(POPhotoItem *item) {
-    if (POIsGooglePhotosCreation(item)) return POMediaKindCollages;
+    if (POIsCollage(item)) return POMediaKindCollages;
     // What the user called a picture or a photo is that, even when it looks like a screen.
     if (POIsScreenshot(item) && !item.pictureMark) return POMediaKindScreenshots;
     if (POIsPicture(item)) return POMediaKindPictures;
@@ -1283,19 +1283,16 @@ static NSString *const POObjectFiltersKey = @"objectFilters";
     });
 }
 
-/// Pictures told from photographs by a model learnt on the libraries opened (see POPictures.h): a second or two, in
-/// the background.
-- (void)classifyPictures {
+/// What the user said files are ("Это картинка" / "Это фото", see POPictures.h), read in the background.
+- (void)loadPictureMarks {
     POPlan *plan = _plan;
     if (!plan) return;
     NSArray<POPhotoItem *> *items = plan.items;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         NSArray *marks = POPictureMarks(items);
-        NSArray *verdicts = POClassifyPictures(items);
         dispatch_async(dispatch_get_main_queue(), ^{
             if (self->_plan != plan || self->_organizing) return;
             for (NSUInteger i = 0; i < items.count; i++) items[i].pictureMark = marks[i] == NSNull.null ? nil : marks[i];
-            POApplyPictureVerdicts(items, verdicts);
             [plan rebuild];
             [self reloadSidebar];
             [self updateGrid];
@@ -1304,8 +1301,7 @@ static NSString *const POObjectFiltersKey = @"objectFilters";
     });
 }
 
-/// "Это картинка" / "Это фото": the selected files move to their kind at once, and the model learns from them, so
-/// that files like them follow when it has learnt again (a second or two later).
+/// "Это картинка" / "Это фото": the selected files move to their kind at once, and it is remembered.
 - (IBAction)markSelectionAsPicture:(id)sender {
     [self markSelectionAsPictures:YES];
 }
@@ -1322,10 +1318,7 @@ static NSString *const POObjectFiltersKey = @"objectFilters";
     [self reloadSidebar];
     [self updateGrid];
     [self updateUI];
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        POMarkPictures(items, pictures);
-        dispatch_async(dispatch_get_main_queue(), ^{ [self classifyPictures]; });
-    });
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{ POMarkPictures(items, pictures); });
 }
 
 /// The selected files that can be told a picture or a photo: not videos.
@@ -2025,7 +2018,7 @@ static BOOL POIsStillThere(POPhotoItem *item) {
     [self reloadSidebar];
     [self regroupPeople];
     [self regroupCopies];
-    [self classifyPictures];
+    [self loadPictureMarks];
     // Refreshing resets the scroll position, so the grid is only rebuilt when the new results change what it shows.
     if (_searchTokens.count || _sidebar.selectedFilter.kind == POFilterKindNudity || POSettings.detectsNudity) {
         [self updateGrid];
@@ -2036,7 +2029,7 @@ static BOOL POIsStillThere(POPhotoItem *item) {
 /// as on Windows, plus the forgetting of the results).
 - (NSString *)analysisSettings {
     POModel *nudity = POModel.selectedModel;
-    return [NSString stringWithFormat:@"%d|%d|%d|%d|%d|%@|%d|%lu", POSettings.groupsFaces, POModel.faceModel.isReady, POSettings.analyzesObjects,
+    return [NSString stringWithFormat:@"%d|%d|%d|%d|%d|%d|%@|%d|%lu", POModel.pictureModel.isReady, POSettings.groupsFaces, POModel.faceModel.isReady, POSettings.analyzesObjects,
             POSettings.detectsNudity, nudity.isReady, nudity.identifier, POSettings.detectsNudity && nudity.isReady,
             (unsigned long)POAnalyzer.resultsGeneration];
 }

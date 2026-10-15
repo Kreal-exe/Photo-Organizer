@@ -120,21 +120,41 @@ BOOL POIsPictureByLabels(POPhotoItem *item) {
     return graphic >= 0.9f || (graphic >= 0.3f && POHasPostcardWords(item.text));
 }
 
+BOOL POIsCollage(POPhotoItem *item) {
+    if (PONameTraits(item) & PONameTraitGooglePhotosCreation) return YES;
+    if (item.isVideo || POTakenByCamera(item) || item.pictureMark) return NO;
+    NSNumber *collage = item.collageScore, *picture = item.pictureScore;
+    if (!collage || !picture) return NO;
+    // The likeliest of the three kinds, and likely enough.
+    float c = collage.floatValue, p = picture.floatValue;
+    return c >= 0.65f && c > p;
+}
+
+/// How sure MobileCLIP must be that a file is a picture; with a postcard's wishes read in it, likely is enough.
+static const float POPictureSure = 0.85f, POPictureLikely = 0.5f, POPictureCertain = 0.97f;
+
 BOOL POIsPicture(POPhotoItem *item) {
     NSNumber *mark = item.pictureMark;
     if (mark && !item.isVideo) return mark.boolValue;
-    if (POIsGooglePhotosCreation(item)) return YES;
+    if (POIsCollage(item)) return YES;
     // What a camera took is a photo, whatever is in it (a painting on the wall, a document).
     if (item.isVideo || POIsScreenshot(item) || POTakenByCamera(item)) return NO;
-    NSNumber *verdict = item.pictureVerdict;
-    if (verdict) return verdict.boolValue;
+    NSNumber *score = item.pictureScore;
+    if (score) {
+        float picture = score.floatValue;
+        BOOL wishes = POHasPostcardWords(item.text);
+        if (picture < POPictureSure && !(picture >= POPictureLikely && wishes)) return NO;
+        // People, animals or a landscape seen surely by the labels: a family photo or a church, unless CLIP is all but
+        // certain or there is writing on it — the caption of a meme, the wishes of a card.
+        return !POLooksPhotographed(item.labels) || picture >= POPictureCertain || wishes || POLetterCount(item.text) >= POPostcardLetters;
+    }
     return POIsPictureByLabels(item);
 }
 
 NSString *POTypeFolder(POPhotoItem *item) {
     PONameTrait traits = PONameTraits(item);
     NSString *extension = item.url.pathExtension.lowercaseString;
-    if (traits & PONameTraitGooglePhotosCreation) return POL(@"Коллажи");
+    if (POIsCollage(item)) return POL(@"Коллажи");
     if (POIsPicture(item)) return POL(@"Картинки");
     if (POIsScreenshot(item)) return POL(@"Скриншоты");
     if (item.isVideo && (traits & PONameTraitScreenRecording)) return POL(@"Записи экрана");

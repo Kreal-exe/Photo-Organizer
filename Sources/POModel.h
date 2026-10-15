@@ -18,6 +18,8 @@ typedef NS_ENUM(NSInteger, POModelBackend) {
 @property (class, nonatomic, readonly) POModel *selectedModel;
 /// The face-embedding model used to group photos by person (not part of `allModels`).
 @property (class, nonatomic, readonly) POModel *faceModel;
+/// MobileCLIP's image half, which tells pictures (postcards, memes, icons) and collages from photos (see POKinds.h).
+@property (class, nonatomic, readonly) POModel *pictureModel;
 + (nullable POModel *)modelWithIdentifier:(nullable NSString *)identifier;
 
 /// Hugging Face repo id, e.g. "Marqo/nsfw-image-detection-384".
@@ -40,6 +42,10 @@ typedef NS_ENUM(NSInteger, POModelBackend) {
 @property (nonatomic, readonly, nullable) NSURL *snapshotURL;
 /// Downloaded, and (for MLX) the runtime is installed.
 @property (nonatomic, readonly, getter=isReady) BOOL ready;
+
+/// For a Core ML model: the compiled copy Core ML runs, compiled once per downloaded revision and kept in Application
+/// Support/Photo Organizer/Models. Slow the first time (seconds); nil with `error` when it can't be had.
+- (nullable NSURL *)compiledModelURLWithError:(NSError **)error;
 
 @end
 

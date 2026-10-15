@@ -59,7 +59,7 @@ cp "$ROOT/Resources/Info.plist" "$APP/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$APP/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${BUILD_NUMBER:-$VERSION}" "$APP/Contents/Info.plist"
 printf 'APPL????' > "$APP/Contents/PkgInfo"
-cp "$ROOT/Resources/AppIcon.icns" "$ROOT/Resources/vit_mlx.py" "$APP/Contents/Resources/"
+cp "$ROOT/Resources/AppIcon.icns" "$ROOT/Resources/vit_mlx.py" "$ROOT/Resources/clip-kinds.bin" "$APP/Contents/Resources/"
 cp -R "$ROOT"/Resources/*.lproj "$APP/Contents/Resources/"
 # Files copied out of iCloud Drive keep its attributes, which codesign refuses.
 xattr -cr "$APP"

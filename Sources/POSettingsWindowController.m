@@ -223,6 +223,7 @@ static NSStackView *POPane(NSArray<NSView *> *views) {
     NSButton *_objectsCheckbox;
     NSButton *_facesCheckbox;
     POModelInstaller *_faceInstaller;
+    POModelInstaller *_pictureInstaller;
 
     NSButton *_nudityCheckbox;
     NSTextField *_processorLabel;
@@ -308,6 +309,11 @@ static NSStackView *POPane(NSArray<NSView *> *views) {
         return POSettings.groupsFaces ? POL(@"Модель лиц готова. Люди появятся в боковой панели после анализа.")
                                       : POL(@"Модель лиц готова. Включите галочку выше, чтобы начать.");
     }];
+    _pictureInstaller = [[POModelInstaller alloc] initWithModel:^{ return POModel.pictureModel; } readyText:^{
+        return POL(@"Модель картинок готова. Открытки, мемы и коллажи разберутся после анализа.");
+    }];
+    NSBox *pictureSeparator = [NSBox new];
+    pictureSeparator.boxType = NSBoxSeparator;
     NSView *recognition = POPane(@[
         POHeading(POL(@"Объекты")), _objectsCheckbox,
         PONote(POL(@"Использует распознавание, встроенное в macOS: ничего загружать не нужно. После анализа ищите через поле поиска в окне («море», «собака», "
@@ -317,11 +323,18 @@ static NSStackView *POPane(NSArray<NSView *> *views) {
         PONote([NSString stringWithFormat:POL(@"Лица находит macOS, а отличает людей друг от друга модель %@ (%@, huggingface.co/%@, лицензия %@). "
                 @"Группе можно дать имя двойным щелчком в боковой панели, а её файлы — переместить в отдельную папку. Пока только фото, без видео."),
                 POModel.faceModel.title, POSize(POModel.faceModel.byteSize), POModel.faceModel.identifier, POModel.faceModel.license]),
-        _faceInstaller.view,
+        _faceInstaller.view, pictureSeparator,
+        POHeading(POL(@"Картинки и коллажи")),
+        PONote([NSString stringWithFormat:POL(@"Отличает снятое камерой от сделанного на компьютере: открытки, мемы, иконы и коллажи — от фото, "
+                @"в том числе фото людей, тетрадей и документов, присланных через мессенджеры. Модель %@ (%@, huggingface.co/%@). "
+                @"Без неё картинки определяются по меткам macOS — заметно хуже."),
+                POModel.pictureModel.title, POSize(POModel.pictureModel.byteSize), POModel.pictureModel.identifier]),
+        _pictureInstaller.view,
         PONote([NSString stringWithFormat:POL(@"Модели хранятся в общем кэше Hugging Face (%@) и работают на этом Mac — файлы никуда не отправляются."), cache]),
     ]);
     [(NSStackView *)recognition setCustomSpacing:14 afterView:resetButton];
     [(NSStackView *)recognition setCustomSpacing:14 afterView:separator];
+    [(NSStackView *)recognition setCustomSpacing:14 afterView:pictureSeparator];
 
     // Nudity
     _nudityCheckbox = [NSButton checkboxWithTitle:POL(@"Искать откровенные фото и видео") target:self action:@selector(toggleNudity:)];
@@ -408,6 +421,7 @@ static NSStackView *POPane(NSArray<NSView *> *views) {
 
     void (^refresh)(void) = ^{ [weakSelf refresh]; };
     _faceInstaller.onChange = refresh;
+    _pictureInstaller.onChange = refresh;
     _nudityInstaller.onChange = refresh;
 
     // Measured with the longest texts in place.
@@ -448,6 +462,7 @@ static NSStackView *POPane(NSArray<NSView *> *views) {
     _facesCheckbox.state = POSettings.groupsFaces ? NSControlStateValueOn : NSControlStateValueOff;
     _facesCheckbox.enabled = POModel.faceModel.isSupported;
     [_faceInstaller refresh];
+    [_pictureInstaller refresh];
 
     POModel *model = POModel.selectedModel;
     _nudityCheckbox.state = POSettings.detectsNudity ? NSControlStateValueOn : NSControlStateValueOff;

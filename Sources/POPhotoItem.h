@@ -96,11 +96,12 @@ FOUNDATION_EXPORT NSString *POItemDateText(POPhotoItem *item, BOOL withTime);
 /// What the file's name and folder say about its kind (see PONameTraits in POMediaTypes.h), worked out once: 0 until
 /// then, and again after the file moves.
 @property (atomic) uint32_t nameTraits;
-/// Whether the model learnt on the library itself calls the file a picture rather than a photo (see POPictures.h);
-/// nil until it has been asked — its labels decide then (see POIsPicture).
-@property (atomic, strong, nullable) NSNumber *pictureVerdict;
+/// How likely the file is a picture (made on a computer: a postcard, a meme, an icon) and a collage of photos, 0…1
+/// each, by MobileCLIP (see POKinds.h); nil when not analysed — the image labels decide then (see POIsPicture).
+@property (atomic, strong, nullable) NSNumber *pictureScore;
+@property (atomic, strong, nullable) NSNumber *collageScore;
 /// What the user said the file is ("Это картинка" / "Это фото"): @YES a picture, @NO a photo, nil when they haven't.
-/// Wins over everything else, and teaches the model (see POPictures.h).
+/// Wins over everything else (see POPictures.h).
 @property (atomic, strong, nullable) NSNumber *pictureMark;
 /// 0…1 from the optional nudity model; nil when not analysed.
 @property (atomic, strong, nullable) NSNumber *nudityScore;

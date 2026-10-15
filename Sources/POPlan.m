@@ -168,7 +168,7 @@ static NSString *const PODefaultsKeptFolders = @"keptFolders";   // library path
 /// Whether the kind of `item` is organized at all (photos, videos, pictures, collages, screenshots) — the same kinds
 /// as the strip above the library (see POMediaKindOfItem).
 - (BOOL)organizesItem:(POPhotoItem *)item {
-    return POIsGooglePhotosCreation(item) ? self.organizesCollages
+    return POIsCollage(item) ? self.organizesCollages
          : POIsScreenshot(item) && !item.pictureMark ? self.organizesScreenshots
          : POIsPicture(item) ? self.organizesPictures
          : item.isVideo ? self.organizesVideos : self.organizesPhotos;
