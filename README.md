@@ -62,8 +62,11 @@ models are downloaded the same way, nothing else is needed.
     (`Screenshots/2024/…`) or one inside every date folder (`2024/Screenshots/…`). Duplicates and thumbnails likewise.
   - **Remove duplicates** (on by default) — when the files are moved, exact copies and lesser versions go to the
     Trash / Recycle Bin and only the original or the best version is organized (when copied, they are not copied).
-    A copy is removed only while its original stays and is still on the disk; thumbnails have their own option.
-  - The organize window can be moved and resized: made smaller, its options scroll.
+    A copy is removed only while its original stays and is still on the disk. Under it, *Otherwise into* puts them in
+    a folder of their own instead. Thumbnails have the same pair: *Move to the Trash* (only while the larger version
+    stays) or, otherwise, a folder.
+  - The organize window opens at half the screen or more: the options on the left, the folders they make on the
+    right. It can be moved and resized; made smaller, its options scroll.
   - Files are moved with an atomic “never replace” rename: a name clash gets a new name, nothing is overwritten.
   - A progress bar, a journal of every move, and **Undo** that puts every file back.
 - **Arrange by type and by person** — the sidebar has **Types**: *Screenshots*, *Videos* and every other type found,
@@ -299,8 +302,10 @@ open /Applications/PhotoOrganizer.app
     внутри папки каждой даты (`2024/Скриншоты/…`). Так же — дубликаты и миниатюры.
   - **«Удалить дубликаты»** (включено по умолчанию) — при переносе точные копии и уменьшенные версии уходят в Корзину,
     а раскладывается только оригинал или лучшая версия (при копировании они просто не копируются). Копия удаляется,
-    только если её оригинал остаётся и лежит на диске; у миниатюр своя галочка.
-  - Окно раскладки можно двигать и менять его размер: если сделать его меньше, настройки прокручиваются.
+    только если её оригинал остаётся и лежит на диске. Под ней — «Иначе — в папку»: дубликаты в отдельную папку. У
+    миниатюр такая же пара: «Удалить в Корзину» (только если большая версия остаётся) или, иначе, в папку.
+  - Окно раскладки открывается на половину экрана и больше: настройки слева, папки, которые получатся, справа. Его
+    можно двигать и менять размер: если сделать его меньше, настройки прокручиваются.
   - Перемещение — атомарное переименование «без замены»: при совпадении имён файл получает новое имя, ничего не
     перезаписывается.
   - Прогресс, журнал всех перемещений и **отмена**, которая возвращает каждый файл на место.

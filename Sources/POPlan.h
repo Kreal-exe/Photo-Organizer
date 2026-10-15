@@ -103,9 +103,11 @@ typedef NS_ENUM(NSInteger, POGroupKind) {
 /// moved (when copied, they are not copied): only one file of each picture, the original or the best version, is
 /// organized. Only a copy whose original stays is removed.
 @property (nonatomic) BOOL removesDuplicates;
-/// What -rebuild found to go to the Trash with removesDuplicates (empty when the files are copied).
+/// What -rebuild found to go to the Trash with removesDuplicates and removesTiny (empty when the files are copied).
 @property (nonatomic, readonly) NSArray<POPhotoItem *> *duplicatesToRemove;
 @property (nonatomic) BOOL separateTiny;
+/// Thumbnails go to the Trash with the duplicates (see duplicatesToRemove) — only those whose larger version stays.
+@property (nonatomic) BOOL removesTiny;
 /// Copies the files into the folders instead of moving them; the originals stay where they are.
 @property (nonatomic) BOOL copiesFiles;
 /// Setting an unusable name restores the default one.

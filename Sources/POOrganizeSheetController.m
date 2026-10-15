@@ -13,25 +13,22 @@
 @end
 
 @implementation POOrganizeSheetController {
-    NSStackView *_optionsStack, *_footer;   // for the size the window opens at
+    NSView *_options, *_footer;   // for the size the window opens at
     BOOL _sized;
     POPlan *_plan;
     NSTextField *_destinationLabel;
     NSSegmentedControl *_modeControl;
+    NSButton *_photosCheckbox, *_videosCheckbox, *_screenshotKindCheckbox, *_picturesCheckbox, *_collagesCheckbox;
     NSPopUpButton *_arrangementPopup;
     NSButton *_datesInsideCheckbox;
-    NSButton *_photosCheckbox, *_videosCheckbox, *_picturesCheckbox, *_collagesCheckbox, *_screenshotKindCheckbox;
+    NSPopUpButton *_schemePopup, *_yearPopup, *_monthPopup, *_dayPopup;
+    NSButton *_nestedCheckbox;
     NSButton *_screenshotsCheckbox;
     NSTextField *_screenshotsField;
     NSPopUpButton *_screenshotsPlacePopup;
-    NSPopUpButton *_schemePopup;
-    NSPopUpButton *_yearPopup;
-    NSPopUpButton *_monthPopup;
-    NSPopUpButton *_dayPopup;
-    NSButton *_nestedCheckbox;
-    NSButton *_duplicatesCheckbox, *_removeDuplicatesCheckbox;
+    NSButton *_removeDuplicatesCheckbox, *_duplicatesCheckbox;
     NSTextField *_duplicatesField;
-    NSButton *_tinyCheckbox;
+    NSButton *_removeTinyCheckbox, *_tinyCheckbox;
     NSTextField *_tinyField;
     NSTableView *_tableView;
     NSButton *_resetButton;
@@ -56,11 +53,15 @@
     return popup;
 }
 
+- (NSButton *)checkbox:(NSString *)title {
+    return [NSButton checkboxWithTitle:title target:self action:@selector(optionChanged:)];
+}
+
 - (NSTextField *)folderField {
     NSTextField *field = [NSTextField textFieldWithString:@""];
     field.target = self;
     field.action = @selector(optionChanged:);
-    [field.widthAnchor constraintEqualToConstant:200].active = YES;
+    [field.widthAnchor constraintEqualToConstant:180].active = YES;
     return field;
 }
 
@@ -70,7 +71,21 @@ static NSTextField *POFormLabel(NSString *text) {
     return label;
 }
 
+static NSStackView *PORow(NSArray<NSView *> *views) {
+    NSStackView *row = [NSStackView stackViewWithViews:views];
+    row.spacing = 8;
+    return row;
+}
+
+/// A second line under a checkbox, set in by the width of the box, so that it reads as depending on it.
+static NSStackView *POIndented(NSArray<NSView *> *views) {
+    NSView *indent = [NSView new];
+    [indent.widthAnchor constraintEqualToConstant:20].active = YES;
+    return PORow([@[indent] arrayByAddingObjectsFromArray:views]);
+}
+
 - (void)loadView {
+    // Header.
     NSTextField *title = [NSTextField labelWithString:POL(@"Разложить по папкам")];
     title.font = [NSFont systemFontOfSize:15 weight:NSFontWeightSemibold];
     NSTextField *subtitle = [NSTextField wrappingLabelWithString:_plan.sourceURLs.count > 1
@@ -78,90 +93,115 @@ static NSTextField *POFormLabel(NSString *text) {
            POCount(_plan.sourceURLs.count, POL(@"папки"), POL(@"папок"), POL(@"папок"))]
         : POL(@"Выберите, куда сложить файлы, как их группировать и как назвать папки.")];
     subtitle.textColor = NSColor.secondaryLabelColor;
-    // Where everything goes: the library's first folder, or another one.
+
+    // Where, and moved or copied.
     _destinationLabel = [NSTextField labelWithString:_plan.rootURL.path.stringByAbbreviatingWithTildeInPath];
     _destinationLabel.font = [NSFont systemFontOfSize:13 weight:NSFontWeightSemibold];
     _destinationLabel.lineBreakMode = NSLineBreakByTruncatingHead;
     [_destinationLabel setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
+    [_destinationLabel.widthAnchor constraintLessThanOrEqualToConstant:260].active = YES;
     NSButton *changeDestination = [NSButton buttonWithTitle:POL(@"Изменить…") target:self action:@selector(chooseDestination:)];
     _modeControl = [NSSegmentedControl segmentedControlWithLabels:@[POL(@"Переместить"), POL(@"Копировать")]
                                                     trackingMode:NSSegmentSwitchTrackingSelectOne target:self action:@selector(modeChanged:)];
     _modeControl.toolTip = POL(@"Переместить — оригиналы переезжают в новые папки. Копировать — оригиналы остаются на месте, "
                                @"в папках появляются их копии (на диске APFS копии почти не занимают места).");
-    NSView *spacer = [NSView new];
-    [spacer setContentHuggingPriority:1 forOrientation:NSLayoutConstraintOrientationHorizontal];
-    NSStackView *destination = [NSStackView stackViewWithViews:@[[NSTextField labelWithString:POL(@"Куда сложить:")], _destinationLabel,
-                                                                 changeDestination, spacer, _modeControl]];
-    destination.spacing = 8;
 
-    _arrangementPopup = [self popupWithTitles:@[POL(@"По датам"), POL(@"По типам"), POL(@"По людям"), POL(@"По форматам")]];
-    _arrangementPopup.toolTip = POL(@"По типам: скриншоты, записи экрана, WhatsApp, Telegram, видео, анимации, панорамы, RAW, фото. По людям: фото, где узнан ровно один названный человек, — в папку с его именем, остальное по датам. По форматам: JPEG, HEIC, PNG, MOV…");
-    _datesInsideCheckbox = [NSButton checkboxWithTitle:POL(@"Внутри — по датам") target:self action:@selector(optionChanged:)];
-    // Each kind when ticked — unticked, it stays where it is.
-    _photosCheckbox = [NSButton checkboxWithTitle:POL(@"Фото") target:self action:@selector(optionChanged:)];
-    _videosCheckbox = [NSButton checkboxWithTitle:POL(@"Видео") target:self action:@selector(optionChanged:)];
-    _picturesCheckbox = [NSButton checkboxWithTitle:POL(@"Картинки") target:self action:@selector(optionChanged:)];
-    _picturesCheckbox.toolTip = POL(@"Открытки, мемы, рисунки, документы — то, что не фотография. Без галочки остаются на месте.");
-    _collagesCheckbox = [NSButton checkboxWithTitle:POL(@"Коллажи") target:self action:@selector(optionChanged:)];
-    _collagesCheckbox.toolTip = POL(@"Коллажи, рамки, анимации, фильмы и правки, которые сделал Google Фото. Без галочки остаются на месте.");
-    _screenshotKindCheckbox = [NSButton checkboxWithTitle:POL(@"Скриншоты") target:self action:@selector(optionChanged:)];
+    // What: each kind when ticked — unticked, it stays where it is.
+    _photosCheckbox = [self checkbox:POL(@"Фото")];
+    _videosCheckbox = [self checkbox:POL(@"Видео")];
+    _screenshotKindCheckbox = [self checkbox:POL(@"Скриншоты")];
     _screenshotKindCheckbox.toolTip = POL(@"Снимки экрана, и те, что пришли через мессенджер. Без галочки остаются на месте.");
-    // Five kinds in two rows, so the window keeps its width (in one row they pushed the form out of it).
-    NSStackView *firstKinds = [NSStackView stackViewWithViews:@[_photosCheckbox, _videosCheckbox, _screenshotKindCheckbox]];
-    NSStackView *moreKinds = [NSStackView stackViewWithViews:@[_picturesCheckbox, _collagesCheckbox]];
-    firstKinds.spacing = moreKinds.spacing = 16;
-    NSStackView *kinds = [NSStackView stackViewWithViews:@[firstKinds, moreKinds]];
+    _picturesCheckbox = [self checkbox:POL(@"Картинки")];
+    _picturesCheckbox.toolTip = POL(@"Открытки, мемы, рисунки, документы — то, что не фотография. Без галочки остаются на месте.");
+    _collagesCheckbox = [self checkbox:POL(@"Коллажи")];
+    _collagesCheckbox.toolTip = POL(@"Коллажи, рамки, анимации, фильмы и правки, которые сделал Google Фото. Без галочки остаются на месте.");
+    NSStackView *kinds = [NSStackView stackViewWithViews:@[PORow(@[_photosCheckbox, _videosCheckbox, _screenshotKindCheckbox]),
+                                                           PORow(@[_picturesCheckbox, _collagesCheckbox])]];
     kinds.orientation = NSUserInterfaceLayoutOrientationVertical;
     kinds.alignment = NSLayoutAttributeLeading;
     kinds.spacing = 6;
-    _screenshotsCheckbox = [NSButton checkboxWithTitle:POL(@"Скриншоты — в папку:") target:self action:@selector(optionChanged:)];
-    _screenshotsField = [self folderField];
-    _screenshotsPlacePopup = [self popupWithTitles:@[POL(@"Одна папка, даты внутри"), POL(@"Внутри папки каждой даты")]];
+    for (NSStackView *row in kinds.arrangedSubviews) row.spacing = 16;
+
+    // How.
+    _arrangementPopup = [self popupWithTitles:@[POL(@"По датам"), POL(@"По типам"), POL(@"По людям"), POL(@"По форматам")]];
+    _arrangementPopup.toolTip = POL(@"По типам: скриншоты, записи экрана, WhatsApp, Telegram, видео, анимации, панорамы, RAW, фото. По людям: фото, где узнан ровно один названный человек, — в папку с его именем, остальное по датам. По форматам: JPEG, HEIC, PNG, MOV…");
+    _datesInsideCheckbox = [self checkbox:POL(@"Внутри — по датам")];
     _schemePopup = [self popupWithTitles:@[POL(@"По годам"), POL(@"По месяцам"), POL(@"По дням")]];
     _yearPopup = [self popupWithTitles:@[@"2024", POL(@"2024 год")]];
     _monthPopup = [self popupWithTitles:@[@"2024-03", POL(@"2024-03 Март"), POL(@"03 Март"), POL(@"Март 2024")]];
     _dayPopup = [self popupWithTitles:@[@"2024-03-15", @"15", POL(@"15 марта")]];
-    _nestedCheckbox = [NSButton checkboxWithTitle:POL(@"Вкладывать папки друг в друга (год → месяц → день)") target:self action:@selector(optionChanged:)];
-    _duplicatesCheckbox = [NSButton checkboxWithTitle:POL(@"Дубликаты — в папку:") target:self action:@selector(optionChanged:)];
-    _duplicatesField = [self folderField];
-    _removeDuplicatesCheckbox = [NSButton checkboxWithTitle:POL(@"Удалить дубликаты") target:self action:@selector(optionChanged:)];
+    _nestedCheckbox = [self checkbox:POL(@"Вкладывать папки друг в друга (год → месяц → день)")];
+
+    // Screenshots, duplicates, thumbnails: what happens to each, and under it, set in, where they go otherwise.
+    _screenshotsCheckbox = [self checkbox:POL(@"В отдельную папку")];
+    _screenshotsField = [self folderField];
+    _screenshotsPlacePopup = [self popupWithTitles:@[POL(@"Одна папка, даты внутри"), POL(@"Внутри папки каждой даты")]];
+    _removeDuplicatesCheckbox = [self checkbox:POL(@"Удалить в Корзину")];
     _removeDuplicatesCheckbox.toolTip = POL(@"Точные копии и уменьшенные или пережатые версии снимка при переносе уходят в Корзину (при копировании — не копируются): раскладывается только оригинал или лучшая версия. Копия удаляется, только если её оригинал остаётся.");
-    _tinyCheckbox = [NSButton checkboxWithTitle:POL(@"Миниатюры — в папку:") target:self action:@selector(optionChanged:)];
+    _duplicatesCheckbox = [self checkbox:POL(@"Иначе — в папку:")];
+    _duplicatesField = [self folderField];
+    _removeTinyCheckbox = [self checkbox:POL(@"Удалить в Корзину")];
+    _removeTinyCheckbox.toolTip = POL(@"Уменьшенные копии других фото уходят в Корзину, только если их большая версия остаётся.");
+    _tinyCheckbox = [self checkbox:POL(@"Иначе — в папку:")];
     _tinyField = [self folderField];
 
+    // One column of labels, one of controls: every checkbox starts on the same line.
     NSGridView *form = [NSGridView gridViewWithViews:@[
+        @[POFormLabel(POL(@"Куда сложить:")), PORow(@[_destinationLabel, changeDestination])],
+        @[POFormLabel(POL(@"Файлы:")), _modeControl],
         @[POFormLabel(POL(@"Что раскладывать:")), kinds],
-        @[POFormLabel(POL(@"Раскладывать:")), _arrangementPopup],
-        @[NSGridCell.emptyContentView, _datesInsideCheckbox],
+        @[POFormLabel(POL(@"Раскладывать:")), PORow(@[_arrangementPopup, _datesInsideCheckbox])],
         @[POFormLabel(POL(@"Группировать:")), _schemePopup],
-        @[POFormLabel(POL(@"Название года:")), _yearPopup],
-        @[POFormLabel(POL(@"Название месяца:")), _monthPopup],
-        @[POFormLabel(POL(@"Название дня:")), _dayPopup],
+        @[POFormLabel(POL(@"Названия папок:")), PORow(@[_yearPopup, _monthPopup, _dayPopup])],
         @[NSGridCell.emptyContentView, _nestedCheckbox],
-        @[_screenshotsCheckbox, _screenshotsField],
-        @[NSGridCell.emptyContentView, _screenshotsPlacePopup],
-        @[_duplicatesCheckbox, _duplicatesField],
-        @[_removeDuplicatesCheckbox, NSGridCell.emptyContentView],
-        @[_tinyCheckbox, _tinyField],
+        @[POFormLabel(POL(@"Скриншоты:")), _screenshotsCheckbox],
+        @[NSGridCell.emptyContentView, POIndented(@[_screenshotsField, _screenshotsPlacePopup])],
+        @[POFormLabel(POL(@"Дубликаты:")), _removeDuplicatesCheckbox],
+        @[NSGridCell.emptyContentView, POIndented(@[_duplicatesCheckbox, _duplicatesField])],
+        @[POFormLabel(POL(@"Миниатюры:")), _removeTinyCheckbox],
+        @[NSGridCell.emptyContentView, POIndented(@[_tinyCheckbox, _tinyField])],
     ]];
     form.rowAlignment = NSGridRowAlignmentFirstBaseline;
-    form.rowSpacing = 8;
-    form.columnSpacing = 8;
+    form.rowSpacing = 10;
+    form.columnSpacing = 10;
     [form columnAtIndex:0].xPlacement = NSGridCellPlacementTrailing;
     [form columnAtIndex:1].xPlacement = NSGridCellPlacementLeading;
-    // A grid takes whatever room it is given: it keeps its own size, and the list of folders below gets the rest.
+    // Room between the groups: where and what, how, and the special files.
+    for (NSNumber *row in @[@2, @3, @7]) [form rowAtIndex:row.integerValue].topPadding = 10;
+    // A grid takes whatever room it is given; it keeps its own size.
     NSSize formSize = form.fittingSize;
-    NSLayoutConstraint *formWidth = [form.widthAnchor constraintEqualToConstant:formSize.width];
-    NSLayoutConstraint *formHeight = [form.heightAnchor constraintEqualToConstant:formSize.height];
-    formWidth.priority = formHeight.priority = NSLayoutPriorityDefaultHigh;
-    [NSLayoutConstraint activateConstraints:@[formWidth, formHeight]];
+    [form.widthAnchor constraintEqualToConstant:formSize.width].active = YES;
+    [form.heightAnchor constraintEqualToConstant:formSize.height].active = YES;
 
+    // The options scroll when the window is shorter than they are.
+    POFlippedView *document = [POFlippedView new];
+    form.translatesAutoresizingMaskIntoConstraints = NO;
+    [document addSubview:form];
+    NSScrollView *optionsScroller = [NSScrollView new];
+    optionsScroller.hasVerticalScroller = YES;
+    optionsScroller.autohidesScrollers = YES;
+    optionsScroller.drawsBackground = NO;
+    optionsScroller.documentView = document;
+    document.translatesAutoresizingMaskIntoConstraints = NO;
+    [NSLayoutConstraint activateConstraints:@[
+        [form.topAnchor constraintEqualToAnchor:document.topAnchor],
+        [form.leadingAnchor constraintEqualToAnchor:document.leadingAnchor],
+        [form.trailingAnchor constraintEqualToAnchor:document.trailingAnchor],
+        [form.bottomAnchor constraintEqualToAnchor:document.bottomAnchor],
+        [document.topAnchor constraintEqualToAnchor:optionsScroller.contentView.topAnchor],
+        [document.leadingAnchor constraintEqualToAnchor:optionsScroller.contentView.leadingAnchor],
+        [optionsScroller.widthAnchor constraintEqualToConstant:formSize.width + 16],
+    ]];
+
+    // What it comes to: the folders, renamed by clicking.
     NSTextField *previewTitle = [NSTextField labelWithString:POL(@"Что получится")];
     previewTitle.font = [NSFont systemFontOfSize:13 weight:NSFontWeightSemibold];
     _resetButton = [NSButton buttonWithTitle:POL(@"Сбросить названия") target:self action:@selector(resetNames:)];
     _resetButton.controlSize = NSControlSizeSmall;
     _resetButton.font = [NSFont systemFontOfSize:NSFont.smallSystemFontSize];
-    NSStackView *previewHeader = [NSStackView stackViewWithViews:@[previewTitle, [NSView new], _resetButton]];
+    NSView *headerSpacer = [NSView new];
+    [headerSpacer setContentHuggingPriority:1 forOrientation:NSLayoutConstraintOrientationHorizontal];
+    NSStackView *previewHeader = [NSStackView stackViewWithViews:@[previewTitle, headerSpacer, _resetButton]];
 
     _tableView = [NSTableView new];
     _tableView.dataSource = self;
@@ -179,22 +219,26 @@ static NSTextField *POFormLabel(NSString *text) {
     [_tableView addTableColumn:folderColumn];
     [_tableView addTableColumn:countColumn];
     _tableView.columnAutoresizingStyle = NSTableViewFirstColumnOnlyAutoresizingStyle;
-
-    NSScrollView *scrollView = [NSScrollView new];
-    scrollView.documentView = _tableView;
-    scrollView.hasVerticalScroller = YES;
-    scrollView.borderType = NSBezelBorder;
-    [scrollView.heightAnchor constraintGreaterThanOrEqualToConstant:210].active = YES;
-    NSLayoutConstraint *listHeight = [scrollView.heightAnchor constraintEqualToConstant:210];
-    listHeight.priority = NSLayoutPriorityDefaultLow - 10;   // grows with the window
-    listHeight.active = YES;
-
+    NSScrollView *tableScroller = [NSScrollView new];
+    tableScroller.documentView = _tableView;
+    tableScroller.hasVerticalScroller = YES;
+    tableScroller.borderType = NSBezelBorder;
     NSTextField *hint = [NSTextField wrappingLabelWithString:
         POL(@"Щёлкните по названию, чтобы переименовать папку (можно с вложенностью: «Отпуск/Море»). "
         @"Одинаковые названия объединят папки, пустое вернёт исходное.")];
     hint.font = [NSFont systemFontOfSize:NSFont.smallSystemFontSize];
     hint.textColor = NSColor.secondaryLabelColor;
+    NSStackView *preview = [NSStackView stackViewWithViews:@[previewHeader, tableScroller, hint]];
+    preview.orientation = NSUserInterfaceLayoutOrientationVertical;
+    preview.alignment = NSLayoutAttributeLeading;
+    preview.spacing = 6;
+    for (NSView *wide in @[previewHeader, tableScroller, hint]) {
+        [wide.widthAnchor constraintEqualToAnchor:preview.widthAnchor].active = YES;
+    }
+    [tableScroller setContentHuggingPriority:1 forOrientation:NSLayoutConstraintOrientationVertical];
+    [tableScroller.widthAnchor constraintGreaterThanOrEqualToConstant:260].active = YES;
 
+    // The buttons and what they will do.
     _summaryLabel = [NSTextField wrappingLabelWithString:@""];
     _summaryLabel.font = [NSFont systemFontOfSize:NSFont.smallSystemFontSize];
     NSButton *cancelButton = [NSButton buttonWithTitle:POL(@"Отмена") target:self action:@selector(cancel:)];
@@ -207,62 +251,35 @@ static NSTextField *POFormLabel(NSString *text) {
     [_summaryLabel setContentHuggingPriority:1 forOrientation:NSLayoutConstraintOrientationHorizontal];
     [_summaryLabel setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
 
-    NSStackView *stack = [NSStackView stackViewWithViews:@[title, subtitle, destination, form, previewHeader, scrollView, hint]];
-    stack.orientation = NSUserInterfaceLayoutOrientationVertical;
-    stack.alignment = NSLayoutAttributeLeading;
-    stack.spacing = 10;
-    stack.edgeInsets = NSEdgeInsetsMake(20, 20, 10, 20);
-    [stack setCustomSpacing:4 afterView:title];
-    [stack setCustomSpacing:16 afterView:subtitle];
-    [stack setCustomSpacing:18 afterView:form];
-    [stack setCustomSpacing:6 afterView:scrollView];
-    for (NSView *wide in @[subtitle, destination, previewHeader, scrollView, hint]) {
-        [wide.widthAnchor constraintEqualToAnchor:stack.widthAnchor constant:-40].active = YES;
-    }
-    stack.translatesAutoresizingMaskIntoConstraints = NO;
-
-    // The options scroll inside a window that can be made smaller than they are (a small screen); the buttons stay
-    // at the bottom.
-    POFlippedView *document = [POFlippedView new];
-    document.translatesAutoresizingMaskIntoConstraints = NO;
-    [document addSubview:stack];
-    NSScrollView *scroller = [NSScrollView new];
-    scroller.translatesAutoresizingMaskIntoConstraints = NO;
-    scroller.hasVerticalScroller = YES;
-    scroller.autohidesScrollers = YES;
-    scroller.drawsBackground = NO;
-    scroller.documentView = document;
-    footer.translatesAutoresizingMaskIntoConstraints = NO;
+    // Header on top, options on the left and the folders on the right, buttons below.
     NSView *root = [NSView new];
-    [root addSubview:scroller];
-    [root addSubview:footer];
-    NSLayoutConstraint *wantedHeight = [scroller.heightAnchor constraintEqualToAnchor:document.heightAnchor];
-    wantedHeight.priority = NSLayoutPriorityDefaultLow - 1;   // as tall as the options, unless the window is smaller
-    NSLayoutConstraint *wantedWidth = [root.widthAnchor constraintEqualToConstant:600];
-    wantedWidth.priority = NSLayoutPriorityDefaultLow - 1;
+    NSArray<NSView *> *parts = @[title, subtitle, optionsScroller, preview, footer];
+    for (NSView *part in parts) {
+        part.translatesAutoresizingMaskIntoConstraints = NO;
+        [root addSubview:part];
+    }
+    NSLayoutConstraint *optionsHeight = [optionsScroller.heightAnchor constraintEqualToConstant:formSize.height];
+    optionsHeight.priority = NSLayoutPriorityDefaultLow - 1;   // as tall as the options, unless the window is smaller
     [NSLayoutConstraint activateConstraints:@[
-        [stack.topAnchor constraintEqualToAnchor:document.topAnchor],
-        [stack.leadingAnchor constraintEqualToAnchor:document.leadingAnchor],
-        [stack.trailingAnchor constraintEqualToAnchor:document.trailingAnchor],
-        [stack.bottomAnchor constraintEqualToAnchor:document.bottomAnchor],
-        [document.leadingAnchor constraintEqualToAnchor:scroller.contentView.leadingAnchor],
-        [document.trailingAnchor constraintEqualToAnchor:scroller.contentView.trailingAnchor],
-        [document.topAnchor constraintEqualToAnchor:scroller.contentView.topAnchor],
-        // At least as tall as the window shows, so that a larger window lengthens the list of folders.
-        [document.heightAnchor constraintGreaterThanOrEqualToAnchor:scroller.contentView.heightAnchor],
-        [scroller.topAnchor constraintEqualToAnchor:root.topAnchor],
-        [scroller.leadingAnchor constraintEqualToAnchor:root.leadingAnchor],
-        [scroller.trailingAnchor constraintEqualToAnchor:root.trailingAnchor],
-        [scroller.heightAnchor constraintGreaterThanOrEqualToConstant:120],
-        wantedHeight,
-        [footer.topAnchor constraintEqualToAnchor:scroller.bottomAnchor constant:10],
+        [title.topAnchor constraintEqualToAnchor:root.topAnchor constant:20],
+        [title.leadingAnchor constraintEqualToAnchor:root.leadingAnchor constant:20],
+        [subtitle.topAnchor constraintEqualToAnchor:title.bottomAnchor constant:4],
+        [subtitle.leadingAnchor constraintEqualToAnchor:root.leadingAnchor constant:20],
+        [subtitle.trailingAnchor constraintEqualToAnchor:root.trailingAnchor constant:-20],
+        [optionsScroller.topAnchor constraintEqualToAnchor:subtitle.bottomAnchor constant:18],
+        [optionsScroller.leadingAnchor constraintEqualToAnchor:root.leadingAnchor constant:12],
+        [optionsScroller.heightAnchor constraintGreaterThanOrEqualToConstant:160],
+        optionsHeight,
+        [preview.topAnchor constraintEqualToAnchor:optionsScroller.topAnchor],
+        [preview.leadingAnchor constraintEqualToAnchor:optionsScroller.trailingAnchor constant:16],
+        [preview.trailingAnchor constraintEqualToAnchor:root.trailingAnchor constant:-20],
+        [preview.bottomAnchor constraintEqualToAnchor:optionsScroller.bottomAnchor],
+        [footer.topAnchor constraintEqualToAnchor:optionsScroller.bottomAnchor constant:16],
         [footer.leadingAnchor constraintEqualToAnchor:root.leadingAnchor constant:20],
         [footer.trailingAnchor constraintEqualToAnchor:root.trailingAnchor constant:-20],
         [footer.bottomAnchor constraintEqualToAnchor:root.bottomAnchor constant:-20],
-        [root.widthAnchor constraintGreaterThanOrEqualToConstant:460],
-        wantedWidth,
     ]];
-    _optionsStack = stack;
+    _options = form;
     _footer = footer;
     self.view = root;
     [self refresh];
@@ -270,18 +287,16 @@ static NSTextField *POFormLabel(NSString *text) {
 
 - (void)viewDidAppear {
     [super viewDidAppear];
-    // Resizable — narrower, shorter, with the options scrolling — and never taller than the screen.
     NSWindow *window = self.view.window;
     window.styleMask |= NSWindowStyleMaskResizable;
-    window.contentMinSize = NSMakeSize(460, 260);
-    // It opens at least half the screen each way, as tall as all the options with the buttons below them when that
-    // fits (up to 90 % of the screen), in the middle of it: the options and the folders they make can be read at once.
+    window.contentMinSize = NSMakeSize(_options.fittingSize.width + 340, 360);
+    // It opens at least half the screen each way — as tall as all the options when that fits, up to 90 % of the
+    // screen — in the middle of it.
     if (_sized) return;
     _sized = YES;
     NSRect visible = (window.screen ?: NSScreen.mainScreen).visibleFrame;
-    NSSize options = _optionsStack.fittingSize, footer = _footer.fittingSize;
-    CGFloat contentHeight = options.height + 10 + footer.height + 20;
-    CGFloat contentWidth = MAX(options.width, footer.width + 40);
+    CGFloat contentHeight = 20 + 40 + 18 + _options.fittingSize.height + 16 + _footer.fittingSize.height + 20;
+    CGFloat contentWidth = _options.fittingSize.width + 16 + 12 + 16 + 420 + 20;
     NSRect content = NSMakeRect(0, 0, MIN(MAX(contentWidth, visible.size.width * 0.5), visible.size.width),
                                 MIN(MAX(contentHeight, visible.size.height * 0.5), visible.size.height * 0.9));
     NSRect frame = [window frameRectForContentRect:content];
@@ -331,15 +346,17 @@ static NSTextField *POFormLabel(NSString *text) {
     _dayPopup.enabled = _plan.scheme >= POSchemeYearMonthDay;
     _nestedCheckbox.state = _plan.nested ? NSControlStateValueOn : NSControlStateValueOff;
     _nestedCheckbox.enabled = _plan.scheme != POSchemeYear;
+    _removeDuplicatesCheckbox.state = _plan.removesDuplicates ? NSControlStateValueOn : NSControlStateValueOff;
     _duplicatesCheckbox.state = _plan.separateDuplicates ? NSControlStateValueOn : NSControlStateValueOff;
     _duplicatesField.stringValue = _plan.duplicatesFolderName;
-    _removeDuplicatesCheckbox.state = _plan.removesDuplicates ? NSControlStateValueOn : NSControlStateValueOff;
-    // Duplicates that go to the Trash need no folder of their own.
+    // What goes to the Trash needs no folder of its own: the line under it only counts when it is not ticked.
     _duplicatesCheckbox.enabled = !_plan.removesDuplicates;
     _duplicatesField.enabled = _plan.separateDuplicates && !_plan.removesDuplicates;
+    _removeTinyCheckbox.state = _plan.removesTiny ? NSControlStateValueOn : NSControlStateValueOff;
     _tinyCheckbox.state = _plan.separateTiny ? NSControlStateValueOn : NSControlStateValueOff;
     _tinyField.stringValue = _plan.tinyFolderName;
-    _tinyField.enabled = _plan.separateTiny;
+    _tinyCheckbox.enabled = !_plan.removesTiny;
+    _tinyField.enabled = _plan.separateTiny && !_plan.removesTiny;
     _resetButton.hidden = !_plan.hasCustomNames;
     [_tableView reloadData];
 
@@ -351,7 +368,7 @@ static NSTextField *POFormLabel(NSString *text) {
            PONumber(pending), PONumber(_plan.items.count), POCount(_plan.groups.count, POL(@"папку"), POL(@"папки"), POL(@"папок"))]
         : POL(@"Все файлы уже лежат на своих местах.");
     if (_plan.duplicatesToRemove.count) {
-        what = [what stringByAppendingFormat:POL(@" Дубликаты в Корзину: %@."), PONumber(_plan.duplicatesToRemove.count)];
+        what = [what stringByAppendingFormat:POL(@" В Корзину: %@."), PONumber(_plan.duplicatesToRemove.count)];
     }
     _summaryLabel.stringValue = [what stringByAppendingString:copies
         ? POL(@" Оригиналы остаются на месте; копии ничего не перезаписывают, уже скопированные файлы пропускаются. Отменить — ⌘Z.")
@@ -393,6 +410,7 @@ static NSTextField *POFormLabel(NSString *text) {
     _plan.separateDuplicates = _duplicatesCheckbox.state == NSControlStateValueOn;
     _plan.removesDuplicates = _removeDuplicatesCheckbox.state == NSControlStateValueOn;
     _plan.separateTiny = _tinyCheckbox.state == NSControlStateValueOn;
+    _plan.removesTiny = _removeTinyCheckbox.state == NSControlStateValueOn;
     _plan.duplicatesFolderName = _duplicatesField.stringValue;
     _plan.tinyFolderName = _tinyField.stringValue;
     [self planChanged];

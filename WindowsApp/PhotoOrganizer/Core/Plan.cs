@@ -119,7 +119,7 @@ public sealed partial class Plan
     /// is organized. Only a copy whose original stays is removed.
     /// </summary>
     public bool RemovesDuplicates = true;
-    /// <summary>What Rebuild found to go to the Recycle Bin with RemovesDuplicates (empty when the files are copied).</summary>
+    /// <summary>What Rebuild found to go to the Recycle Bin with RemovesDuplicates and RemovesTiny (empty when the files are copied).</summary>
     public List<PhotoItem> DuplicatesToRemove { get; private set; } = [];
     /// <summary>
     /// Which files are organized: photos, videos, pictures (postcards, memes, drawings, see Pictures) and collages
@@ -128,6 +128,8 @@ public sealed partial class Plan
     /// </summary>
     public bool OrganizesPhotos = true, OrganizesVideos = true, OrganizesPictures = true, OrganizesCollages = true;
     public bool SeparateTiny = true;
+    /// <summary>Thumbnails go to the Recycle Bin with the duplicates (see DuplicatesToRemove) — only those whose larger version stays.</summary>
+    public bool RemovesTiny;
     /// <summary>Screenshots to a folder of their own (with date folders inside), whatever the rest is organized by.</summary>
     public bool SeparateScreenshots;
     /// <summary>
@@ -250,6 +252,7 @@ public sealed partial class Plan
         OrganizesPictures = s.Get("organizesPictures", s.Get("picturesMode", 0) != 2);
         OrganizesCollages = s.Get("organizesCollages", OrganizesPictures);
         SeparateTiny = s.Get("separateTiny", true);
+        RemovesTiny = s.Get("removesTiny", false);
         Arrangement = Clamp<Arrangement>(s.Get("arrangement", 0));
         SeparateScreenshots = s.Get("separateScreenshots", false);
         ScreenshotsInEachDate = s.Get("screenshotsInEachDate", false);
@@ -278,6 +281,7 @@ public sealed partial class Plan
         s.Set("organizesPictures", OrganizesPictures);
         s.Set("organizesCollages", OrganizesCollages);
         s.Set("separateTiny", SeparateTiny);
+        s.Set("removesTiny", RemovesTiny);
         s.Set("arrangement", (int)Arrangement);
         s.Set("separateScreenshots", SeparateScreenshots);
         s.Set("screenshotsInEachDate", ScreenshotsInEachDate);
@@ -407,9 +411,9 @@ public sealed partial class Plan
         // Duplicates to remove: copies of the kinds organized whose original (or best version) stays — never the last
         // file of a picture. They are left where they are until they go to the Recycle Bin.
         var removed = new HashSet<PhotoItem>();
-        if (RemovesDuplicates)
+        if (RemovesDuplicates || RemovesTiny)
         {
-            var doomed = Items.Where(i => (i.IsDuplicate || i.BetterCopy != null) && !i.Tiny && Organizes(i)).ToHashSet();
+            var doomed = Items.Where(i => (i.IsDuplicate || i.BetterCopy != null) && Organizes(i) && (i.Tiny ? RemovesTiny : RemovesDuplicates)).ToHashSet();
             foreach (var item in doomed)
             {
                 var keeper = item.DuplicateOf ?? item.BetterCopy;

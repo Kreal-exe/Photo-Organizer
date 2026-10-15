@@ -327,61 +327,65 @@ public sealed class OrganizeDialog : Dialog
 {
     readonly Plan _plan;
     readonly Action _onChange;
-    readonly TextBlock? _destinationText;
+    readonly TextBlock _destinationText;
     readonly ComboBox _arrangement = new(), _screenshotsPlace = new(), _scheme = new(), _year = new(), _month = new(), _day = new();
-    readonly CheckBox _nested = new(), _datesInside = new(), _tiny = new(), _screenshots = new(), _duplicates = new(), _removeDuplicates = new(),
-                      _photos = new(), _videos = new(), _pictures = new(), _collages = new();
-    readonly TextBox _duplicatesField = new() { Width = 220, Height = 30 }, _tinyField = new() { Width = 220, Height = 30 },
-                     _screenshotsField = new() { Width = 220, Height = 30 };
+    readonly CheckBox _nested = new(), _datesInside = new(), _screenshots = new(), _removeDuplicates = new(), _duplicates = new(),
+                      _removeTiny = new(), _tiny = new(), _photos = new(), _videos = new(), _pictures = new(), _collages = new();
+    readonly TextBox _duplicatesField = new() { Width = 200, Height = 30 }, _tinyField = new() { Width = 200, Height = 30 },
+                     _screenshotsField = new() { Width = 200, Height = 30 };
     // Grouped by day, a library makes thousands of folders: only the rows on screen are made.
     readonly PreviewList _preview = new();
     readonly TextBlock _summary = new() { TextWrapping = TextWrapping.Wrap, FontSize = 12 };
     readonly Button _reset;
     readonly Button _confirm;
     readonly SegmentedControl _mode = new([L("Переместить"), L("Копировать")]);
+    readonly Grid _form = new();
     bool _updating;
 
-    public OrganizeDialog(Window owner, Plan plan, Action onChange) : base(owner, L("Разложить по папкам"), 660)
+    public OrganizeDialog(Window owner, Plan plan, Action onChange) : base(owner, L("Разложить по папкам"), 980)
     {
         _plan = plan;
         _onChange = onChange;
-        // Resizable — narrower, shorter, with the options scrolling — for small screens.
         ResizeMode = ResizeMode.CanResize;
-        MinWidth = 460;
-        MinHeight = 260;
-        Heading(L("Разложить по папкам"));
-        Note(plan.Sources.Count > 1
+        SizeToContent = SizeToContent.Manual;
+        MinWidth = 760;
+        MinHeight = 420;
+        // At least half the screen each way, as tall as the options when that fits (up to 90 %), in the middle of it.
+        var area = SystemParameters.WorkArea;
+        Width = Math.Min(area.Width, Math.Max(980, area.Width * 0.5));
+        Height = Math.Min(area.Height * 0.9, Math.Max(760, area.Height * 0.5));
+        WindowStartupLocation = WindowStartupLocation.CenterScreen;
+
+        // Header.
+        var header = new StackPanel { Margin = new Thickness(0, 0, 0, 16) };
+        header.Children.Add(new TextBlock { Text = L("Разложить по папкам"), Style = (Style)FindResource("Heading"), Margin = new Thickness(0, 0, 0, 4) });
+        var subtitle = new TextBlock
+        {
+            Text = plan.Sources.Count > 1
                 ? F("Файлы из %@ будут сложены в одну папку. Выберите, куда, как группировать файлы и как назвать папки.", Count(plan.Sources.Count, L("папки"), L("папок"), L("папок")))
-                : L("Выберите, куда сложить файлы, как их группировать и как назвать папки."), "Secondary", 12);
-        // Where everything goes: the library's first folder, or another one.
-        var destination = new DockPanel { Margin = new Thickness(0, 0, 0, 14) };
+                : L("Выберите, куда сложить файлы, как их группировать и как назвать папки."),
+            TextWrapping = TextWrapping.Wrap,
+        };
+        Ui.Styled(subtitle, "Secondary");
+        header.Children.Add(subtitle);
+
+        // Where, and moved or copied.
+        _destinationText = new TextBlock { Text = plan.Root, VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis, FontWeight = FontWeights.SemiBold, ToolTip = plan.Root, MaxWidth = 280 };
         var change = Ui.TextButton(L("Изменить…"), () =>
         {
             var dialog = new Microsoft.Win32.OpenFolderDialog { Title = L("Куда сложить файлы"), InitialDirectory = _plan.Root };
             if (dialog.ShowDialog(this) != true) return;
             _plan.SetDestination(dialog.FolderName);
-            _destinationText!.Text = _plan.Root;
+            _destinationText.Text = _plan.Root;
+            _destinationText.ToolTip = _plan.Root;
             PlanChanged();
         });
-        change.Margin = new Thickness(10, 0, 0, 0);
-        // Move or copy: right of the folder and its button.
-        _mode.Margin = new Thickness(14, 0, 0, 0);
         _mode.ToolTip = L("Переместить — оригиналы переезжают в новые папки. Копировать — оригиналы остаются на месте, в папках появляются их копии.");
         _mode.Changed += index =>
         {
             _plan.CopiesFiles = index == 1;
             PlanChanged();
         };
-        DockPanel.SetDock(_mode, Dock.Right);
-        destination.Children.Add(_mode);
-        DockPanel.SetDock(change, Dock.Right);
-        destination.Children.Add(change);
-        var destinationLabel = new TextBlock { Text = L("Куда сложить:"), VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 10, 0) };
-        DockPanel.SetDock(destinationLabel, Dock.Left);
-        destination.Children.Add(destinationLabel);
-        _destinationText = new TextBlock { Text = plan.Root, VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis, FontWeight = FontWeights.SemiBold, ToolTip = plan.Root };
-        destination.Children.Add(_destinationText);
-        Body.Children.Add(destination);
 
         Fill(_arrangement, L("По датам"), L("По типам"), L("По людям"), L("По форматам"));
         _arrangement.ToolTip = L("По типам: скриншоты, записи экрана, WhatsApp, Telegram, видео, анимации, панорамы, RAW, фото. По людям: фото, где узнан ровно один названный человек, — в папку с его именем, остальное по датам. По форматам: JPEG, HEIC, PNG, MOV…");
@@ -390,10 +394,6 @@ public sealed class OrganizeDialog : Dialog
         Fill(_year, "2024", L("2024 год"));
         Fill(_month, "2024-03", L("2024-03 Март"), L("03 Март"), L("Март 2024"));
         Fill(_day, "2024-03-15", "15", L("15 марта"));
-        // Copies: with everything else, in a folder of their own, or not at all ("без").
-        _duplicates.Content = L("Дубликаты — в папку:");
-        _removeDuplicates.Content = L("Удалить дубликаты");
-        _removeDuplicates.ToolTip = L("Точные копии и уменьшенные или пережатые версии снимка при переносе уходят в Корзину (при копировании — не копируются): раскладывается только оригинал или лучшая версия. Копия удаляется, только если её оригинал остаётся.");
         // Each kind when ticked — unticked, it stays where it is.
         _photos.Content = L("Фото");
         _videos.Content = L("Видео");
@@ -401,58 +401,54 @@ public sealed class OrganizeDialog : Dialog
         _pictures.ToolTip = L("Открытки, мемы, рисунки, документы — то, что не фотография. Без галочки остаются на месте.");
         _collages.Content = L("Коллажи");
         _collages.ToolTip = L("Коллажи, рамки, анимации, фильмы и правки, которые сделал Google Фото. Без галочки остаются на месте.");
-        _nested.Content = L("Вкладывать папки друг в друга (год → месяц → день)");
         _datesInside.Content = L("Внутри — по датам");
-        _tiny.Content = L("Миниатюры — в папку:");
-        _screenshots.Content = L("Скриншоты — в папку:");
-        foreach (var box in new[] { _nested, _datesInside, _tiny, _screenshots, _duplicates, _removeDuplicates, _photos, _videos, _pictures, _collages }) box.Click += (_, _) => OptionChanged();
+        _nested.Content = L("Вкладывать папки друг в друга (год → месяц → день)");
+        // Screenshots, duplicates, thumbnails: what happens to each, and under it, set in, where they go otherwise.
+        _screenshots.Content = L("В отдельную папку");
+        _removeDuplicates.Content = L("Удалить в Корзину");
+        _removeDuplicates.ToolTip = L("Точные копии и уменьшенные или пережатые версии снимка при переносе уходят в Корзину (при копировании — не копируются): раскладывается только оригинал или лучшая версия. Копия удаляется, только если её оригинал остаётся.");
+        _duplicates.Content = L("Иначе — в папку:");
+        _removeTiny.Content = L("Удалить в Корзину");
+        _removeTiny.ToolTip = L("Уменьшенные копии других фото уходят в Корзину, только если их большая версия остаётся.");
+        _tiny.Content = L("Иначе — в папку:");
+        foreach (var box in new[] { _nested, _datesInside, _screenshots, _removeDuplicates, _duplicates, _removeTiny, _tiny, _photos, _videos, _pictures, _collages })
+        {
+            box.VerticalAlignment = VerticalAlignment.Center;
+            box.Click += (_, _) => OptionChanged();
+        }
         foreach (var field in new[] { _duplicatesField, _tinyField, _screenshotsField })
         {
+            field.VerticalContentAlignment = VerticalAlignment.Center;
             field.LostFocus += (_, _) => OptionChanged();
             field.KeyDown += (_, e) => { if (e.Key == Key.Enter) { OptionChanged(); e.Handled = true; } };
         }
 
-        var kinds = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
-        foreach (var box in new[] { _photos, _videos, _pictures, _collages })
-        {
-            box.Margin = new Thickness(0, 0, 16, 0);
-            kinds.Children.Add(box);
-        }
-        var form = new Grid { Margin = new Thickness(0, 0, 0, 14) };
-        form.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Auto) });
-        form.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        var rows = new (FrameworkElement Label, FrameworkElement Control)[]
-        {
-            (Label(L("Что раскладывать:")), kinds),
-            (Label(L("Раскладывать:")), _arrangement), (new Border(), _datesInside),
-            (Label(L("Группировать:")), _scheme), (Label(L("Название года:")), _year), (Label(L("Название месяца:")), _month),
-            (Label(L("Название дня:")), _day), (new Border(), _nested), (_screenshots, _screenshotsField), (new Border(), _screenshotsPlace), (_duplicates, _duplicatesField), (_removeDuplicates, new Border()), (_tiny, _tinyField),
-        };
-        for (int i = 0; i < rows.Length; i++)
-        {
-            form.RowDefinitions.Add(new RowDefinition { Height = new GridLength(38) });
-            rows[i].Label.HorizontalAlignment = HorizontalAlignment.Right;
-            rows[i].Label.VerticalAlignment = VerticalAlignment.Center;
-            rows[i].Label.Margin = new Thickness(0, 0, 10, 0);
-            rows[i].Control.HorizontalAlignment = HorizontalAlignment.Left;
-            rows[i].Control.VerticalAlignment = VerticalAlignment.Center;
-            Grid.SetRow(rows[i].Label, i);
-            Grid.SetRow(rows[i].Control, i);
-            Grid.SetColumn(rows[i].Control, 1);
-            form.Children.Add(rows[i].Label);
-            form.Children.Add(rows[i].Control);
-        }
-        Body.Children.Add(form);
+        // One column of labels, one of controls: every checkbox starts on the same line.
+        _form.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        _form.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        FormRow(L("Куда сложить:"), Row(_destinationText, change));
+        FormRow(L("Файлы:"), _mode);
+        FormRow(L("Что раскладывать:"), Row(_photos, _videos, _pictures, _collages), gap: 12);
+        FormRow(L("Раскладывать:"), Row(_arrangement, _datesInside), gap: 12);
+        FormRow(L("Группировать:"), _scheme);
+        FormRow(L("Названия папок:"), Row(_year, _month, _day));
+        FormRow(null, _nested);
+        FormRow(L("Скриншоты:"), _screenshots, gap: 12);
+        FormRow(null, Indented(_screenshotsField, _screenshotsPlace));
+        FormRow(L("Дубликаты:"), _removeDuplicates);
+        FormRow(null, Indented(_duplicates, _duplicatesField));
+        FormRow(L("Миниатюры:"), _removeTiny);
+        FormRow(null, Indented(_tiny, _tinyField));
+        var options = new ScrollViewer { Content = _form, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled, Padding = new Thickness(0, 0, 8, 0) };
 
-        var header = new DockPanel { Margin = new Thickness(0, 0, 0, 6) };
+        // What it comes to: the folders, renamed by clicking.
+        var previewHeader = new DockPanel { Margin = new Thickness(0, 0, 0, 6) };
         _reset = Ui.TextButton(L("Сбросить названия"), () => { _plan.RemoveCustomNames(); PlanChanged(); });
         _reset.Padding = new Thickness(10, 3, 10, 3);
         DockPanel.SetDock(_reset, Dock.Right);
-        header.Children.Add(_reset);
-        header.Children.Add(new TextBlock { Text = L("Что получится"), FontWeight = FontWeights.SemiBold, VerticalAlignment = VerticalAlignment.Center });
-        Body.Children.Add(header);
-
-        var table = new Border { BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(6), Height = 230 };
+        previewHeader.Children.Add(_reset);
+        previewHeader.Children.Add(new TextBlock { Text = L("Что получится"), FontWeight = FontWeights.SemiBold, VerticalAlignment = VerticalAlignment.Center });
+        var table = new Border { BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(6) };
         table.SetResourceReference(Border.BorderBrushProperty, "Separator");
         var tableBody = new DockPanel();
         var columns = new Grid { Margin = new Thickness(10, 5, 14, 5) };
@@ -471,21 +467,83 @@ public sealed class OrganizeDialog : Dialog
         _preview.MakeRow = PreviewRow;
         tableBody.Children.Add(_preview);
         table.Child = tableBody;
-        Body.Children.Add(table);
-        Note(L("Щёлкните по названию, чтобы переименовать папку (можно с вложенностью: «Отпуск/Море»). Одинаковые названия объединят папки, пустое вернёт исходное."), bottom: 0)
-            .Margin = new Thickness(0, 6, 0, 0);
+        var hint = new TextBlock { Text = L("Щёлкните по названию, чтобы переименовать папку (можно с вложенностью: «Отпуск/Море»). Одинаковые названия объединят папки, пустое вернёт исходное."), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 6, 0, 0) };
+        Ui.Styled(hint, "Hint");
+        var preview = new DockPanel();
+        DockPanel.SetDock(previewHeader, Dock.Top);
+        DockPanel.SetDock(hint, Dock.Bottom);
+        preview.Children.Add(previewHeader);
+        preview.Children.Add(hint);
+        preview.Children.Add(table);
 
+        // The buttons and what they will do.
         _summary.SetResourceReference(TextBlock.ForegroundProperty, "Secondary");
-        _summary.MaxWidth = 380;
-        DockPanel.SetDock(_summary, Dock.Left);
-        Footer.Children.Add(_summary);
+        _summary.VerticalAlignment = VerticalAlignment.Center;
         _confirm = AddButton(L("Разложить"), () => { if (_plan.PendingItems.Count > 0 || _plan.DuplicatesToRemove.Count > 0) DialogResult = true; }, primary: true);
         AddButton(L("Отмена"), () => DialogResult = false).IsCancel = true;
-        Finish();
+        Footer.LastChildFill = true;
+        Footer.Children.Add(_summary);   // last: fills what the buttons leave
+        Footer.Margin = new Thickness(0, 16, 0, 0);
+
+        // Header on top, options on the left and the folders on the right, buttons below.
+        var body = new Grid();
+        body.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        body.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(18) });
+        body.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star), MinWidth = 260 });
+        body.Children.Add(options);
+        Grid.SetColumn(preview, 2);
+        body.Children.Add(preview);
+        var root = new DockPanel { Margin = new Thickness(22, 20, 22, 20) };
+        DockPanel.SetDock(header, Dock.Top);
+        DockPanel.SetDock(Footer, Dock.Bottom);
+        root.Children.Add(header);
+        root.Children.Add(Footer);
+        root.Children.Add(body);
+        Content = root;
         Refresh();
     }
 
-    static TextBlock Label(string text) => new() { Text = text };
+    /// <summary>A row of the form: a label on the right of the first column (none for a line that belongs to the one above), the control on the left of the second.</summary>
+    void FormRow(string? label, FrameworkElement control, double gap = 8)
+    {
+        int row = _form.RowDefinitions.Count;
+        _form.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        // Room between the groups: where and what, how, and the special files.
+        double top = row == 0 ? 0 : gap;
+        if (label != null)
+        {
+            var text = new TextBlock { Text = label, HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, top, 10, 0) };
+            Grid.SetRow(text, row);
+            _form.Children.Add(text);
+        }
+        control.HorizontalAlignment = HorizontalAlignment.Left;
+        control.VerticalAlignment = VerticalAlignment.Center;
+        control.Margin = new Thickness(0, top, 0, 0);
+        Grid.SetRow(control, row);
+        Grid.SetColumn(control, 1);
+        _form.Children.Add(control);
+    }
+
+    static StackPanel Row(params FrameworkElement[] views)
+    {
+        var row = new StackPanel { Orientation = Orientation.Horizontal };
+        for (int i = 0; i < views.Length; i++)
+        {
+            views[i].Margin = new Thickness(i == 0 ? 0 : 12, 0, 0, 0);
+            views[i].VerticalAlignment = VerticalAlignment.Center;
+            row.Children.Add(views[i]);
+        }
+        return row;
+    }
+
+    /// <summary>A second line under a checkbox, set in by the width of the box, so that it reads as depending on it.</summary>
+    static StackPanel Indented(params FrameworkElement[] views)
+    {
+        var row = Row(views);
+        row.Margin = new Thickness(24, 0, 0, 0);
+        return row;
+    }
+
 
     void Fill(ComboBox combo, params string[] titles)
     {
@@ -512,19 +570,21 @@ public sealed class OrganizeDialog : Dialog
         _day.IsEnabled = _plan.Scheme >= Scheme.YearMonthDay;
         _nested.IsChecked = _plan.Nested;
         _nested.IsEnabled = _plan.Scheme != Scheme.Year;
-        _duplicates.IsChecked = _plan.SeparateDuplicates;
         _removeDuplicates.IsChecked = _plan.RemovesDuplicates;
+        _duplicates.IsChecked = _plan.SeparateDuplicates;
         _duplicatesField.Text = _plan.DuplicatesFolderName;
-        // Duplicates that go to the Recycle Bin need no folder of their own.
+        // What goes to the Recycle Bin needs no folder of its own: the line under it only counts when it is not ticked.
         _duplicates.IsEnabled = !_plan.RemovesDuplicates;
         _duplicatesField.IsEnabled = _plan.SeparateDuplicates && !_plan.RemovesDuplicates;
         _photos.IsChecked = _plan.OrganizesPhotos;
         _videos.IsChecked = _plan.OrganizesVideos;
         _pictures.IsChecked = _plan.OrganizesPictures;
         _collages.IsChecked = _plan.OrganizesCollages;
+        _removeTiny.IsChecked = _plan.RemovesTiny;
         _tiny.IsChecked = _plan.SeparateTiny;
         _tinyField.Text = _plan.TinyFolderName;
-        _tinyField.IsEnabled = _plan.SeparateTiny;
+        _tiny.IsEnabled = !_plan.RemovesTiny;
+        _tinyField.IsEnabled = _plan.SeparateTiny && !_plan.RemovesTiny;
         _reset.Visibility = _plan.HasCustomNames ? Visibility.Visible : Visibility.Collapsed;
         _preview.ItemsSource = _plan.Groups.Select((group, index) => new PreviewItem(group, index)).ToList();
         int pending = _plan.PendingItems.Count;
@@ -535,7 +595,7 @@ public sealed class OrganizeDialog : Dialog
                 Number(pending), Number(_plan.Items.Count), Count(_plan.Groups.Count, L("папку"), L("папки"), L("папок")))
             : L("Все файлы уже лежат на своих местах.");
         int removed = _plan.DuplicatesToRemove.Count;
-        if (removed > 0) what += F(" Дубликаты в Корзину: %@.", Number(removed));
+        if (removed > 0) what += F(" В Корзину: %@.", Number(removed));
         _summary.Text = what + (copies
             ? L(" Оригиналы остаются на месте; копии ничего не перезаписывают, уже скопированные файлы пропускаются. Отменить — ⌘Z.")
             : removed > 0
@@ -637,6 +697,7 @@ public sealed class OrganizeDialog : Dialog
         _plan.OrganizesPictures = _pictures.IsChecked == true;
         _plan.OrganizesCollages = _collages.IsChecked == true;
         _plan.SeparateTiny = _tiny.IsChecked == true;
+        _plan.RemovesTiny = _removeTiny.IsChecked == true;
         _plan.DuplicatesFolderName = _duplicatesField.Text;
         _plan.TinyFolderName = _tinyField.Text;
         PlanChanged();
