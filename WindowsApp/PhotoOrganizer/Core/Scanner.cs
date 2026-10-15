@@ -317,6 +317,7 @@ public sealed partial class Scanner
         if (sidecars.Count == 0) return;
         var dates = new Dictionary<string, DateTime>();
         var places = new Dictionary<string, (double, double)>();
+        var files = new Dictionary<string, string>();   // same key → the .json itself
         foreach (string path in sidecars)
         {
             try
@@ -338,7 +339,6 @@ public sealed partial class Scanner
                     if (geo.TryGetProperty("longitude", out var lo)) longitude = JsonNumber(lo);
                 }
                 bool hasPlace = (latitude != 0 || longitude != 0) && Math.Abs(latitude) <= 90 && Math.Abs(longitude) <= 180;
-                if (timestamp < 631152000 && !hasPlace) continue;
                 string title = titleElement.GetString()!;
                 var match = CopyNumber().Match(System.IO.Path.GetFileName(path));
                 if (match.Success)
@@ -347,6 +347,8 @@ public sealed partial class Scanner
                     title = dot > 0 ? $"{title[..dot]}({match.Groups[1].Value}){title[dot..]}" : $"{title}({match.Groups[1].Value})";
                 }
                 string key = PathKey(System.IO.Path.Combine(System.IO.Path.GetDirectoryName(path)!, title));
+                files[key] = path;
+                if (timestamp < 631152000 && !hasPlace) continue;
                 if (timestamp >= 631152000) dates[key] = DateTimeOffset.FromUnixTimeSeconds((long)timestamp).LocalDateTime;
                 if (hasPlace) places[key] = (latitude, longitude);
             }
@@ -355,7 +357,7 @@ public sealed partial class Scanner
             }
         }
         var titlesByFolder = new Dictionary<string, HashSet<string>>();
-        foreach (string key in dates.Keys.Concat(places.Keys))
+        foreach (string key in files.Keys)
         {
             string folder = System.IO.Path.GetDirectoryName(key) ?? "";
             if (!titlesByFolder.TryGetValue(folder, out var titles)) titlesByFolder[folder] = titles = [];
@@ -364,6 +366,9 @@ public sealed partial class Scanner
         foreach (var item in items)
         {
             string key = TakeoutKey(item.Path, dates, titlesByFolder, item.Video) ?? TakeoutKey(item.Path, places, titlesByFolder, item.Video) ?? "";
+            // Its own .json only — the one that names this very file — not one it borrows (a Live Photo's video, an
+            // edited copy or a "(1)" take the date of another file, whose .json stays with it).
+            item.SidecarPath = files.GetValueOrDefault(PathKey(item.Path));
             if (places.TryGetValue(key, out var place) && !item.HasLocation)
             {
                 (item.Latitude, item.Longitude) = place;
