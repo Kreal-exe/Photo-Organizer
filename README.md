@@ -82,11 +82,14 @@ models are downloaded the same way, nothing else is needed.
     where the examples of every library opened are remembered, so a folder of saved pictures learns from the camera
     roll). A photo of people, animals or the sky with nothing drawn about it stays a photo whatever the model says,
     and what a camera took — a capture date of its own, a place, a camera's name — is a photo whatever is in it.
+
+    <p align="center"><img src="docs/screenshots/pictures.png" width="80%" alt="Pictures shown alone"></p>
+
   - **This Is a Picture / This Is a Photo** in the menu of a file (on a Mac) puts it right: the file moves at once,
     the correction is kept, and it teaches the model, so that files like it follow a second later.
   - Above the library: **Media · Photos · Videos · Pictures · Collages · Screenshots** (Screenshots on a Mac), each
-    kind with its count and a checkbox; *Media* counts what the ticked kinds add up to. The kind shown is filled in
-    blue. Clicking a kind shows it alone; ticked, it is in *Media* and gets organized, unticked it is hidden and stays where it
+    kind with its count and a checkbox; *Media* counts what the ticked kinds add up to. The kind shown is tinted
+    blue, checkbox and all. Clicking a kind anywhere but its checkbox shows it alone; ticked, it is in *Media* and gets organized, unticked it is hidden and stays where it
     is — the sidebar counts only the ticked kinds too (the library counts everything found), while a type row (*Pictures*, *Collages*…) always shows all of its
     type. **Organize** takes the same checkboxes — set the library to photos and videos, and only they are moved or
     copied into the year folders.
@@ -308,10 +311,14 @@ open /Applications/PhotoOrganizer.app
     примеры всех открытых медиатек запоминаются, поэтому папка сохранённых картинок учится на фото с камеры). Фото
     людей, животных или неба, в котором нет ничего нарисованного, остаётся фото, что бы ни сказала модель, а снятое
     камерой — со своей датой съёмки, местом или «камерным» именем — фото, что бы на нём ни было.
+
+    <p align="center"><img src="docs/screenshots/pictures.png" width="80%" alt="Только картинки"></p>
+
   - **«Это картинка» / «Это фото»** в меню файла (на Mac) исправляет ошибку: файл сразу переходит куда нужно,
     поправка запоминается и учит модель, так что похожие файлы через секунду переходят следом.
   - Над медиатекой: **Медиа · Фото · Видео · Картинки · Коллажи · Скриншоты** («Скриншоты» — на Mac), у каждого вида —
-    счётчик и галочка; «Медиа» — сумма отмеченных. Показанный вид залит синим. Нажатие на вид
+    счётчик и галочка; «Медиа» — сумма отмеченных. Показанный вид подсвечен голубым вместе с галочкой. Нажатие на вид
+    (в любом месте, кроме галочки)
     показывает только его; отмеченный вид входит в «Медиа» и раскладывается, без галочки — скрыт и остаётся на месте;
     счётчики слева тоже считают только отмеченные виды (медиатека — все найденные файлы), а строка типа («Картинки», «Коллажи»…) всегда показывает весь свой тип.
     **«Разложить»** берёт те же галочки: отметили в медиатеке фото и видео — по годам переносятся или копируются только они.

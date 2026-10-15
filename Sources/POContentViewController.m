@@ -6,6 +6,47 @@
 #pragma mark - Drop frame
 
 /// Dashed rounded frame used by the empty state and by the drag-over overlay.
+/// One tab of the strip above the grid — a kind's checkbox and name, or "Медиа" — as a single rounded area: a click
+/// anywhere in it but on the checkbox shows that kind, and the one shown is tinted.
+@interface POStripTab : NSStackView
+@property (nonatomic, strong) NSButton *button;
+@property (nonatomic) BOOL selected;
+@end
+
+@implementation POStripTab
+
++ (instancetype)tabWithViews:(NSArray<NSView *> *)views button:(NSButton *)button {
+    POStripTab *tab = [self stackViewWithViews:views];
+    tab.button = button;
+    tab.spacing = 4;
+    tab.edgeInsets = NSEdgeInsetsMake(3, 8, 3, 10);
+    tab.wantsLayer = YES;
+    tab.layer.cornerRadius = 7;
+    return tab;
+}
+
+- (void)mouseDown:(NSEvent *)event {
+    [NSApp sendAction:self.button.action to:self.button.target from:self.button];
+}
+
+- (void)setSelected:(BOOL)selected {
+    _selected = selected;
+    self.needsDisplay = YES;
+}
+
+- (BOOL)wantsUpdateLayer {
+    return YES;
+}
+
+- (void)updateLayer {
+    // Redone when the appearance or the accent colour changes.
+    self.layer.backgroundColor = self.selected ? [NSColor.controlAccentColor colorWithAlphaComponent:0.2].CGColor : NSColor.clearColor.CGColor;
+    self.layer.borderWidth = self.selected ? 1 : 0;
+    self.layer.borderColor = [NSColor.controlAccentColor colorWithAlphaComponent:0.45].CGColor;
+}
+
+@end
+
 @interface PODropFrameView : NSView
 @property (nonatomic) BOOL highlighted;
 @property (nonatomic) BOOL dimsBackground;   // overlay mode: fades whatever is underneath
@@ -184,16 +225,13 @@ static NSStackView *POCenteredStack(NSArray<NSView *> *views, NSView *container)
     // "Медиа", then each kind: its checkbox (in the library and organized, or not) and a button showing it alone.
     NSButton *(^tab)(NSString *, NSInteger) = ^NSButton *(NSString *title, NSInteger tag) {
         NSButton *button = [NSButton buttonWithTitle:title target:nil action:@selector(selectQuickFilter:)];
-        button.bezelStyle = NSBezelStyleRecessed;
-        button.showsBorderOnlyWhileMouseInside = YES;
+        button.bordered = NO;
         button.tag = tag;
-        button.wantsLayer = YES;
-        button.layer.cornerRadius = 5;
         return button;
     };
     _allButton = tab(POL(@"Медиа"), POQuickFilterAll);
     _allButton.toolTip = POL(@"Все отмеченные виды файлов");
-    NSMutableArray<NSView *> *strip = [NSMutableArray arrayWithObject:_allButton];
+    NSMutableArray<NSView *> *strip = [NSMutableArray arrayWithObject:[POStripTab tabWithViews:@[_allButton] button:_allButton]];
     NSMutableArray<NSButton *> *buttons = [NSMutableArray array], *boxes = [NSMutableArray array];
     NSArray<NSString *> *tips = @[POL(@"Фотографии"), POL(@"Видео"), POL(@"Открытки, мемы, рисунки, документы — то, что не фотография"),
                                   POL(@"Коллажи, рамки, анимации, фильмы и эффекты, которые сделал Google Фото"),
@@ -204,16 +242,14 @@ static NSStackView *POCenteredStack(NSArray<NSView *> *views, NSView *container)
         box.toolTip = POL(@"Отмечено — в медиатеке и раскладывается; без галочки — скрыто и остаётся на месте");
         NSButton *button = tab(@"", POQuickFilterAll + 1 + kind);
         button.toolTip = tips[kind];
-        NSStackView *pair = [NSStackView stackViewWithViews:@[box, button]];
-        pair.spacing = 2;
-        [strip addObject:pair];
+        [strip addObject:[POStripTab tabWithViews:@[box, button] button:button]];
         [boxes addObject:box];
         [buttons addObject:button];
     }
     _kindBoxes = boxes;
     _kindButtons = buttons;
     _filterControl = [NSStackView stackViewWithViews:strip];
-    _filterControl.spacing = 12;
+    _filterControl.spacing = 4;
     _filterControl.translatesAutoresizingMaskIntoConstraints = NO;
 
     _cleanupButton = [NSButton buttonWithTitle:POL(@"Удалить дубликаты…") target:nil action:@selector(removeDuplicates:)];
@@ -379,15 +415,9 @@ static NSStackView *POCenteredStack(NSArray<NSView *> *views, NSView *container)
     _organizeButton.enabled = canOrganize;
 }
 
-/// A tab of the strip: the one shown filled with the accent colour and white text, so that which one is chosen can't
-/// be missed next to the checkboxes.
 static void POSetTab(NSButton *button, NSString *title, BOOL selected) {
-    NSDictionary *attributes = @{NSFontAttributeName: button.font ?: [NSFont systemFontOfSize:NSFont.systemFontSize],
-                                 NSForegroundColorAttributeName: selected ? NSColor.alternateSelectedControlTextColor : NSColor.labelColor};
-    button.attributedTitle = [[NSAttributedString alloc] initWithString:title attributes:attributes];
-    [button.effectiveAppearance performAsCurrentDrawingAppearance:^{
-        button.layer.backgroundColor = selected ? NSColor.controlAccentColor.CGColor : NSColor.clearColor.CGColor;
-    }];
+    button.title = title;
+    ((POStripTab *)button.superview).selected = selected;
 }
 
 - (void)setKindCounts:(NSArray<NSNumber *> *)counts included:(NSArray<NSNumber *> *)included selected:(POQuickFilter)selected {
