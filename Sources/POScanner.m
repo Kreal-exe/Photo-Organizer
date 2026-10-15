@@ -564,12 +564,17 @@ static void PODateFromTakeoutSidecars(NSArray<POPhotoItem *> *items, NSArray<NSU
         if (!titlesByFolder[folder]) titlesByFolder[folder] = [NSMutableSet set];
         [titlesByFolder[folder] addObject:key.lastPathComponent];
     }
+    NSMutableSet<NSString *> *itemPaths = [NSMutableSet set];
+    for (POPhotoItem *item in items) [itemPaths addObject:item.url.path.lowercaseString.precomposedStringWithCanonicalMapping];
     for (POPhotoItem *item in items) {
         NSString *key = POTakeoutKeyForPath(item.url.path, dates, titlesByFolder, item.isVideo)
                      ?: POTakeoutKeyForPath(item.url.path, places, titlesByFolder, item.isVideo) ?: @"";
-        // Its own .json only — the one that names this very file — not one it borrows (a Live Photo's video, an edited
-        // copy or a "(1)" take the date of another file, whose .json stays with it).
-        item.sidecarURL = files[item.url.path.lowercaseString.precomposedStringWithCanonicalMapping];
+        // Its own .json only — the one that names this very file, or names it in full when Takeout cut its name short —
+        // not one it borrows from another file that is there (a Live Photo's video, an edited copy or a "(1)" take the
+        // date of another file, whose .json stays with it).
+        NSString *exact = item.url.path.lowercaseString.precomposedStringWithCanonicalMapping;
+        NSString *matched = files[exact] ? exact : POTakeoutKeyForPath(item.url.path, files, titlesByFolder, item.isVideo);
+        item.sidecarURL = matched && ([matched isEqualToString:exact] || ![itemPaths containsObject:matched]) ? files[matched] : nil;
         NSArray<NSNumber *> *place = places[key];
         if (place && !item.hasLocation) {
             item.latitude = place[0].doubleValue;

@@ -448,6 +448,11 @@ int main(void) {
             // A file's own .json goes with it, and comes back with an undo; a copy's borrowed one stays.
             POPhotoItem *a = [plan.items filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"relativePath ENDSWITH '/a.png'"]].firstObject;
             CHECK([a.sidecarURL.lastPathComponent isEqualToString:@"a.png.supplemental-metadata.json"], @"%@", a.sidecarURL);
+            for (POPhotoItem *item in plan.items) {
+                // A name cut short owns the .json that names it in full; an edited copy only borrows the original's date.
+                if ([item.relativePath containsString:@"ftband"]) CHECK([item.sidecarURL.lastPathComponent hasSuffix:@"ftband..json"], @"%@", item.sidecarURL);
+                if ([item.relativePath containsString:@"-отредактировано"]) CHECK(item.sidecarURL == nil, @"%@", item.sidecarURL);
+            }
             POOrganizeResult *carried = [POOrganizer applyPlan:plan progress:nil];
             NSURL *movedJSON = [export URLByAppendingPathComponent:@"2018/2018-05/2018-05-15/a.png.supplemental-metadata.json"];
             CHECK([fm fileExistsAtPath:movedJSON.path] && carried.fileCount == plan.pendingItems.count && carried.records.count > carried.fileCount,
