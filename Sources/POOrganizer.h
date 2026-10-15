@@ -7,6 +7,8 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, readonly) NSURL *from;
 @property (nonatomic, readonly) NSURL *to;
 @property (nonatomic, readonly) unsigned long long fileSize;
+/// A Google Takeout .json that went along with its photo (see POPhotoItem.sidecarURL): undone with it, not counted.
+@property (nonatomic, readonly, getter=isSidecar) BOOL sidecar;
 @end
 
 /// Everything needed to report on and undo one run of the organizer.
@@ -24,6 +26,8 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, readonly) BOOL stopped;
 /// The moves an undo made, as a run of their own: reverting it moves the files once more (redo).
 + (instancetype)resultWithMoves:(NSArray<POMoveRecord *> *)moves;
+/// How many photos and videos moved or were copied: `records` without the .json that went along.
+@property (nonatomic, readonly) NSUInteger fileCount;
 @end
 
 /// Moves the original files into the folders chosen by a plan — nothing is copied, deleted or overwritten.

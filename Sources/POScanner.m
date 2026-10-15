@@ -533,6 +533,7 @@ static void PODateFromTakeoutSidecars(NSArray<POPhotoItem *> *items, NSArray<NSU
     NSRegularExpression *copyNumber = [NSRegularExpression regularExpressionWithPattern:@"\\((\\d+)\\)\\.json$" options:NSRegularExpressionCaseInsensitive error:NULL];
     NSMutableDictionary<NSString *, NSDate *> *dates = [NSMutableDictionary dictionary];   // folder/lowercased file name → date
     NSMutableDictionary<NSString *, NSArray<NSNumber *> *> *places = [NSMutableDictionary dictionary];   // same key → @[lat, lon]
+    NSMutableDictionary<NSString *, NSURL *> *files = [NSMutableDictionary dictionary];   // same key → the .json itself
     for (NSURL *url in sidecars) {
         NSData *data = [NSData dataWithContentsOfURL:url];
         NSDictionary *json = data.length < 1000000 ? [NSJSONSerialization JSONObjectWithData:data options:0 error:NULL] : nil;
@@ -542,7 +543,6 @@ static void PODateFromTakeoutSidecars(NSArray<POPhotoItem *> *items, NSArray<NSU
         NSDictionary *geo = [json[@"geoData"] isKindOfClass:NSDictionary.class] ? json[@"geoData"] : nil;
         double latitude = [geo[@"latitude"] doubleValue], longitude = [geo[@"longitude"] doubleValue];
         BOOL hasPlace = (latitude != 0 || longitude != 0) && fabs(latitude) <= 90 && fabs(longitude) <= 180;
-        if (timestamp < 631152000 && !hasPlace) continue;   // before 1990: missing or zero
         NSString *title = json[@"title"];
         NSString *name = url.lastPathComponent;
         NSTextCheckingResult *match = [copyNumber firstMatchInString:name options:0 range:NSMakeRange(0, name.length)];
@@ -553,11 +553,13 @@ static void PODateFromTakeoutSidecars(NSArray<POPhotoItem *> *items, NSArray<NSU
         }
         NSString *key = [[url.path.stringByDeletingLastPathComponent stringByAppendingPathComponent:title] lowercaseString];
         key = key.precomposedStringWithCanonicalMapping;
+        files[key] = url;
+        if (timestamp < 631152000 && !hasPlace) continue;   // before 1990: missing or zero
         if (timestamp >= 631152000) dates[key] = [NSDate dateWithTimeIntervalSince1970:timestamp];
         if (hasPlace) places[key] = @[@(latitude), @(longitude)];
     }
     NSMutableDictionary<NSString *, NSMutableSet<NSString *> *> *titlesByFolder = [NSMutableDictionary dictionary];
-    for (NSString *key in [dates.allKeys arrayByAddingObjectsFromArray:places.allKeys]) {
+    for (NSString *key in files) {
         NSString *folder = key.stringByDeletingLastPathComponent;
         if (!titlesByFolder[folder]) titlesByFolder[folder] = [NSMutableSet set];
         [titlesByFolder[folder] addObject:key.lastPathComponent];
@@ -565,6 +567,9 @@ static void PODateFromTakeoutSidecars(NSArray<POPhotoItem *> *items, NSArray<NSU
     for (POPhotoItem *item in items) {
         NSString *key = POTakeoutKeyForPath(item.url.path, dates, titlesByFolder, item.isVideo)
                      ?: POTakeoutKeyForPath(item.url.path, places, titlesByFolder, item.isVideo) ?: @"";
+        // Its own .json only — the one that names this very file — not one it borrows (a Live Photo's video, an edited
+        // copy or a "(1)" take the date of another file, whose .json stays with it).
+        item.sidecarURL = files[item.url.path.lowercaseString.precomposedStringWithCanonicalMapping];
         NSArray<NSNumber *> *place = places[key];
         if (place && !item.hasLocation) {
             item.latitude = place[0].doubleValue;

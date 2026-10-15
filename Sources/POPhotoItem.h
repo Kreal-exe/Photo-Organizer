@@ -110,6 +110,10 @@ FOUNDATION_EXPORT NSString *POItemDateText(POPhotoItem *item, BOOL withTime);
 /// The text is a band at the top or the bottom of the picture — a caption (see POTextInImage); nil when not known.
 @property (atomic, strong, nullable) NSNumber *textAtEdge;
 
+/// The Google Takeout description of the file (its .json, with the date Google Photos knew), when one lies next to
+/// it: it moves with the file, so that the date stays with it and the old folder empties.
+@property (atomic, strong, nullable) NSURL *sidecarURL;
+
 @property (nonatomic, copy, nullable) NSString *contentHash;
 /// Set on every copy; points to the file that is kept as the original.
 @property (nonatomic, weak, nullable) POPhotoItem *duplicateOf;
