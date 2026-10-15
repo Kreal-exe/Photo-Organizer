@@ -46,8 +46,13 @@ FOUNDATION_EXPORT NSUInteger POLetterCount(NSString *_Nullable text);
 /// A postcard's wishes have at least this many letters; a T-shirt's print or a shop sign in a photo fewer.
 static const NSUInteger POPostcardLetters = 25;
 
+/// The words of a postcard's wishes in `text` — greetings, holidays, blessings ("с днём рождения", "доброе утро",
+/// "храни вас господь"…), in Russian, Ukrainian and English, misread letters allowed for. A photo of someone at a
+/// whiteboard or a screen has text too, but not these words.
+FOUNDATION_EXPORT BOOL POHasPostcardWords(NSString *_Nullable text);
+
 /// A picture by its labels and text alone: something drawn, printed or written seen surely (0.6), and no person,
-/// animal or landscape seen surely — or seen very surely (0.8), or a postcard's text.
+/// animal or landscape seen surely — or, when one is, an unmistakable drawing (0.9) or a postcard's wishes.
 FOUNDATION_EXPORT BOOL POIsPictureByLabels(POPhotoItem *item);
 
 /// What a camera took: a capture date of its own, a place, or a camera's name (IMG_20180117_181128, PXL_…, DSC…).

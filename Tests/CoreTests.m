@@ -778,6 +778,10 @@ int main(void) {
             postcard.text = @"с юбилеем! желаю счастья, здоровья и добра";
             CHECK(POIsPicture(postcard));    // unless the wishes of a postcard are written on it
             postcard.text = nil;
+            postcard.labels = @{@"adult": @0.88, @"handwriting": @0.78};
+            postcard.text = @"loe neatet f niemanta silates ee en modene sechbrd respekt";
+            CHECK(!POIsPicture(postcard));   // someone at a whiteboard: text, but not a postcard's
+            postcard.text = nil;
             postcard.pictureVerdict = @YES;
             CHECK(POIsPicture(postcard));    // the model learnt on the library catches what the labels miss
             postcard.labels = @{@"illustrations": @0.9};
