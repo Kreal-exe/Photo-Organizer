@@ -13,6 +13,8 @@
 @end
 
 @implementation POOrganizeSheetController {
+    NSStackView *_optionsStack, *_footer;   // for the size the window opens at
+    BOOL _sized;
     POPlan *_plan;
     NSTextField *_destinationLabel;
     NSSegmentedControl *_modeControl;
@@ -104,9 +106,14 @@ static NSTextField *POFormLabel(NSString *text) {
     _collagesCheckbox.toolTip = POL(@"Коллажи, рамки, анимации, фильмы и правки, которые сделал Google Фото. Без галочки остаются на месте.");
     _screenshotKindCheckbox = [NSButton checkboxWithTitle:POL(@"Скриншоты") target:self action:@selector(optionChanged:)];
     _screenshotKindCheckbox.toolTip = POL(@"Снимки экрана, и те, что пришли через мессенджер. Без галочки остаются на месте.");
-    NSStackView *kinds = [NSStackView stackViewWithViews:@[_photosCheckbox, _videosCheckbox, _picturesCheckbox, _collagesCheckbox,
-                                                           _screenshotKindCheckbox]];
-    kinds.spacing = 16;
+    // Five kinds in two rows, so the window keeps its width (in one row they pushed the form out of it).
+    NSStackView *firstKinds = [NSStackView stackViewWithViews:@[_photosCheckbox, _videosCheckbox, _screenshotKindCheckbox]];
+    NSStackView *moreKinds = [NSStackView stackViewWithViews:@[_picturesCheckbox, _collagesCheckbox]];
+    firstKinds.spacing = moreKinds.spacing = 16;
+    NSStackView *kinds = [NSStackView stackViewWithViews:@[firstKinds, moreKinds]];
+    kinds.orientation = NSUserInterfaceLayoutOrientationVertical;
+    kinds.alignment = NSLayoutAttributeLeading;
+    kinds.spacing = 6;
     _screenshotsCheckbox = [NSButton checkboxWithTitle:POL(@"Скриншоты — в папку:") target:self action:@selector(optionChanged:)];
     _screenshotsField = [self folderField];
     _screenshotsPlacePopup = [self popupWithTitles:@[POL(@"Одна папка, даты внутри"), POL(@"Внутри папки каждой даты")]];
@@ -142,6 +149,12 @@ static NSTextField *POFormLabel(NSString *text) {
     form.columnSpacing = 8;
     [form columnAtIndex:0].xPlacement = NSGridCellPlacementTrailing;
     [form columnAtIndex:1].xPlacement = NSGridCellPlacementLeading;
+    // A grid takes whatever room it is given: it keeps its own size, and the list of folders below gets the rest.
+    NSSize formSize = form.fittingSize;
+    NSLayoutConstraint *formWidth = [form.widthAnchor constraintEqualToConstant:formSize.width];
+    NSLayoutConstraint *formHeight = [form.heightAnchor constraintEqualToConstant:formSize.height];
+    formWidth.priority = formHeight.priority = NSLayoutPriorityDefaultHigh;
+    [NSLayoutConstraint activateConstraints:@[formWidth, formHeight]];
 
     NSTextField *previewTitle = [NSTextField labelWithString:POL(@"Что получится")];
     previewTitle.font = [NSFont systemFontOfSize:13 weight:NSFontWeightSemibold];
@@ -171,7 +184,10 @@ static NSTextField *POFormLabel(NSString *text) {
     scrollView.documentView = _tableView;
     scrollView.hasVerticalScroller = YES;
     scrollView.borderType = NSBezelBorder;
-    [scrollView.heightAnchor constraintEqualToConstant:210].active = YES;
+    [scrollView.heightAnchor constraintGreaterThanOrEqualToConstant:210].active = YES;
+    NSLayoutConstraint *listHeight = [scrollView.heightAnchor constraintEqualToConstant:210];
+    listHeight.priority = NSLayoutPriorityDefaultLow - 10;   // grows with the window
+    listHeight.active = YES;
 
     NSTextField *hint = [NSTextField wrappingLabelWithString:
         POL(@"Щёлкните по названию, чтобы переименовать папку (можно с вложенностью: «Отпуск/Море»). "
@@ -232,6 +248,8 @@ static NSTextField *POFormLabel(NSString *text) {
         [document.leadingAnchor constraintEqualToAnchor:scroller.contentView.leadingAnchor],
         [document.trailingAnchor constraintEqualToAnchor:scroller.contentView.trailingAnchor],
         [document.topAnchor constraintEqualToAnchor:scroller.contentView.topAnchor],
+        // At least as tall as the window shows, so that a larger window lengthens the list of folders.
+        [document.heightAnchor constraintGreaterThanOrEqualToAnchor:scroller.contentView.heightAnchor],
         [scroller.topAnchor constraintEqualToAnchor:root.topAnchor],
         [scroller.leadingAnchor constraintEqualToAnchor:root.leadingAnchor],
         [scroller.trailingAnchor constraintEqualToAnchor:root.trailingAnchor],
@@ -244,6 +262,8 @@ static NSTextField *POFormLabel(NSString *text) {
         [root.widthAnchor constraintGreaterThanOrEqualToConstant:460],
         wantedWidth,
     ]];
+    _optionsStack = stack;
+    _footer = footer;
     self.view = root;
     [self refresh];
 }
@@ -254,15 +274,21 @@ static NSTextField *POFormLabel(NSString *text) {
     NSWindow *window = self.view.window;
     window.styleMask |= NSWindowStyleMaskResizable;
     window.contentMinSize = NSMakeSize(460, 260);
+    // It opens at least half the screen each way, as tall as all the options with the buttons below them when that
+    // fits (up to 90 % of the screen), in the middle of it: the options and the folders they make can be read at once.
+    if (_sized) return;
+    _sized = YES;
     NSRect visible = (window.screen ?: NSScreen.mainScreen).visibleFrame;
-    NSRect frame = window.frame;
-    if (frame.size.height > visible.size.height || frame.size.width > visible.size.width) {
-        frame.size.height = MIN(frame.size.height, visible.size.height);
-        frame.size.width = MIN(frame.size.width, visible.size.width);
-        frame.origin.y = NSMaxY(visible) - frame.size.height;
-        frame.origin.x = MAX(NSMinX(visible), MIN(frame.origin.x, NSMaxX(visible) - frame.size.width));
-        [window setFrame:frame display:YES];
-    }
+    NSSize options = _optionsStack.fittingSize, footer = _footer.fittingSize;
+    CGFloat contentHeight = options.height + 10 + footer.height + 20;
+    CGFloat contentWidth = MAX(options.width, footer.width + 40);
+    NSRect content = NSMakeRect(0, 0, MIN(MAX(contentWidth, visible.size.width * 0.5), visible.size.width),
+                                MIN(MAX(contentHeight, visible.size.height * 0.5), visible.size.height * 0.9));
+    NSRect frame = [window frameRectForContentRect:content];
+    frame.size.height = MIN(frame.size.height, visible.size.height);
+    frame.origin.x = NSMidX(visible) - frame.size.width / 2;
+    frame.origin.y = NSMidY(visible) - frame.size.height / 2;
+    [window setFrame:frame display:YES];
 }
 
 - (void)chooseDestination:(id)sender {
