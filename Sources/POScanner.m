@@ -512,14 +512,22 @@ static NSString *POTakeoutKeyForPath(NSString *path, NSDictionary<NSString *, id
 /// dates: Takeout sorts by the date Google Photos gives a file, so the year is Google's own. Only the year — the file
 /// goes into that year's folder, not into a month — and a copy with a date of its own still wins (see POSimilarCopies).
 static void PODateFromTakeoutFolders(NSArray<POPhotoItem *> *items) {
-    NSRegularExpression *folder = [NSRegularExpression regularExpressionWithPattern:@"^(photos from|фото за|фото) (\\d{4})( ?г\\.?)?$"
+    // "Фото 2023 г", "Photos from 2023", "Фото за 2023" (Google Takeout), or a folder named by the year itself: "2023",
+    // "2023 год", "2023 г" — the year folders this app makes among them.
+    NSRegularExpression *folder = [NSRegularExpression regularExpressionWithPattern:@"^(?:(?:photos from|фото за|фото) )?(\\d{4})(?: ?г\\.?| год)?$"
                                                                             options:NSRegularExpressionCaseInsensitive error:NULL];
     NSCalendar *calendar = [[NSCalendar alloc] initWithCalendarIdentifier:NSCalendarIdentifierGregorian];
     for (POPhotoItem *item in items) {
         if (!item.isUndated) continue;
-        NSString *name = item.currentFolder.lastPathComponent.precomposedStringWithCanonicalMapping;
-        NSTextCheckingResult *match = name.length ? [folder firstMatchInString:name options:0 range:NSMakeRange(0, name.length)] : nil;
-        NSInteger year = match ? [name substringWithRange:[match rangeAtIndex:2]].integerValue : 0;
+        // The folder itself, or one it is in ("2023/2023-05"): the nearest one named by a year.
+        NSInteger year = 0;
+        for (NSString *part in [item.currentFolder componentsSeparatedByString:@"/"].reverseObjectEnumerator) {
+            NSString *name = part.precomposedStringWithCanonicalMapping;
+            NSTextCheckingResult *match = name.length ? [folder firstMatchInString:name options:0 range:NSMakeRange(0, name.length)] : nil;
+            if (!match) continue;
+            year = [name substringWithRange:[match rangeAtIndex:1]].integerValue;
+            break;
+        }
         if (year < 1990 || year > 2100) continue;
         NSDateComponents *components = [NSDateComponents new];
         components.year = year; components.month = 7; components.day = 1; components.hour = 12;

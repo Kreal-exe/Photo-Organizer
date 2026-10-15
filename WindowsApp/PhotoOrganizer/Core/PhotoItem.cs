@@ -134,7 +134,7 @@ public sealed class PhotoItem
         DateSource.Manual => L("Дата задана вручную"),
         DateSource.Takeout => L("Дата из Google Takeout (.json)"),
         DateSource.Copy => L("Дата другой копии этого снимка"),
-        DateSource.TakeoutFolder => L("Год из папки Google Takeout"),
+        DateSource.TakeoutFolder => L("Год из названия папки"),
         _ => L("Без даты"),
     };
 

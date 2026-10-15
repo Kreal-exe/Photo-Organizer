@@ -19,7 +19,7 @@ NSString *POItemDateSourceText(POPhotoItem *item) {
         case PODateSourceManual: return POL(@"Дата задана вручную");
         case PODateSourceTakeout: return POL(@"Дата из Google Takeout (.json)");
         case PODateSourceCopy: return POL(@"Дата другой копии этого снимка");
-        case PODateSourceTakeoutFolder: return POL(@"Год из папки Google Takeout");
+        case PODateSourceTakeoutFolder: return POL(@"Год из названия папки");
         case PODateSourceFile: break;
     }
     return POL(@"Без даты");

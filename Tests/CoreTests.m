@@ -367,6 +367,7 @@ int main(void) {
             WriteImage([takeout URLByAppendingPathComponent:@"Photos from 2018/IMG_3.jpg"], UTTypeJPEG, 900, 700, 0.3, @"2018:09:20 10:00:00");
             WriteImage([takeout URLByAppendingPathComponent:@"Photos from 2018/z.png"], UTTypePNG, 900, 700, 0.4, nil);   // only the folder knows
             WriteImage([takeout URLByAppendingPathComponent:@"misc/meme.png"], UTTypePNG, 900, 700, 0.5, nil);            // nothing at all
+            WriteImage([takeout URLByAppendingPathComponent:@"2016/2016-04/card.png"], UTTypePNG, 900, 700, 0.6, nil);   // in a year folder
             POPlan *dated = Scan(takeout);
             [dated rebuild];
             PODateSuggester *suggester = [[PODateSuggester alloc] initWithItems:dated.items];
@@ -375,6 +376,14 @@ int main(void) {
                 PODateSuggestion *best = [suggester bestSuggestionForItem:item];
                 if ([name hasSuffix:@".jpg"]) {
                     CHECK(!item.isUndated && !best, @"%@", name);
+                    continue;
+                }
+                if ([item.currentFolder hasPrefix:@"2016"]) {
+                    // A folder named by the year (one this app made): that year, and only the year — a second run
+                    // leaves it in the year folder, not under "Без даты".
+                    CHECK(item.dateSource == PODateSourceTakeoutFolder && POItemDatePrecision(item) == PODatePrecisionYear
+                          && [calendar component:NSCalendarUnitYear fromDate:item.date] == 2016 && [item.destinationFolder isEqualToString:@"2016"],
+                          @"%@ %ld %@", name, (long)item.dateSource, item.destinationFolder);
                     continue;
                 }
                 if ([item.currentFolder isEqualToString:@"Photos from 2018"]) {
