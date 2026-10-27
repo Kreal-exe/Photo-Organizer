@@ -1,7 +1,7 @@
 #!/bin/bash
-# Builds Photo Organizer for macOS and puts it on the Desktop.
+# Builds Photo Organizer for macOS and installs it into /Applications, then opens it.
 #
-#   ./build.sh           build and install (relaunches the app if it was running)
+#   ./build.sh           build, install into /Applications and open the app
 #   ./build.sh --test    run the core tests first (dates, plan, duplicates, moves, undo)
 #   ./build.sh --zip     also write dist/PhotoOrganizer-macOS-v<version>.zip for a release
 #
@@ -11,7 +11,7 @@ ROOT="$(cd "$(dirname "$0")" && pwd)"
 NAME="PhotoOrganizer"
 BUNDLE_ID="local.photo-organizer"
 VERSION="$(tr -d '[:space:]' < "$ROOT/VERSION")"
-DEST="${INSTALL_DIR:-$HOME/Desktop}"
+DEST="${INSTALL_DIR:-/Applications}"
 TEST=0
 ZIP=0
 for arg in "$@"; do
@@ -37,12 +37,13 @@ if [ "$TEST" = 1 ]; then
   # The non-UI core only: it needs no window server.
   CORE=()
   for part in POPhotoItem POScanner POPlan POOrganizer POStrings POSimilarCopies POVKAlbum POManualDates \
-              PODateSuggestions POPictureText POScreenshots POMediaTypes; do
+              PODateSuggestions POPictureText POScreenshots POMediaTypes POVKBrowserCookies; do
     CORE+=("$ROOT/Sources/$part.m")
   done
   "$CLANG" "${CFLAGS[@]}" -I"$ROOT/Sources" \
     -framework Foundation -framework ImageIO -framework CoreGraphics -framework CoreText \
     -framework UniformTypeIdentifiers -framework AVFoundation -framework CoreMedia -framework CoreVideo -framework Vision \
+    -framework Security -lsqlite3 \
     "${CORE[@]}" "$ROOT/Tests/CoreTests.m" -o "$OUT/core-tests"
   "$OUT/core-tests"
 fi
@@ -53,7 +54,7 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
   -framework Cocoa -framework Quartz -framework QuickLookThumbnailing -framework UniformTypeIdentifiers \
   -framework ImageIO -framework AVFoundation -framework AVKit -framework CoreMedia -framework Vision \
   -framework CoreML -framework Accelerate -framework WebKit -framework MapKit -framework CoreLocation \
-  -framework CoreImage -framework VideoToolbox \
+  -framework CoreImage -framework VideoToolbox -framework Security -lsqlite3 \
   "$ROOT"/Sources/*.m -o "$APP/Contents/MacOS/$NAME"
 
 cp "$ROOT/Resources/Info.plist" "$APP/Contents/Info.plist"
@@ -96,7 +97,11 @@ fi
 mkdir -p "$DEST"
 rm -rf "$DEST/$NAME.app"
 ditto "$APP" "$DEST/$NAME.app"
+# A copy that came through a browser or AirDrop carries the quarantine flag; Gatekeeper would refuse the
+# unnotarized app. Clearing it here makes the installed copy open with a double-click.
+xattr -dr com.apple.quarantine "$DEST/$NAME.app" 2>/dev/null || true
 echo "Installed: $DEST/$NAME.app"
 
-[ "$WAS_RUNNING" = 1 ] && open "$DEST/$NAME.app"
+# Opened right away, except on a CI runner.
+[ -n "${CI:-}" ] || open "$DEST/$NAME.app"
 exit 0

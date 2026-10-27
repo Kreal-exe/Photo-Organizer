@@ -193,8 +193,8 @@ static NSMenu *POSubmenu(NSMenu *mainMenu, NSString *title) {
     POItem(viewMenu, POL(@"Открыть в просмотре"), @selector(openSelectedItem:), down);
     POItem(viewMenu, POL(@"Вернуться к сетке"), @selector(closeViewer:), up);
     [viewMenu addItem:NSMenuItem.separatorItem];
-    NSArray<NSString *> *groupings = @[POL(@"По годам"), POL(@"По месяцам"), POL(@"По дням")];
-    for (NSInteger index = 0; index < 3; index++) {
+    NSArray<NSString *> *groupings = @[POL(@"По годам"), POL(@"По месяцам"), POL(@"По дням"), POL(@"По размеру")];
+    for (NSInteger index = 0; index < 4; index++) {
         POItem(viewMenu, groupings[index], @selector(chooseGrouping:), [NSString stringWithFormat:@"%ld", (long)index + 1]).tag = index;
     }
     [viewMenu addItem:NSMenuItem.separatorItem];

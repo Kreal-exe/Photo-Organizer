@@ -32,6 +32,13 @@ public static class RawPhoto
             ? data.AsSpan(p.Offset, p.Length).ToArray()
             : null;
         BitmapSource picture = previewJpeg != null ? DecodeJpeg(previewJpeg, megapixels) : DecodeRaw(data, megapixels);
+        // Windows' codec gives no more than the preview (it shows the preview of a ProRAW since iOS 18): the camera's
+        // own picture and HDR, then.
+        if (previewJpeg == null && preview is { } small && (long)picture.PixelWidth * picture.PixelHeight <= (long)small.Width * small.Height)
+        {
+            previewJpeg = data.AsSpan(small.Offset, small.Length).ToArray();
+            picture = DecodeJpeg(previewJpeg, megapixels);
+        }
         int width = picture.PixelWidth, height = picture.PixelHeight;
 
         var encoder = new JpegBitmapEncoder { QualityLevel = Compression.JpegQuality };

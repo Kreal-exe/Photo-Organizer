@@ -7,7 +7,7 @@ DirectX 12 card), or on the processor without one.
 ## Building
 
 ```powershell
-.\build.ps1          # → %LOCALAPPDATA%\Programs\PhotoOrganizer\PhotoOrganizer.exe (a running copy is restarted)
+.\build.ps1          # → PhotoOrganizer.exe on the Desktop (a running copy is restarted)
 .\build.ps1 -Zip     # also write dist\PhotoOrganizer-Windows-v<version>.zip
 ```
 
@@ -15,7 +15,8 @@ DirectX 12 card), or on the processor without one.
 builds in a temporary folder, so no `bin\` or `obj\` is left in the project. The result is one self-contained
 `PhotoOrganizer.exe`: nothing to install on the user's PC.
 Releases are not built by hand: every push to `main` makes GitHub Actions build the macOS and the Windows app and
-publish both in a new release (see the root README).
+publish both as release `v<VERSION>`; the same version replaces that release's files, a new `VERSION` makes a new one
+(see the root README).
 
 ## How it maps onto the macOS app
 
@@ -23,7 +24,7 @@ publish both in a new release (see the root README).
 |---|---|
 | ImageIO / AVFoundation metadata | own EXIF reader (JPEG, TIFF, RAW) + the Windows Property System (HEIC, PNG, video…) |
 | QuickLook thumbnails | the thumbnails File Explorer shows (`IShellItemImageFactory`) |
-| Vision: labels, feature prints, salient objects | MobileCLIP-S0 (45 MB, downloaded on first use): labels from the macOS label list, vectors of the photo and its parts |
+| Vision: labels, feature prints, salient objects | MobileCLIP-S0 (the ONNX build of the same weights, 45 MB, downloaded on first use): labels from the macOS label list, vectors of the photo and its parts |
 | Vision faces + ArcFace on MLX | YuNet (OpenCV) + the same ArcFace weights, turned into ONNX by the app (`Core/VitOnnx.cs`) |
 | Nudity models on MLX / Core ML | the same three Hugging Face models, turned into ONNX the same way |
 | MapKit | OpenStreetMap in the WebView2 built into Windows |

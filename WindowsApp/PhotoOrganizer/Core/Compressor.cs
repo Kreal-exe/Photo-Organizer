@@ -33,19 +33,24 @@ public static class Compressor
     }
 
     /// <summary>A video to HEVC as `job` says, in the same container under the same name.</summary>
-    public static Outcome Video(PhotoItem item, VideoInfo info, VideoJob job, Action<double>? progress, CancellationToken token)
+    public static Outcome Video(PhotoItem item, VideoInfo info, VideoJob job, Action<VideoProgress>? progress, CancellationToken token)
     {
         string source = item.Path;
         string temporary = Temporary(source);
         string? error = VideoCompressor.Compress(source, temporary, info, job, progress, token);
         if (error != null) return new Outcome(item, null, item.FileSize, 0, info.Hdr, error);
-        // Not smaller after all (an already well-compressed video): the original stays.
-        if (new FileInfo(temporary).Length >= new FileInfo(source).Length)
+        // Less than a fifth smaller (a video already compressed about as far as it goes without loss: a 26 Mbit/s HEVC
+        // of movement came out 3 % smaller): not worth a second generation — the original stays. A rebuild, larger by
+        // design (see VideoJob.Rebuild), takes the old one's place.
+        if (!job.Rebuild && new FileInfo(temporary).Length > new FileInfo(source).Length * 0.8)
         {
             TryDelete(temporary);
             return new Outcome(item, null, item.FileSize, item.FileSize, info.Hdr, null);
         }
-        return Replace(item, temporary, source, info.Hdr);
+        // An AVI, MKV or WMV becomes an MP4 of the same name; the rest keeps its own.
+        string target = source;
+        if (VideoCompressor.BecomesMp4(source)) target = Path.ChangeExtension(source, Path.GetExtension(source).Any(char.IsUpper) ? ".MP4" : ".mp4");
+        return Replace(item, temporary, target, info.Hdr);
     }
 
     /// <summary>Hidden next to the file, with an extension no scan takes for a photo or a video.</summary>

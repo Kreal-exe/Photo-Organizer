@@ -1,5 +1,6 @@
 #import "POVKLoginWindowController.h"
 #import "POVKAlbum.h"
+#import "POVKBrowserCookies.h"
 #import "POStrings.h"
 #import <WebKit/WebKit.h>
 
@@ -35,7 +36,10 @@ static void POFindToken(id object, NSString **token, NSString **userID) {
     WKWebView *_webView;
     NSTextField *_hintLabel;
     NSButton *_doneButton;
+    NSButton *_browserButton;
+    POVKBrowserSession *_browserSession;
     BOOL _asking;
+    BOOL _importing;   // the browser's sign-in was just taken over: the next page must end with a token
 }
 
 + (POVKLoginWindowController *)sharedController {
@@ -67,6 +71,9 @@ static void POFindToken(id object, NSString **token, NSString **userID) {
 
     WKWebViewConfiguration *configuration = [WKWebViewConfiguration new];
     configuration.websiteDataStore = WKWebsiteDataStore.defaultDataStore;   // the sign-in survives relaunches
+    // Without this the page sees a web view, not a browser, and VK ID may refuse to sign in.
+    NSString *safari = [NSBundle bundleWithPath:@"/Applications/Safari.app"].infoDictionary[@"CFBundleShortVersionString"] ?: @"18.6";
+    configuration.applicationNameForUserAgent = [NSString stringWithFormat:@"Version/%@ Safari/605.1.15", safari];
     _webView = [[WKWebView alloc] initWithFrame:NSZeroRect configuration:configuration];
     _webView.navigationDelegate = self;
     _webView.translatesAutoresizingMaskIntoConstraints = NO;
@@ -79,7 +86,9 @@ static void POFindToken(id object, NSString **token, NSString **userID) {
     [_hintLabel setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
     _doneButton = [NSButton buttonWithTitle:POL(@"Готово") target:self action:@selector(done:)];
     _doneButton.keyEquivalent = @"\r";
-    NSStackView *bar = [NSStackView stackViewWithViews:@[_hintLabel, _doneButton]];
+    _browserButton = [NSButton buttonWithTitle:@"" target:self action:@selector(useBrowserSignIn:)];
+    _browserButton.hidden = YES;
+    NSStackView *bar = [NSStackView stackViewWithViews:@[_hintLabel, _browserButton, _doneButton]];
     bar.edgeInsets = NSEdgeInsetsMake(10, 14, 10, 14);
     bar.alignment = NSLayoutAttributeCenterY;
     bar.translatesAutoresizingMaskIntoConstraints = NO;
@@ -103,6 +112,9 @@ static void POFindToken(id object, NSString **token, NSString **userID) {
 
 - (void)showWindow:(id)sender {
     [super showWindow:sender];
+    _browserSession = POVKBrowserCookies.mostRecentSession;
+    _browserButton.hidden = !_browserSession;
+    if (_browserSession) _browserButton.title = [NSString stringWithFormat:POL(@"Взять вход из %@"), _browserSession.browserName];
     [_webView loadRequest:[NSURLRequest requestWithURL:[NSURL URLWithString:@"https://vk.ru/"]]];
 }
 
@@ -115,7 +127,59 @@ static void POFindToken(id object, NSString **token, NSString **userID) {
 }
 
 - (void)webView:(WKWebView *)webView didFinishNavigation:(WKNavigation *)navigation {
-    if ([self looksSignedIn:webView.URL]) [self askForTokenQuietly:YES];
+    if (_importing) {
+        _importing = NO;
+        _browserButton.enabled = YES;
+        [self askForTokenQuietly:NO];
+    } else if ([self looksSignedIn:webView.URL]) {
+        [self askForTokenQuietly:YES];
+    }
+}
+
+- (void)webView:(WKWebView *)webView didFailProvisionalNavigation:(WKNavigation *)navigation withError:(NSError *)error {
+    if (_importing && error.code != NSURLErrorCancelled) {
+        _importing = NO;
+        _browserButton.enabled = YES;
+        [self showProblem:error.localizedDescription];
+    }
+}
+
+- (void)showProblem:(NSString *)text {
+    _hintLabel.stringValue = text;
+    _hintLabel.textColor = NSColor.systemRedColor;
+}
+
+/// Copies the browser's VK cookies into this window and opens VK with them. The browser itself is left as it was.
+- (void)useBrowserSignIn:(id)sender {
+    POVKBrowserSession *session = _browserSession;
+    if (!session) return;
+    _browserButton.enabled = NO;
+    _hintLabel.stringValue = POL(@"macOS спросит разрешение на ключ браузера: нажмите «Разрешить». Приложение копирует только вход VK.");
+    _hintLabel.textColor = NSColor.secondaryLabelColor;
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        NSString *problem = nil;
+        NSArray<NSHTTPCookie *> *cookies = [POVKBrowserCookies cookiesOfSession:session error:&problem];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            typeof(self) me = weakSelf;
+            if (!me) return;
+            if (!cookies) {
+                me->_browserButton.enabled = YES;
+                [me showProblem:problem];
+                return;
+            }
+            dispatch_group_t group = dispatch_group_create();
+            WKHTTPCookieStore *store = me->_webView.configuration.websiteDataStore.httpCookieStore;
+            for (NSHTTPCookie *cookie in cookies) {
+                dispatch_group_enter(group);
+                [store setCookie:cookie completionHandler:^{ dispatch_group_leave(group); }];
+            }
+            dispatch_group_notify(group, dispatch_get_main_queue(), ^{
+                me->_importing = YES;
+                [me->_webView loadRequest:[NSURLRequest requestWithURL:[NSURL URLWithString:@"https://vk.ru/feed"]]];
+            });
+        });
+    });
 }
 
 - (void)done:(id)sender {
@@ -138,8 +202,7 @@ static void POFindToken(id object, NSString **token, NSString **userID) {
         }
         if (!token.length) {
             if (!quietly) {
-                me->_hintLabel.stringValue = POL(@"Не получилось получить доступ. Убедитесь, что вы вошли (видна ваша лента или страница), и нажмите «Готово» ещё раз.");
-                me->_hintLabel.textColor = NSColor.systemRedColor;
+                [me showProblem:POL(@"Не получилось получить доступ. Убедитесь, что вы вошли (видна ваша лента или страница), и нажмите «Готово» ещё раз.")];
             }
             return;
         }
