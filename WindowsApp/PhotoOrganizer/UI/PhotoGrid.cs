@@ -58,6 +58,11 @@ public sealed class PhotoGrid : Grid
     int _columns = 1;
     double _cell = 190;
     Point? _dragStart;
+    // Selecting with a frame dragged over the grid from an empty place, as in File Explorer: where it started, where the
+    // pointer is, and what was selected before (kept with Ctrl or Shift).
+    Point? _bandStart;
+    Point _bandEnd;
+    HashSet<PhotoItem> _bandBase = [];
     PhotoItem? _pressed;
 
     public double CellSize { get; private set; } = 190;
@@ -302,6 +307,9 @@ public sealed class PhotoGrid : Grid
 
     void Render(DrawingContext dc)
     {
+        // The whole grid takes the mouse, the empty places between and around the cells too: a frame is dragged from
+        // there (without anything drawn, a place does not get the click at all).
+        dc.DrawRectangle(Brushes.Transparent, null, new Rect(0, 0, _canvas.ActualWidth, _canvas.ActualHeight));
         double top = _scroll.VerticalOffset, bottom = top + _scroll.ViewportHeight;
         double pixelsPerDip = VisualTreeHelper.GetDpi(this).PixelsPerDip;
         int pixels = (int)(_cell * pixelsPerDip);
@@ -329,6 +337,30 @@ public sealed class PhotoGrid : Grid
             var (_, start, count) = _rows[r];
             for (int i = start; i < start + count; i++) DrawCell(dc, _flat[i], _cells[i], pixels, text, secondary);
         }
+        if (_bandStart is { } bandStart)
+        {
+            var accent = (Theme.Brush("Accent") as SolidColorBrush)?.Color ?? Color.FromRgb(0x0A, 0x84, 0xFF);
+            var fill = new SolidColorBrush(Color.FromArgb(0x30, accent.R, accent.G, accent.B));
+            dc.DrawRectangle(fill, new Pen(new SolidColorBrush(accent), 1), new Rect(bandStart, _bandEnd));
+        }
+    }
+
+    /// <summary>What the frame covers: every file whose cell it touches, added to what was selected before it.</summary>
+    void SelectInBand()
+    {
+        var band = new Rect(_bandStart!.Value, _bandEnd);
+        var selected = new HashSet<PhotoItem>(_bandBase);
+        for (int r = FirstRowReaching(band.Top); r < _rows.Count && _rows[r].Top <= band.Bottom; r++)
+        {
+            var (_, start, count) = _rows[r];
+            for (int i = start; i < start + count; i++)
+            {
+                if (_cells[i].IntersectsWith(band)) selected.Add(_flat[i]);
+            }
+        }
+        if (selected.SetEquals(_selected)) return;
+        _selected = selected;
+        Changed();
     }
 
     (string Text, string Brush)? Badge(PhotoItem item)
@@ -337,8 +369,9 @@ public sealed class PhotoGrid : Grid
         if (ShowsNudityScores && item.NudityScore is { } score) return ($"{score * 100:0} %", "BadgePink");
         if (item.IsDuplicate) return (L("Дубликат"), "BadgeOrange");
         if (item.Tiny) return (L("Миниатюра"), "BadgePurple");
-        if (ShowsOriginalBadge && item.BetterCopy != null) return (L("Хуже качеством"), "BadgeOrange");
-        if (ShowsOriginalBadge && item.BestOfCopies) return (L("Лучшее качество"), "BadgeGreen");
+        // A copy's badge says why it lost ("Перекодирован", "Меньше пикселей", "Легче на 30 %"), the best one's why it won.
+        if (ShowsOriginalBadge && item.BetterCopy != null) return (item.CopyNote ?? L(item.SameAsBest ? "Дубликат" : "Хуже качеством"), "BadgeOrange");
+        if (ShowsOriginalBadge && item.BestOfCopies) return (item.CopyNote ?? L(item.SameAsBest ? "Оригинал" : "Лучшее качество"), "BadgeGreen");
         if (ShowsOriginalBadge && item.Duplicates is { Count: > 0 }) return (L("Оригинал"), "BadgeGreen");
         return null;
     }
@@ -393,7 +426,8 @@ public sealed class PhotoGrid : Grid
         name.TextAlignment = TextAlignment.Center;
         dc.DrawText(name, new Point(rect.X - 4, rect.Bottom + 6));
         string size = item.PixelWidth > 0 ? $"{item.PixelWidth}×{item.PixelHeight}" : item.CloudOnly ? L("в облаке") : L("не читается");
-        var detail = Text($"{item.DateText()} · {size}", Regular, 11, secondary, rect.Width + 8);
+        // Among copies the weight matters as much as the frame: it is shown.
+        var detail = Text(ShowsOriginalBadge ? $"{item.DateText()} · {size} · {Strings.Size(item.FileSize)}" : $"{item.DateText()} · {size}", Regular, 11, secondary, rect.Width + 8);
         detail.TextAlignment = TextAlignment.Center;
         dc.DrawText(detail, new Point(rect.X - 4, rect.Bottom + 24));
         _ = failed;
@@ -451,11 +485,16 @@ public sealed class PhotoGrid : Grid
         }
         if (item == null)
         {
-            if (e.ChangedButton == MouseButton.Left && !control && !shift)
+            if (e.ChangedButton != MouseButton.Left) return;
+            // From an empty place: a frame is dragged, selecting what it covers (added to the selection with Ctrl or Shift).
+            _bandBase = control || shift ? [.. _selected] : [];
+            if (!control && !shift)
             {
                 _selected.Clear();
                 Changed();
             }
+            _bandStart = _bandEnd = point;
+            _canvas.CaptureMouse();
             return;
         }
         if (e.ChangedButton == MouseButton.Right)
@@ -493,6 +532,13 @@ public sealed class PhotoGrid : Grid
     protected override void OnPreviewMouseUp(MouseButtonEventArgs e)
     {
         base.OnPreviewMouseUp(e);
+        if (_bandStart != null && e.ChangedButton == MouseButton.Left)
+        {
+            _bandStart = null;
+            _canvas.ReleaseMouseCapture();
+            _canvas.InvalidateVisual();
+            return;
+        }
         if (_dragStart != null && _pressed != null && e.ChangedButton == MouseButton.Left && Keyboard.Modifiers == ModifierKeys.None)
         {
             _selected = [_pressed];
@@ -507,6 +553,24 @@ public sealed class PhotoGrid : Grid
     {
         base.OnPreviewMouseMove(e);
         var point = e.GetPosition(_canvas);
+        if (_bandStart != null)
+        {
+            if (e.LeftButton != MouseButtonState.Pressed)
+            {
+                _bandStart = null;
+                _canvas.ReleaseMouseCapture();
+                _canvas.InvalidateVisual();
+                return;
+            }
+            // Near the top or the bottom the grid scrolls on, so that the frame can reach further.
+            double top = _scroll.VerticalOffset, bottom = top + _scroll.ViewportHeight;
+            if (point.Y < top + 24) _scroll.ScrollToVerticalOffset(Math.Max(0, top - 30));
+            else if (point.Y > bottom - 24) _scroll.ScrollToVerticalOffset(top + 30);
+            _bandEnd = new Point(Math.Clamp(point.X, 0, _canvas.ActualWidth), Math.Clamp(point.Y, 0, _canvas.ActualHeight));
+            SelectInBand();
+            _canvas.InvalidateVisual();
+            return;
+        }
         if (_dragStart is { } start && e.LeftButton == MouseButtonState.Pressed && (point - start).Length > 10)
         {
             _dragStart = null;

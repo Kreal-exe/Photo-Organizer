@@ -1,7 +1,7 @@
 #!/bin/bash
-# Builds Photo Organizer for macOS and puts it on the Desktop.
+# Builds Photo Organizer for macOS and installs it into /Applications, then opens it.
 #
-#   ./build.sh           build and install (relaunches the app if it was running)
+#   ./build.sh           build, install into /Applications and open the app
 #   ./build.sh --test    run the core tests first (dates, plan, duplicates, moves, undo)
 #   ./build.sh --zip     also write dist/PhotoOrganizer-macOS-v<version>.zip for a release
 #
@@ -11,7 +11,7 @@ ROOT="$(cd "$(dirname "$0")" && pwd)"
 NAME="PhotoOrganizer"
 BUNDLE_ID="local.photo-organizer"
 VERSION="$(tr -d '[:space:]' < "$ROOT/VERSION")"
-DEST="${INSTALL_DIR:-$HOME/Desktop}"
+DEST="${INSTALL_DIR:-/Applications}"
 TEST=0
 ZIP=0
 for arg in "$@"; do
@@ -98,5 +98,6 @@ rm -rf "$DEST/$NAME.app"
 ditto "$APP" "$DEST/$NAME.app"
 echo "Installed: $DEST/$NAME.app"
 
-[ "$WAS_RUNNING" = 1 ] && open "$DEST/$NAME.app"
+# Opened right away, except on a CI runner.
+[ -n "${CI:-}" ] || open "$DEST/$NAME.app"
 exit 0

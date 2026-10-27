@@ -44,6 +44,46 @@ public sealed class RasterImage(int width, int height, byte[] bgr)
 /// <summary>Decodes pictures with the Windows Imaging Component — the codecs Windows itself uses (JPEG, PNG, HEIC, RAW…).</summary>
 public static class Images
 {
+    /// <summary>
+    /// Whether a picture carries HDR: a JPEG or HEIC with a gain map (Apple's, or the ISO 21496-1 one of Ultra HDR), or
+    /// a PNG or AVIF that says its colours are PQ or HLG. Found by the marks those write near the start of the file.
+    /// </summary>
+    public static bool IsHdr(string path)
+    {
+        try
+        {
+            using var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 1 << 16);
+            var head = new byte[Math.Min(file.Length, 4 << 20)];
+            int read = 0;
+            while (read < head.Length)
+            {
+                int n = file.Read(head, read, head.Length - read);
+                if (n <= 0) break;
+                read += n;
+            }
+            var data = head.AsSpan(0, read);
+            if (data.Length < 12) return false;
+            if (data[0] == 0xFF && data[1] == 0xD8)   // JPEG: Ultra HDR's XMP, the ISO gain map, Apple's gain map
+                return data.IndexOf("hdrgm:Version"u8) >= 0 || data.IndexOf("urn:iso:std:iso:ts:21496"u8) >= 0 || data.IndexOf("HDRGainMap"u8) >= 0;
+            if (data.Slice(4, 4).SequenceEqual("ftyp"u8))   // HEIC, AVIF: an auxiliary gain map, or PQ/HLG colours (nclx transfer 16/18)
+            {
+                if (data.IndexOf("urn:com:apple:photo:2020:aux:hdrgainmap"u8) >= 0 || data.IndexOf("urn:iso:std:iso:ts:21496"u8) >= 0) return true;
+                int colr = data.IndexOf("colrnclx"u8);
+                return colr >= 0 && colr + 12 <= data.Length && data[colr + 11] is 16 or 18;
+            }
+            if (data[1] == 'P' && data[2] == 'N' && data[3] == 'G')   // PNG: a cICP chunk with PQ or HLG
+            {
+                int cicp = data.IndexOf("cICP"u8);
+                return cicp >= 0 && cicp + 6 <= data.Length && data[cicp + 5] is 16 or 18;
+            }
+            return false;
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            return false;
+        }
+    }
+
     /// <summary>The picture at most `side` pixels along its longer edge, turned upright; null when it can't be decoded.</summary>
     public static RasterImage? Load(string path, int side)
     {
@@ -82,6 +122,71 @@ public static class Images
                                     or FileFormatException)
         {
             return null;
+        }
+    }
+
+    /// <summary>What a sample becomes: as it is (0…255), on a 0…1 scale, or normalized with a mean and a deviation.</summary>
+    public enum SampleValue { Raw, Unit, Normalized }
+
+    /// <summary>
+    /// The pixels a model is given: the picture sampled bilinearly at `width`×`height` from (left, top), `scaleX` and
+    /// `scaleY` output pixels to a picture's pixel, into `output` from `offset` — planes one after another (channel,
+    /// row, column), or `interleaved` (row, column, channel). `channels` names, for each output channel, the picture's
+    /// (0 blue, 1 green, 2 red). With `blankOutside` what falls outside the picture is left as it is, otherwise the
+    /// edge is repeated. The positions and weights of a row and a column are worked out once, not for every pixel:
+    /// this ran for every model and every picture, and kept the processor busy while the graphics card waited.
+    /// </summary>
+    public static unsafe void Sample(RasterImage image, double left, double top, double scaleX, double scaleY, int width, int height,
+                                     Span<float> output, int offset, bool interleaved, int[] channels, SampleValue value,
+                                     float[]? mean = null, float[]? std = null, bool blankOutside = false)
+    {
+        int w = image.Width, h = image.Height, count = channels.Length, plane = width * height;
+        var x0s = new int[width];
+        var x1s = new int[width];
+        var fxs = new float[width];
+        var inside = new bool[width];
+        for (int x = 0; x < width; x++)
+        {
+            double sx = left + (x + 0.5) / scaleX - 0.5;
+            inside[x] = !blankOutside || (sx >= -0.5 && sx <= w - 0.5);
+            sx = Math.Clamp(sx, 0, w - 1);
+            int x0 = (int)sx;
+            x0s[x] = x0 * 3;
+            x1s[x] = Math.Min(w - 1, x0 + 1) * 3;
+            fxs[x] = (float)(sx - x0);
+        }
+        fixed (byte* bgr = image.Bgr)
+        fixed (float* target = output)
+        {
+            for (int y = 0; y < height; y++)
+            {
+                double sy = top + (y + 0.5) / scaleY - 0.5;
+                if (blankOutside && (sy < -0.5 || sy > h - 0.5)) continue;
+                sy = Math.Clamp(sy, 0, h - 1);
+                int y0 = (int)sy, y1 = Math.Min(h - 1, y0 + 1);
+                float fy = (float)(sy - y0);
+                byte* upperRow = bgr + (long)y0 * w * 3, lowerRow = bgr + (long)y1 * w * 3;
+                for (int x = 0; x < width; x++)
+                {
+                    if (!inside[x]) continue;
+                    float fx = fxs[x];
+                    int a = x0s[x], b = x1s[x];
+                    for (int c = 0; c < count; c++)
+                    {
+                        int channel = channels[c];
+                        float upper = upperRow[a + channel] * (1 - fx) + upperRow[b + channel] * fx;
+                        float lower = lowerRow[a + channel] * (1 - fx) + lowerRow[b + channel] * fx;
+                        float v = upper * (1 - fy) + lower * fy;
+                        v = value switch
+                        {
+                            SampleValue.Unit => v / 255f,
+                            SampleValue.Normalized => (v / 255f - mean![c]) / std![c],
+                            _ => v,
+                        };
+                        target[interleaved ? offset + (y * width + x) * count + c : offset + c * plane + y * width + x] = v;
+                    }
+                }
+            }
         }
     }
 

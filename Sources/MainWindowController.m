@@ -35,7 +35,7 @@ static NSToolbarItemIdentifier const POToolbarReveal = @"reveal";
 static NSToolbarItemIdentifier const POToolbarScheme = @"scheme";
 static NSToolbarItemIdentifier const POToolbarSearch = @"search";
 static NSString *const POSoloPersonKey = @"personAloneOnly";
-static NSString *const POGroupingKey = @"gridGrouping";   // 0 years, 1 months, 2 days
+static NSString *const POGroupingKey = @"gridGrouping";   // 0 years, 1 months, 2 days, 3 by size
 static NSString *const POMediaKindKey = @"mediaKind";     // a POQuickFilter
 
 /// Raised by "Остановить" on the progress page; the copying looks at it before each file.
@@ -44,6 +44,64 @@ static NSString *const POMediaKindKey = @"mediaKind";     // a POQuickFilter
 @end
 
 @implementation POStopFlag
+@end
+
+/// How long a long task has left, at the speed of the last minute and a half (files looked at before go by at once and
+/// would make it look much faster than it is): "осталось ≈ 1 ч 20 мин". The same on Windows (Eta).
+typedef NS_ENUM(NSInteger, POCompressState) { POCompressWaiting, POCompressRunning, POCompressDone, POCompressKept, POCompressFailed };
+
+/// One file of the compressing queue, as the details show it.
+@interface POCompressEntry : NSObject
+@property (nonatomic, strong) POPhotoItem *item;
+@property (nonatomic) NSInteger megapixels;
+@property (nonatomic, strong, nullable) POVideoInfo *info;
+@property (nonatomic, strong, nullable) POVideoJob *job;
+@property (nonatomic) POCompressState state;
+@property (nonatomic) double fraction;
+/// For the file under way: what it is turned into and how fast it goes.
+@property (nonatomic, copy, nullable) NSString *detail;
+@property (nonatomic, strong, nullable) POCompressionOutcome *outcome;
+/// When the work on it began, and how long it took (see compressLeft).
+@property (nonatomic, strong, nullable) NSDate *started;
+@property (nonatomic) double seconds;
+@end
+
+@implementation POCompressEntry
+@end
+
+@interface POEta : NSObject
+- (NSString *)textForDone:(double)done total:(double)total;
+@end
+
+@implementation POEta {
+    NSDate *_start;
+    NSMutableArray<NSArray<NSNumber *> *> *_samples;   // [seconds, done]
+}
+
+- (instancetype)init {
+    if ((self = [super init])) {
+        _start = [NSDate date];
+        _samples = [NSMutableArray array];
+    }
+    return self;
+}
+
+- (NSString *)textForDone:(double)done total:(double)total {
+    double now = -_start.timeIntervalSinceNow;
+    // A jump (the files known from before) starts the measure anew.
+    if (_samples.count && done < _samples.lastObject[1].doubleValue) [_samples removeAllObjects];
+    [_samples addObject:@[@(now), @(done)]];
+    while (_samples.count > 2 && now - _samples.firstObject[0].doubleValue > 90) [_samples removeObjectAtIndex:0];
+    double span = now - _samples.firstObject[0].doubleValue, rate = span > 0 ? (done - _samples.firstObject[1].doubleValue) / span : 0;
+    if (span < 10 || rate <= 0 || done >= total) return @"";
+    double seconds = (total - done) / rate;
+    long minutes = lround(seconds / 60);
+    NSString *left = seconds < 60 ? POL(@"меньше минуты")
+                   : minutes < 60 ? [NSString stringWithFormat:POL(@"%@ мин"), @(minutes)]
+                   : [NSString stringWithFormat:POL(@"%@ ч %@ мин"), @(minutes / 60), @(minutes % 60)];
+    return [NSString stringWithFormat:POL(@"осталось ≈ %@"), left];
+}
+
 @end
 
 @interface MainWindowController () <NSToolbarDelegate, NSWindowDelegate, NSDraggingDestination, POSidebarDelegate, NSSearchFieldDelegate>
@@ -85,6 +143,17 @@ static POMediaKind POMediaKindOfItem(POPhotoItem *item);
     NSArray<POPhotoItem *> *_placeItems;  // the files of the map marker that was clicked; nil while the map shows
     NSString *_similarTitle;              // the title of the search results: by photo, or "Этот человек…" by face
     POStopFlag *_copyStop;                // set by "Остановить" while files are being copied; nil otherwise
+    // Compressing in the background (see compressPhotos:…): the queue, what is queued, what came of it, how far it is.
+    NSMutableArray<POCompressEntry *> *_compressEntries;   // every file queued since compressing began, in order
+    NSHashTable<POPhotoItem *> *_compressQueued;
+    POStopFlag *_compressStop;            // set while compressing
+    NSPopover *_compressPopover;          // the details, opened by a click on the bar
+    NSTextField *_popoverSummary, *_popoverCurrent;
+    NSProgressIndicator *_popoverTotal, *_popoverFile;
+    NSTextView *_popoverList;
+    NSDate *_compressListShown;
+    BOOL _compressStoppedByHand, _resumeAsked;
+    BOOL _scanInBackground, _scanShownInBackground;   // the open library scanned again behind it
     NSTimer *_searchTimer;                // the grid follows the search field once typing pauses
     NSTimer *_regroupTimer;               // people are grouped again every few seconds while faces are being found
     BOOL _regrouping, _regroupAgain;
@@ -172,13 +241,13 @@ static POMediaKind POMediaKindOfItem(POPhotoItem *item);
 - (NSToolbarItem *)toolbar:(NSToolbar *)toolbar itemForItemIdentifier:(NSToolbarItemIdentifier)identifier willBeInsertedIntoToolbar:(BOOL)flag {
     if ([identifier isEqualToString:POToolbarScheme]) {
         _schemeItem = [NSToolbarItemGroup groupWithItemIdentifier:identifier
-                                                           titles:@[POL(@"По годам"), POL(@"По месяцам"), POL(@"По дням")]
+                                                           titles:@[POL(@"По годам"), POL(@"По месяцам"), POL(@"По дням"), POL(@"По размеру")]
                                                     selectionMode:NSToolbarItemGroupSelectionModeSelectOne
-                                                           labels:@[POL(@"По годам"), POL(@"По месяцам"), POL(@"По дням")]
+                                                           labels:@[POL(@"По годам"), POL(@"По месяцам"), POL(@"По дням"), POL(@"По размеру")]
                                                            target:self
                                                            action:@selector(groupingChanged:)];
         _schemeItem.label = POL(@"Группировка");
-        _schemeItem.toolTip = POL(@"Как делить фото на разделы в окне: по годам, месяцам или дням. На раскладку файлов по папкам не влияет.");
+        _schemeItem.toolTip = POL(@"Как делить фото на разделы в окне: по годам, месяцам, дням или по размеру файла (сначала самые большие). На раскладку файлов по папкам не влияет.");
         _schemeItem.selectedIndex = [self grouping];
         _schemeItem.enabled = _plan != nil;
         return _schemeItem;
@@ -236,6 +305,12 @@ static POMediaKind POMediaKindOfItem(POPhotoItem *item);
 }
 
 - (BOOL)validateAction:(SEL)action {
+    // While compressing in the background, nothing else moves or removes files.
+    if (_compressStop && (action == @selector(moveSelectionToFolder:) || action == @selector(moveShownToFolder:) || action == @selector(trashSelection:)
+                          || action == @selector(organize:) || action == @selector(rescan:) || action == @selector(removeDuplicates:)
+                          || action == @selector(removeDuplicatesByFolder:) || action == @selector(arrangeShown:))) {
+        return NO;
+    }
     if (action == @selector(openDocument:)) return !_organizing;
     if (action == @selector(rescan:)) return _rootURL && !_scanner && !_organizing;
     if (action == @selector(revealRootInFinder:)) return _rootURL != nil;
@@ -377,7 +452,18 @@ static POMediaKind POMediaKindOfItem(POPhotoItem *item);
 }
 
 - (IBAction)rescan:(id)sender {
-    if (_rootURL && !_organizing) [self startScan];
+    if (!_rootURL || _organizing || _compressStop) return;
+    // The open library stays on screen while it is scanned again; the scan's progress goes to the status line.
+    _scanInBackground = _plan != nil;
+    [self startScan];
+    _scanInBackground = NO;
+}
+
+/// The scan's progress: in place of the library for a folder opened anew (there is nothing to show yet), in the
+/// status line for the open library scanned again. As on Windows.
+- (void)showScanProgress:(NSString *)text fraction:(double)fraction {
+    if (_scanShownInBackground) [_content setAnalysisStatus:text];
+    else [_content showProgressWithText:text fraction:fraction cancellable:YES];
 }
 
 - (IBAction)revealRootInFinder:(id)sender {
@@ -399,7 +485,16 @@ static POMediaKind POMediaKindOfItem(POPhotoItem *item);
     // Files in the duplicates and thumbnails folders are never chosen as originals.
     scanner.deprioritizedFolders = @[POPlan.savedDuplicatesFolderName, POPlan.defaultTinyFolderName];
     _scanner = scanner;
-    [_content showProgressWithText:POL(@"Поиск фото и видео…") fraction:-1 cancellable:YES];
+    // Never a page in place of the library: the progress goes to the status line. A folder opened anew shows the
+    // library at once, empty for the second the scan takes (it reads what earlier scans found). As on Windows.
+    _scanShownInBackground = YES;
+    if (!_scanInBackground) {
+        _plan = nil;
+        [self reloadSidebar];
+        [self updateGrid];
+    }
+    [_content showResults];
+    [self showScanProgress:POL(@"Поиск фото и видео…") fraction:-1];
     [self updateUI];
 
     __weak typeof(self) weakSelf = self;
@@ -414,17 +509,15 @@ static POMediaKind POMediaKindOfItem(POPhotoItem *item);
     if (scanner != _scanner) return;
     switch (phase) {
         case POScanPhaseEnumerating:
-            [_content showProgressWithText:[NSString stringWithFormat:POL(@"Поиск фото и видео… найдено %@"), PONumber(done)] fraction:-1 cancellable:YES];
+            [self showScanProgress:[NSString stringWithFormat:POL(@"Поиск фото и видео… найдено %@"), PONumber(done)] fraction:-1];
             break;
         case POScanPhaseMetadata:
-            [_content showProgressWithText:[NSString stringWithFormat:POL(@"Чтение дат и размеров: %@ из %@"), PONumber(done), PONumber(total)]
-                                  fraction:(double)done / total
-                               cancellable:YES];
+            [self showScanProgress:[NSString stringWithFormat:POL(@"Чтение дат и размеров: %@ из %@"), PONumber(done), PONumber(total)]
+                          fraction:(double)done / total];
             break;
         case POScanPhaseDuplicates:
-            [_content showProgressWithText:[NSString stringWithFormat:POL(@"Поиск дубликатов: %@ из %@"), PONumber(done), PONumber(total)]
-                                  fraction:(double)done / total
-                               cancellable:YES];
+            [self showScanProgress:[NSString stringWithFormat:POL(@"Сверка файлов одного размера: %@ из %@"), PONumber(done), PONumber(total)]
+                          fraction:(double)done / total];
             break;
     }
 }
@@ -440,6 +533,8 @@ static POMediaKind POMediaKindOfItem(POPhotoItem *item);
         [self planDidChange];
         [self updateSearchSuggestions];   // what this folder holds, not the last one
         [self startAnalysis];
+        // Leftovers of a compressing closed halfway, and whether to go on.
+        dispatch_async(dispatch_get_main_queue(), ^{ [self resumeCompressing]; });
     }
     [self updateUI];
 }
@@ -528,7 +623,7 @@ static POMediaKind POMediaKindOfItem(POPhotoItem *item);
 
 - (NSInteger)grouping {
     id saved = [NSUserDefaults.standardUserDefaults objectForKey:POGroupingKey];
-    return saved ? MIN(MAX([saved integerValue], 0), 2) : 1;   // by month unless chosen otherwise
+    return saved ? MIN(MAX([saved integerValue], 0), 3) : 1;   // by month unless chosen otherwise; 3 is by size
 }
 
 - (void)groupingChanged:(NSToolbarItemGroup *)sender {
@@ -552,10 +647,36 @@ static NSString *POFilesDetail(NSUInteger count) {
     return POCount(count, POL(@"файл"), POL(@"файла"), POL(@"файлов"));
 }
 
+/// The largest files first, in sections by size: what weighs the most is found at once (videos to compress).
+static NSArray<POGridSection *> *POSectionsBySize(NSArray<POPhotoItem *> *items) {
+    NSArray<POPhotoItem *> *sorted = [items sortedArrayUsingComparator:^NSComparisonResult(POPhotoItem *a, POPhotoItem *b) {
+        if (a.fileSize != b.fileSize) return a.fileSize > b.fileSize ? NSOrderedAscending : NSOrderedDescending;
+        return [a.date compare:b.date];
+    }];
+    long long froms[] = {1000000000, 500000000, 100000000, 10000000, 1000000, 0};
+    NSArray<NSString *> *titles = @[POL(@"Больше 1 ГБ"), POL(@"500 МБ – 1 ГБ"), POL(@"100–500 МБ"), POL(@"10–100 МБ"), POL(@"1–10 МБ"), POL(@"Меньше 1 МБ")];
+    NSMutableArray<POGridSection *> *sections = [NSMutableArray array];
+    NSUInteger at = 0;
+    for (NSUInteger band = 0; band < titles.count; band++) {
+        NSMutableArray<POPhotoItem *> *members = [NSMutableArray array];
+        unsigned long long bytes = 0;
+        while (at < sorted.count && (long long)sorted[at].fileSize >= froms[band]) {
+            bytes += sorted[at].fileSize;
+            [members addObject:sorted[at++]];
+        }
+        if (!members.count) continue;
+        NSString *detail = [NSString stringWithFormat:@"%@ · %@", POFilesDetail(members.count),
+                            [NSByteCountFormatter stringFromByteCount:(long long)bytes countStyle:NSByteCountFormatterCountStyleFile]];
+        [sections addObject:[POGridSection sectionWithTitle:titles[band] detail:detail symbolName:@"internaldrive" items:members]];
+    }
+    return sections;
+}
+
 /// Splits date-ordered files into sections by year, month or day ("май 2019 г."). A file whose date is known
 /// less precisely than that goes into a section of its own ("2019") instead of a made-up month or day, and
 /// undated files close the list.
 static NSArray<POGridSection *> *POSectionsByDate(NSArray<POPhotoItem *> *items, NSInteger grouping) {
+    if (grouping == 3) return POSectionsBySize(items);
     static NSDateFormatter *yearFormat, *monthFormat, *dayFormat;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
@@ -643,16 +764,9 @@ static NSArray<POGridSection *> *POSectionsByFolder(NSArray<POPhotoItem *> *item
 - (IBAction)toggleKindIncluded:(NSButton *)sender {
     if (sender.tag < POMediaKindPhotos || sender.tag > POMediaKindScreenshots) return;
     BOOL on = sender.state == NSControlStateValueOn;
+    // Shown or hidden only: what is organized is chosen in the organize sheet.
     [POPlan setOrganizes:on kind:sender.tag];
     if (_plan) {
-        switch ((POMediaKind)sender.tag) {
-            case POMediaKindPhotos: _plan.organizesPhotos = on; break;
-            case POMediaKindVideos: _plan.organizesVideos = on; break;
-            case POMediaKindPictures: _plan.organizesPictures = on; break;
-            case POMediaKindCollages: _plan.organizesCollages = on; break;
-            case POMediaKindScreenshots: _plan.organizesScreenshots = on; break;
-        }
-        [_plan rebuild];
         [self reloadSidebar];
         [self updateUI];
     }
@@ -764,6 +878,35 @@ static POMediaKind POMediaKindOfItem(POPhotoItem *item) {
 
     NSArray<POPhotoItem *> *base = [self itemsForFilter:filter];
     NSArray<POPhotoItem *> *items = base ? narrow(base) : @[];
+    // Where only videos are shown, one resolution of them can be chosen.
+    BOOL videosOnly = filter.kind == POFilterKindVideos || (media == POQuickFilterVideos && filter.kind == POFilterKindAll);
+    NSInteger resolution = MIN(MAX([NSUserDefaults.standardUserDefaults integerForKey:@"videoResolution"], 0), 4);
+    NSMutableArray<NSNumber *> *resolutionCounts = nil;
+    if (videosOnly) {
+        NSInteger counts[5] = {0};
+        for (POPhotoItem *item in items) {
+            if (!item.isVideo) continue;
+            counts[0]++;
+            if (item.pixelWidth > 0) counts[1 + POResolutionClassOfSize(item.pixelWidth, item.pixelHeight)]++;
+        }
+        if (counts[0]) {
+            resolutionCounts = [NSMutableArray array];
+            for (int i = 0; i < 5; i++) [resolutionCounts addObject:@(counts[i])];
+            // The resolution chosen has no video left (the last one deleted or compressed): all of them again, rather
+            // than an empty view. As on Windows.
+            if (resolution > 0 && !counts[resolution]) {
+                resolution = 0;
+                [NSUserDefaults.standardUserDefaults setInteger:0 forKey:@"videoResolution"];
+            }
+            if (resolution > 0) {
+                items = [items filteredArrayUsingPredicate:[NSPredicate predicateWithBlock:^BOOL(POPhotoItem *item, NSDictionary *bindings) {
+                    return !item.isVideo || (item.pixelWidth > 0 && POResolutionClassOfSize(item.pixelWidth, item.pixelHeight) == resolution - 1);
+                }]];
+            }
+        }
+    }
+    if (!resolutionCounts) resolution = 0;
+    [_content setVideoResolutionCounts:resolutionCounts selected:resolution];
     NSMutableArray<POGridSection *> *sections = [NSMutableArray array];
     NSString *placeholder = nil;
     switch (filter.kind) {
@@ -820,11 +963,16 @@ static POMediaKind POMediaKindOfItem(POPhotoItem *item) {
             // Resized or recompressed versions of one picture: the best one, then the lesser ones.
             NSMutableArray<POPhotoItem *> *all = [NSMutableArray array];
             for (NSArray<POPhotoItem *> *set in _copySets) {
-                if (!narrow(set).count) continue;
-                [all addObjectsFromArray:set];
+                // The thumbnails have a view (and a button) of their own: here only the copies "Удалить дубликаты"
+                // takes, so that what it leaves is no longer shown as duplicates.
+                NSMutableArray<POPhotoItem *> *members = [NSMutableArray arrayWithObject:set.firstObject];
+                for (NSUInteger i = 1; i < set.count; i++) if (!set[i].isTiny) [members addObject:set[i]];
+                if (members.count < 2 || !narrow(members).count) continue;
+                [all addObjectsFromArray:members];
                 [sections addObject:[POGridSection sectionWithTitle:set.firstObject.url.lastPathComponent
-                                                             detail:POCount(set.count - 1, POL(@"копия хуже качеством"), POL(@"копии хуже качеством"), POL(@"копий хуже качеством"))
-                                                         symbolName:@"square.on.square.dashed" items:set]];
+                                                             detail:set.firstObject.sameAsBest ? POCount(members.count - 1, POL(@"копия"), POL(@"копии"), POL(@"копий"))
+                                                                                               : POCount(members.count - 1, POL(@"копия хуже качеством"), POL(@"копии хуже качеством"), POL(@"копий хуже качеством"))
+                                                         symbolName:@"square.on.square.dashed" items:members]];
             }
             // One section per set: the kept original followed by its exact copies.
             for (POPhotoItem *item in _plan.items) {
@@ -883,7 +1031,7 @@ static POMediaKind POMediaKindOfItem(POPhotoItem *item) {
         for (POPhotoItem *item in items) if ((canAccept = [suggester bestSuggestionForItem:item] != nil)) break;
     }
     [_content setShowsDateButtons:undatedView && items.count > 0 canAcceptSuggestions:canAccept];
-    NSString *gridKey = [NSString stringWithFormat:@"%ld|%@|%ld|%ld|%@", (long)filter.kind, filter.folder, (long)(media * 32 + included[0].intValue + included[1].intValue * 2 + included[2].intValue * 4 + included[3].intValue * 8 + included[4].intValue * 16), (long)[self grouping],
+    NSString *gridKey = [NSString stringWithFormat:@"%ld|%@|%ld|%ld|%@", (long)filter.kind, filter.folder, (long)(media * 32 + included[0].intValue + included[1].intValue * 2 + included[2].intValue * 4 + included[3].intValue * 8 + included[4].intValue * 16), (long)([self grouping] * 10 + resolution),
                          [_searchTokens componentsJoinedByString:@" "]];
     [_content.grid setSections:sections showsOriginalBadge:filter.kind == POFilterKindDuplicates keepScroll:[gridKey isEqualToString:_lastGridKey]];
     _lastGridKey = gridKey;
@@ -898,6 +1046,27 @@ static POMediaKind POMediaKindOfItem(POPhotoItem *item) {
         [_content setCleanupButtonTitle:nil toolTip:nil];
     }
     [_content setShowsDuplicatesByFolder:filter.kind == POFilterKindDuplicates && _plan.duplicateItems.count > 0];
+    // Only where there is a RAW and another version of the same shot.
+    BOOL rawAndJpeg = NO;
+    if (filter.kind == POFilterKindDuplicates) {
+        for (NSArray<POPhotoItem *> *set in _copySets) {
+            BOOL raw = NO, other = NO;
+            for (POPhotoItem *item in set) {
+                if (POIsRawItem(item)) raw = YES; else other = YES;
+            }
+            if (raw && other) { rawAndJpeg = YES; break; }
+        }
+    }
+    // Not while the compressed copies are kept, which keeps the JPEG of such a pair.
+    [_content setShowsRawPreference:rawAndJpeg && POSimilarCopies.compressedPreference == 0 selected:POSimilarCopies.rawPreference];
+    // Only where a copy could be the compressed one: a video kept twice, a RAW next to another version of its shot.
+    BOOL compressible = rawAndJpeg;
+    if (filter.kind == POFilterKindDuplicates && !compressible) {
+        for (NSArray<POPhotoItem *> *set in _copySets) {
+            if (set.count > 1 && set.firstObject.isVideo) { compressible = YES; break; }
+        }
+    }
+    [_content setShowsCompressedPreference:compressible selected:POSimilarCopies.compressedPreference];
     // The strip counts within the selection (and the search), so "Видео 3" means three videos of this year. Its
     // checkboxes show what is ticked, also on a type row, which shows every kind whatever is ticked.
     NSArray<POPhotoItem *> *searched = [self searchResultsIn:base ?: @[]];
@@ -1372,7 +1541,19 @@ static BOOL POIsStillThere(POPhotoItem *item) {
         if (keeper && [doomed containsObject:keeper]) keeper = keeper.betterCopy && ![doomed containsObject:keeper.betterCopy] ? keeper.betterCopy : nil;
         if (keeper && POIsStillThere(keeper)) [safe addObject:item];
     }
-    if (!safe.count) return;
+    if (!safe.count) {
+        // Said, rather than nothing happening.
+        NSAlert *alert = [NSAlert new];
+        alert.messageText = POL(@"Удалить дубликаты…");
+        alert.informativeText = doomed.count
+            ? POL(@"Оригиналы этих копий изменились на диске после сканирования — пересканируйте папку (F5), тогда их можно будет удалить.")
+            : [_content.analysisStatus isEqualToString:POL(@"Поиск похожих копий…")]
+                ? POL(@"Похожие копии (RAW и JPEG одного кадра, уменьшенные и пережатые версии) ещё ищутся — попробуйте через минуту.")
+                : thumbnailsOnly ? POL(@"Миниатюр, у которых есть оригинал большего размера, нет.")
+                : POL(@"Удалять нечего: копий, у которых остаётся оригинал, нет.");
+        [alert beginSheetModalForWindow:self.window completionHandler:nil];
+        return;
+    }
     unsigned long long bytes = 0;
     for (POPhotoItem *item in safe) bytes += item.fileSize;
 
@@ -1864,6 +2045,40 @@ static BOOL POIsStillThere(POPhotoItem *item) {
     _organizing = YES;
 }
 
+#pragma mark - Videos by resolution
+
+- (IBAction)chooseVideoResolution:(id)sender {
+    NSInteger resolution = [sender isKindOfClass:NSPopUpButton.class] ? ((NSPopUpButton *)sender).selectedTag : [sender tag];
+    [NSUserDefaults.standardUserDefaults setInteger:resolution forKey:@"videoResolution"];
+    [self updateGrid];
+}
+
+#pragma mark - RAW and JPEG
+
+/// Which copy is kept, the better or the compressed one: the sets are put in order again and everything follows.
+- (IBAction)chooseCompressedPreference:(id)sender {
+    NSInteger preference = [sender isKindOfClass:NSPopUpButton.class] ? ((NSPopUpButton *)sender).selectedTag : [sender tag];
+    if (preference == POSimilarCopies.compressedPreference || !_plan) return;
+    POSimilarCopies.compressedPreference = preference;
+    _copySets = [POSimilarCopies reorderedSets:_copySets];
+    [_plan rebuild];
+    [self reloadSidebar];
+    [self updateGrid];
+    [self updateUI];
+}
+
+/// Of a RAW and a JPEG of one shot, which is kept: the sets are put in order again and everything follows.
+- (IBAction)chooseRawPreference:(id)sender {
+    NSInteger preference = [sender isKindOfClass:NSPopUpButton.class] ? ((NSPopUpButton *)sender).selectedTag : [sender tag];
+    if (preference == POSimilarCopies.rawPreference || !_plan) return;
+    POSimilarCopies.rawPreference = preference;
+    _copySets = [POSimilarCopies reorderedSets:_copySets];
+    [_plan rebuild];
+    [self reloadSidebar];
+    [self updateGrid];
+    [self updateUI];
+}
+
 #pragma mark - Compressing
 
 /// The selected files, the one in the viewer, or everything shown when nothing is selected.
@@ -1894,70 +2109,444 @@ static BOOL POIsStillThere(POPhotoItem *item) {
     [self.window.contentViewController presentViewControllerAsSheet:sheet];
 }
 
+/// Adds the files to the queue, compressed in the background — the library can be looked through meanwhile, and
+/// "Сжать…" again adds more; the bar at the bottom says how far it is and stops it, a click on it opens the details and
+/// the queue. As on Windows.
 - (void)compressPhotos:(NSArray<POPhotoItem *> *)photos megapixels:(NSInteger)megapixels videos:(NSArray<NSArray *> *)videos {
-    if (!photos.count && !videos.count) return;
-    if (_content.showsViewer) [_content.viewer close];
-    POStopFlag *stop = [POStopFlag new];
-    _copyStop = stop;
-    [self beginMovingFiles];
-    [_content showProgressWithText:POL(@"Сжатие…") fraction:-1 cancelTitle:POL(@"Остановить")];
-    [self updateUI];
-    NSUInteger total = photos.count + videos.count;
-    NSMutableArray<POCompressionOutcome *> *outcomes = [NSMutableArray array];
-    __block long long freed = 0;
-    __weak typeof(self) weakSelf = self;
-    void (^report)(NSString *, double) = ^(NSString *current, double fraction) {
-        NSUInteger done;
-        long long saved;
-        @synchronized (outcomes) {
-            done = outcomes.count;
-            saved = freed;
-        }
-        dispatch_async(dispatch_get_main_queue(), ^{
-            typeof(self) me = weakSelf;
-            if (!me || !me->_organizing) return;
-            NSString *text = [NSString stringWithFormat:POL(@"Сжатие: %@ из %@ · освобождено %@"), PONumber(done), PONumber(total), POByteSize(saved)];
-            if (current) text = [text stringByAppendingFormat:@"\n%@ — %.0f %%", current, fraction * 100];
-            [me->_content showProgressWithText:text fraction:(done + fraction) / total cancelTitle:POL(@"Остановить")];
-        });
-    };
-    void (^finished)(POCompressionOutcome *) = ^(POCompressionOutcome *outcome) {
-        @synchronized (outcomes) {
-            [outcomes addObject:outcome];
-            if (outcome.compressedURL) freed += outcome.before - outcome.after;
-        }
-    };
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        // Each photo takes a few hundred megabytes while it is made: a few at a time.
-        NSOperationQueue *queue = [NSOperationQueue new];
-        queue.maxConcurrentOperationCount = MIN(MAX((NSInteger)NSProcessInfo.processInfo.activeProcessorCount / 4, 1), 4);
+    if (!_compressEntries) {
+        _compressEntries = [NSMutableArray array];
+        _compressQueued = [NSHashTable hashTableWithOptions:NSPointerFunctionsObjectPointerPersonality];
+    }
+    NSUInteger added = 0;
+    @synchronized (_compressEntries) {
+        // What is queued already is not queued twice.
         for (POPhotoItem *item in photos) {
-            [queue addOperationWithBlock:^{
-                if (stop.stopped) return;
-                finished(POCompressPhotoItem(item, megapixels));
-                report(nil, 0);
-            }];
+            if ([_compressQueued containsObject:item]) continue;
+            [_compressQueued addObject:item];
+            POCompressEntry *entry = [POCompressEntry new];
+            entry.item = item;
+            entry.megapixels = megapixels;
+            [_compressEntries addObject:entry];
+            added++;
         }
-        [queue waitUntilAllOperationsAreFinished];
         for (NSArray *video in videos) {
-            if (stop.stopped) break;
-            POPhotoItem *item = video[0];
-            POCompressionOutcome *outcome = POCompressVideoItem(item, video[1], video[2], ^(double fraction) { report(item.url.lastPathComponent, fraction); },
-                                                                ^BOOL { return stop.stopped; });
-            // Stopped in the middle: that video stays as it was, and is not counted.
-            if (stop.stopped && !outcome.compressedURL) break;
-            finished(outcome);
-            report(nil, 0);
+            if ([_compressQueued containsObject:video[0]]) continue;
+            [_compressQueued addObject:video[0]];
+            POCompressEntry *entry = [POCompressEntry new];
+            entry.item = video[0];
+            entry.info = video[1];
+            entry.job = video[2];
+            [_compressEntries addObject:entry];
+            added++;
         }
-        dispatch_async(dispatch_get_main_queue(), ^{
-            [weakSelf didFinishCompressing:outcomes stopped:stop.stopped];
-        });
+    }
+    if (!added) return;
+    [self saveCompressQueue];
+    if (!_compressStop) [self startCompressing];
+    [self updateCompressBar];
+}
+
+#pragma mark Compressing: the queue kept on the disk
+
+/// Where what is still to compress is kept, so that compressing closed halfway goes on at the next start.
+static NSURL *POSavedQueueURL(void) {
+    NSURL *support = [NSFileManager.defaultManager URLForDirectory:NSApplicationSupportDirectory inDomain:NSUserDomainMask
+                                                 appropriateForURL:nil create:YES error:NULL];
+    return [support URLByAppendingPathComponent:@"Photo Organizer/compress-queue.plist"];
+}
+
+/// What is still to do, written after every change; the file goes once nothing is left.
+- (void)saveCompressQueue {
+    NSMutableArray<NSDictionary *> *left = [NSMutableArray array];
+    @synchronized (_compressEntries) {
+        for (POCompressEntry *entry in _compressEntries) {
+            if (entry.state != POCompressWaiting && entry.state != POCompressRunning) continue;
+            NSMutableDictionary *saved = [@{@"path": entry.item.url.path, @"megapixels": @(entry.megapixels)} mutableCopy];
+            if (entry.info && entry.job) {
+                POVideoInfo *i = entry.info;
+                saved[@"video"] = @{@"width": @(i.width), @"height": @(i.height), @"fps": @(i.fps), @"duration": @(i.duration),
+                                    @"videoBitrate": @(i.videoBitrate), @"audioBitrate": @(i.audioBitrate), @"hdr": @(i.hdr), @"tenBit": @(i.tenBit)};
+                saved[@"job"] = @{@"width": @(entry.job.width), @"height": @(entry.job.height), @"bitrate": @(entry.job.bitrate),
+                                  @"estimatedSize": @(entry.job.estimatedSize)};
+            }
+            [left addObject:saved];
+        }
+    }
+    NSURL *url = POSavedQueueURL();
+    @synchronized (POCompressEntry.class) {
+        if (!left.count) [NSFileManager.defaultManager removeItemAtURL:url error:NULL];
+        else [left writeToURL:url atomically:YES];
+    }
+}
+
+/// Once a library is open: the half-written files a compressing closed halfway left (hidden next to their originals)
+/// are removed, and when it left files to do in this library, whether to go on is asked. A file under way starts again
+/// (a video half written cannot be finished), the rest goes on. As on Windows.
+- (void)resumeCompressing {
+    if (!_plan || _compressStop) return;
+    NSArray<NSURL *> *roots = _rootURLs ?: (_rootURL ? @[_rootURL] : @[]);
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        for (NSURL *root in roots) {
+            NSDirectoryEnumerator<NSURL *> *files = [NSFileManager.defaultManager enumeratorAtURL:root includingPropertiesForKeys:nil
+                                                                                         options:NSDirectoryEnumerationSkipsPackageDescendants errorHandler:nil];
+            for (NSURL *file in files) {
+                NSString *name = file.lastPathComponent;
+                if ([name hasPrefix:@"."] && [name containsString:@".po-compressing"]) [NSFileManager.defaultManager removeItemAtURL:file error:NULL];
+            }
+        }
+    });
+    if (_resumeAsked) return;
+    _resumeAsked = YES;
+    NSArray<NSDictionary *> *saved = [NSArray arrayWithContentsOfURL:POSavedQueueURL()];
+    if (!saved.count) return;
+    NSMutableDictionary<NSString *, POPhotoItem *> *byPath = [NSMutableDictionary dictionary];
+    for (POPhotoItem *item in _plan.items) byPath[item.url.path] = item;
+    NSMutableArray<POPhotoItem *> *photos = [NSMutableArray array];
+    NSMutableArray<NSArray *> *videos = [NSMutableArray array];
+    NSInteger megapixels = 12;
+    unsigned long long bytes = 0;
+    for (NSDictionary *work in saved) {
+        POPhotoItem *item = byPath[work[@"path"]];
+        if (!item || ![NSFileManager.defaultManager fileExistsAtPath:item.url.path]) continue;
+        bytes += item.fileSize;
+        NSDictionary *v = work[@"video"], *j = work[@"job"];
+        if (v && j) {
+            POVideoInfo *info = [POVideoInfo new];
+            info.width = [v[@"width"] integerValue];
+            info.height = [v[@"height"] integerValue];
+            info.fps = [v[@"fps"] doubleValue];
+            info.duration = [v[@"duration"] doubleValue];
+            info.videoBitrate = [v[@"videoBitrate"] longLongValue];
+            info.audioBitrate = [v[@"audioBitrate"] longLongValue];
+            info.hdr = [v[@"hdr"] boolValue];
+            info.tenBit = [v[@"tenBit"] boolValue];
+            POVideoJob *job = [POVideoJob new];
+            job.width = [j[@"width"] integerValue];
+            job.height = [j[@"height"] integerValue];
+            job.bitrate = [j[@"bitrate"] longLongValue];
+            job.estimatedSize = [j[@"estimatedSize"] longLongValue];
+            [videos addObject:@[item, info, job]];
+        } else {
+            [photos addObject:item];
+            megapixels = [work[@"megapixels"] integerValue] ?: 12;
+        }
+    }
+    // Of another library: kept for when that one is opened.
+    if (!photos.count && !videos.count) return;
+    NSAlert *alert = [NSAlert new];
+    alert.messageText = POL(@"Сжатие");
+    alert.informativeText = [NSString stringWithFormat:POL(@"Сжатие было прервано: осталось %@ (%@). Продолжить с того места, где остановилось? Файл, который сжимался в тот момент, будет сжат заново."),
+                             POCount(photos.count + videos.count, POL(@"файл"), POL(@"файла"), POL(@"файлов")), POByteSize((long long)bytes)];
+    [alert addButtonWithTitle:POL(@"Продолжить")];
+    [alert addButtonWithTitle:POL(@"Отмена")];
+    __weak typeof(self) weakSelf = self;
+    [alert beginSheetModalForWindow:self.window completionHandler:^(NSModalResponse response) {
+        if (response == NSAlertFirstButtonReturn) [weakSelf compressPhotos:photos megapixels:megapixels videos:videos];
+        else [NSFileManager.defaultManager removeItemAtURL:POSavedQueueURL() error:NULL];
+    }];
+}
+
+/// Videos compressed at a time: the media engine takes a few HEVC sessions at once; the processor one.
+static NSInteger POVideoWorkers(void) {
+    return NSProcessInfo.processInfo.activeProcessorCount >= 8 ? 3 : 2;
+}
+
+- (void)startCompressing {
+    POStopFlag *stop = [POStopFlag new];
+    _compressStop = stop;
+    __weak typeof(self) weakSelf = self;
+    NSMutableArray<POCompressEntry *> *entries = _compressEntries;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        while (!stop.stopped) {
+            // The photos waiting, all together (a few at a time); then the videos, several at once.
+            NSMutableArray<POCompressEntry *> *photos = [NSMutableArray array];
+            BOOL videosLeft = NO;
+            @synchronized (entries) {
+                for (POCompressEntry *entry in entries) {
+                    if (entry.state != POCompressWaiting) continue;
+                    if (!entry.info) [photos addObject:entry]; else videosLeft = YES;
+                }
+                for (POCompressEntry *entry in photos) entry.state = POCompressRunning;
+            }
+            if (!photos.count && !videosLeft) break;
+            if (photos.count) {
+                // Each photo takes a few hundred megabytes while it is made: a few at a time.
+                NSOperationQueue *workers = [NSOperationQueue new];
+                workers.maxConcurrentOperationCount = MIN(MAX((NSInteger)NSProcessInfo.processInfo.activeProcessorCount / 4, 1), 4);
+                for (POCompressEntry *entry in photos) {
+                    [workers addOperationWithBlock:^{
+                        if (stop.stopped) {
+                            @synchronized (entries) { entry.state = POCompressWaiting; }
+                            return;
+                        }
+                        @synchronized (entries) { entry.started = [NSDate date]; }
+                        [weakSelf compressEntry:entry finished:POCompressPhotoItem(entry.item, entry.megapixels)];
+                        dispatch_async(dispatch_get_main_queue(), ^{ [weakSelf updateCompressBar]; });
+                    }];
+                }
+                [workers waitUntilAllOperationsAreFinished];
+                continue;
+            }
+            // Several videos at once, each worker taking the next one the moment it is free — so there are always that
+            // many going, not a batch that dwindles to one before the next starts. As on Windows.
+            dispatch_group_t group = dispatch_group_create();
+            for (NSInteger worker = 0; worker < POVideoWorkers(); worker++) {
+                dispatch_group_async(group, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+                    while (!stop.stopped) {
+                        POCompressEntry *video = nil;
+                        @synchronized (entries) {
+                            for (POCompressEntry *entry in entries) {
+                                if (entry.state != POCompressWaiting) continue;
+                                if (!entry.info) return;   // photos added meanwhile go first: the loop around takes them
+                                video = entry;
+                                break;
+                            }
+                            if (!video) return;
+                            video.state = POCompressRunning;
+                        }
+                        POVideoInfo *info = video.info;
+                        POVideoJob *job = video.job;
+                        // What it is turned into, and how fast it goes.
+                        NSString *what = [NSString stringWithFormat:@"%ld×%ld → %ld×%ld · %@%@", (long)info.width, (long)info.height, (long)job.width, (long)job.height,
+                                          [NSString stringWithFormat:POL(@"%@ → %@ Мбит/с"), @(llround(MAX(info.videoBitrate, 0) / 1e6)), @(llround(job.bitrate / 1e6))],
+                                          info.hdr ? @" · HDR" : @""];
+                        NSDate *started = [NSDate date];
+                        @synchronized (entries) { video.started = started; }
+                        POCompressionOutcome *outcome = POCompressVideoItem(video.item, info, job, ^(double fraction) {
+                            double elapsed = -started.timeIntervalSinceNow, speed = elapsed > 0 ? fraction * info.duration / elapsed : 0;
+                            @synchronized (entries) {
+                                video.fraction = fraction;
+                                video.detail = [NSString stringWithFormat:@"%@\n%@", what,
+                                                [NSString stringWithFormat:POL(@"%@× от реального времени · ≈ %@"), [NSString stringWithFormat:@"%.1f", speed],
+                                                 POByteSize(job.estimatedSize)]];
+                            }
+                            dispatch_async(dispatch_get_main_queue(), ^{ [weakSelf updateCompressBar]; });
+                        }, ^BOOL { return stop.stopped; });
+                        // Stopped in the middle: that video stays as it was, and is not counted.
+                        if (stop.stopped && !outcome.compressedURL) {
+                            @synchronized (entries) { video.state = POCompressWaiting; }
+                            return;
+                        }
+                        [weakSelf compressEntry:video finished:outcome];
+                        dispatch_async(dispatch_get_main_queue(), ^{ [weakSelf updateCompressBar]; });
+                    }
+                });
+            }
+            dispatch_group_wait(group, DISPATCH_TIME_FOREVER);
+            if (stop.stopped) break;
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{ [weakSelf didFinishCompressingStopped:stop.stopped]; });
     });
 }
 
-- (void)didFinishCompressing:(NSArray<POCompressionOutcome *> *)outcomes stopped:(BOOL)stopped {
-    _organizing = NO;
-    _copyStop = nil;
+- (void)compressEntry:(POCompressEntry *)entry finished:(POCompressionOutcome *)outcome {
+    @synchronized (_compressEntries) {
+        entry.outcome = outcome;
+        entry.fraction = 1;
+        entry.detail = nil;
+        entry.seconds = entry.started ? -entry.started.timeIntervalSinceNow : 0;
+        entry.state = outcome.error ? POCompressFailed : outcome.compressedURL ? POCompressDone : POCompressKept;
+    }
+    [self saveCompressQueue];
+}
+
+static NSString *POQueueLine(POCompressEntry *entry) {
+    NSString *name = entry.item.url.lastPathComponent;
+    switch (entry.state) {
+        case POCompressRunning: return [NSString stringWithFormat:@"▶  %@ — %.0f %%", name, entry.fraction * 100];
+        case POCompressDone: return [NSString stringWithFormat:@"✓  %@ — %@", name, POCompressionSaving(entry.outcome.before, entry.outcome.after)];
+        case POCompressKept: return [NSString stringWithFormat:@"–  %@ — %@", name, POL(@"не стало меньше, оставлен как был")];
+        case POCompressFailed: return [NSString stringWithFormat:@"✗  %@ — %@", name, entry.outcome.error ?: @""];
+        case POCompressWaiting: {
+            NSString *line = [NSString stringWithFormat:@"     %@ — %@", name, POByteSize((long long)entry.item.fileSize)];
+            return entry.job ? [line stringByAppendingFormat:@" → ≈ %@", POByteSize(entry.job.estimatedSize)] : line;
+        }
+    }
+    return name;
+}
+
+/// The bar at the bottom — the file being compressed ("1 из 12"), what is freed once something is (a file frees its
+/// space only when it is done and its original gone), the time left (by the bytes still to go: the files are of very
+/// different sizes) — and, when open, the details above it.
+/// The time left: the seconds of video still to compress at the pace of the whole run so far (seconds of video a second
+/// of work), and the photos left at the time a photo has taken — steady, unlike a measure of the bytes, which jumped
+/// with every short or long video. Empty until there is something to go by. As on Windows.
+- (NSString *)compressLeft {
+    double videoDone = 0, videoSpent = 0, videoLeft = 0, photoSpent = 0;
+    NSUInteger photosDone = 0, photosLeft = 0;
+    @synchronized (_compressEntries) {
+        for (POCompressEntry *entry in _compressEntries) {
+            double duration = entry.info ? entry.info.duration : 0;
+            BOOL video = entry.info != nil;
+            switch (entry.state) {
+                case POCompressDone:
+                case POCompressKept:
+                    if (video) {
+                        videoDone += duration;
+                        videoSpent += entry.seconds;
+                    } else {
+                        photosDone++;
+                        photoSpent += entry.seconds;
+                    }
+                    break;
+                case POCompressRunning:
+                    if (!video) {
+                        photosLeft++;
+                        break;
+                    }
+                    videoDone += duration * entry.fraction;
+                    videoSpent += entry.started ? -entry.started.timeIntervalSinceNow : 0;
+                    videoLeft += duration * (1 - entry.fraction);
+                    break;
+                case POCompressWaiting:
+                    if (video) videoLeft += duration; else photosLeft++;
+                    break;
+                default:
+                    break;
+            }
+        }
+    }
+    double seconds = 0;
+    if (videoLeft > 0) {
+        // The pace: measured on this run once there is enough of it; until then the last run's, or a guess (about two
+        // seconds of video a second). As on Windows.
+        double pace = videoSpent >= 20 && videoDone > 0 ? videoDone / videoSpent
+                    : ([NSUserDefaults.standardUserDefaults doubleForKey:@"compressVideoPace"] ?: 2.0);
+        if (videoSpent >= 60 && videoDone > 0) [NSUserDefaults.standardUserDefaults setDouble:pace forKey:@"compressVideoPace"];
+        seconds += videoLeft / pace / POVideoWorkers();   // the time of each, several at once
+    }
+    if (photosLeft > 0) {
+        if (!photosDone) return @"";
+        NSInteger workers = MIN(MAX((NSInteger)NSProcessInfo.processInfo.activeProcessorCount / 4, 1), 4);
+        seconds += photosLeft * photoSpent / photosDone / workers;
+    }
+    if (seconds <= 0) return @"";
+    long minutes = lround(seconds / 60);
+    NSString *left = seconds < 60 ? POL(@"меньше минуты")
+                   : minutes < 60 ? [NSString stringWithFormat:POL(@"%@ мин"), @(minutes)]
+                   : [NSString stringWithFormat:POL(@"%@ ч %@ мин"), @(minutes / 60), @(minutes % 60)];
+    return [NSString stringWithFormat:POL(@"осталось ≈ %@"), left];
+}
+
+- (void)updateCompressBar {
+    if (!_compressStop) return;
+    NSUInteger done = 0, total = 0;
+    long long freed = 0, bytesDone = 0, bytesTotal = 0;
+    POCompressEntry *running = nil;
+    NSMutableArray<NSString *> *lines = _compressPopover.isShown ? [NSMutableArray array] : nil;
+    @synchronized (_compressEntries) {
+        total = _compressEntries.count;
+        NSMutableArray<POCompressEntry *> *waiting = [NSMutableArray array], *finished = [NSMutableArray array];
+        for (POCompressEntry *entry in _compressEntries) {
+            long long size = MAX((long long)entry.item.fileSize, 1);
+            bytesTotal += size;
+            switch (entry.state) {
+                case POCompressRunning:
+                    bytesDone += (long long)(size * entry.fraction);
+                    if (!running) running = entry;
+                    [lines addObject:POQueueLine(entry)];
+                    break;
+                case POCompressWaiting:
+                    [waiting addObject:entry];
+                    break;
+                default:
+                    done++;
+                    bytesDone += size;
+                    if (entry.state == POCompressDone) freed += entry.outcome.before - entry.outcome.after;
+                    [finished addObject:entry];
+            }
+        }
+        // The one under way, those waiting, then those done, the latest first.
+        if (lines) {
+            for (POCompressEntry *entry in waiting) [lines addObject:POQueueLine(entry)];
+            for (POCompressEntry *entry in finished.reverseObjectEnumerator) [lines addObject:POQueueLine(entry)];
+        }
+    }
+    NSString *summary = [NSString stringWithFormat:POL(@"Сжатие: %@ из %@"), PONumber(MIN(done + 1, total)), PONumber(total)];
+    if (freed > 0) summary = [summary stringByAppendingFormat:@" · %@", [NSString stringWithFormat:POL(@"освобождено %@"), POByteSize(freed)]];
+    NSString *left = [self compressLeft];
+    if (left.length) summary = [summary stringByAppendingFormat:@" · %@", left];
+    NSString *now = running ? [NSString stringWithFormat:@"%@ — %.0f %%", running.item.url.lastPathComponent, running.fraction * 100] : nil;
+    double fraction = bytesTotal ? (double)bytesDone / bytesTotal : 0;
+    [_content setCompressionStatus:now ? [NSString stringWithFormat:@"%@ · %@", summary, now] : summary fraction:fraction];
+    if (!lines) return;
+    _popoverSummary.stringValue = summary;
+    _popoverTotal.doubleValue = fraction;
+    _popoverCurrent.stringValue = running ? [NSString stringWithFormat:@"%@\n%@", now, running.detail ?: @""] : POL(@"Ждёт следующего файла…");
+    _popoverFile.doubleValue = running ? running.fraction : 0;
+    // The list is long (thousands of files): written anew at most twice a second.
+    if (-_compressListShown.timeIntervalSinceNow < 0.5) return;
+    _compressListShown = [NSDate date];
+    _popoverList.string = [lines componentsJoinedByString:@"\n"];
+}
+
+/// The details above the bar, opened by a click on it: the totals, the file under way and the queue.
+- (IBAction)toggleCompressionDetails:(id)sender {
+    if (!_compressStop) return;
+    if (_compressPopover.isShown) {
+        [_compressPopover close];
+        return;
+    }
+    if (!_compressPopover) {
+        _popoverSummary = [NSTextField wrappingLabelWithString:@""];
+        _popoverSummary.font = [NSFont systemFontOfSize:NSFont.systemFontSize weight:NSFontWeightSemibold];
+        _popoverTotal = [NSProgressIndicator new];
+        _popoverTotal.indeterminate = NO;
+        _popoverTotal.minValue = 0;
+        _popoverTotal.maxValue = 1;
+        _popoverCurrent = [NSTextField wrappingLabelWithString:@""];
+        _popoverFile = [NSProgressIndicator new];
+        _popoverFile.indeterminate = NO;
+        _popoverFile.minValue = 0;
+        _popoverFile.maxValue = 1;
+        NSTextField *queueLabel = [NSTextField labelWithString:POL(@"Очередь")];
+        queueLabel.textColor = NSColor.secondaryLabelColor;
+        NSScrollView *scroll = [NSTextView scrollableTextView];
+        _popoverList = scroll.documentView;
+        _popoverList.editable = NO;
+        _popoverList.font = [NSFont systemFontOfSize:NSFont.smallSystemFontSize];
+        [scroll.heightAnchor constraintEqualToConstant:300].active = YES;
+        NSButton *stop = [NSButton buttonWithTitle:POL(@"Остановить") target:self action:@selector(stopCompressing:)];
+        NSStackView *stack = [NSStackView stackViewWithViews:@[_popoverSummary, _popoverTotal, _popoverCurrent, _popoverFile, queueLabel, scroll, stop]];
+        stack.orientation = NSUserInterfaceLayoutOrientationVertical;
+        stack.alignment = NSLayoutAttributeLeading;
+        stack.spacing = 8;
+        stack.edgeInsets = NSEdgeInsetsMake(16, 16, 16, 16);
+        for (NSView *wide in @[_popoverSummary, _popoverTotal, _popoverCurrent, _popoverFile, scroll]) {
+            [wide.widthAnchor constraintEqualToConstant:560].active = YES;
+        }
+        NSViewController *controller = [NSViewController new];
+        controller.view = stack;
+        _compressPopover = [NSPopover new];
+        _compressPopover.contentViewController = controller;
+        _compressPopover.behavior = NSPopoverBehaviorTransient;
+    }
+    NSView *anchor = [sender isKindOfClass:NSView.class] ? sender : _content.view;
+    [_compressPopover showRelativeToRect:anchor.bounds ofView:anchor preferredEdge:NSRectEdgeMaxY];
+    _compressListShown = [NSDate distantPast];
+    [self updateCompressBar];
+}
+
+- (IBAction)stopCompressing:(id)sender {
+    _compressStoppedByHand = YES;
+    _compressStop.stopped = YES;
+    [_content setCompressionStatus:POL(@"Остановка после текущего файла…") fraction:-1];
+    if (_compressPopover.isShown) _popoverSummary.stringValue = POL(@"Остановка после текущего файла…");
+}
+
+- (void)didFinishCompressingStopped:(BOOL)stopped {
+    // Stopped by hand: nothing is left to do later.
+    if (_compressStoppedByHand) [NSFileManager.defaultManager removeItemAtURL:POSavedQueueURL() error:NULL];
+    _compressStoppedByHand = NO;
+    NSMutableArray<POCompressionOutcome *> *outcomes = [NSMutableArray array];
+    @synchronized (_compressEntries) {
+        for (POCompressEntry *entry in _compressEntries) if (entry.outcome) [outcomes addObject:entry.outcome];
+        [_compressEntries removeAllObjects];
+        [_compressQueued removeAllObjects];
+    }
+    _compressStop = nil;
+    [_compressPopover close];
+    [_content setCompressionStatus:nil fraction:0];
     NSMutableArray<NSString *> *errors = [NSMutableArray array];
     long long before = 0, after = 0;
     NSUInteger done = 0, withoutHdr = 0;
@@ -1974,9 +2563,10 @@ static BOOL POIsStillThere(POPhotoItem *item) {
     if (stopped) message = [NSString stringWithFormat:@"%@ %@", POL(@"Сжатие остановлено."), message];
     if (withoutHdr) message = [message stringByAppendingFormat:@". %@", [NSString stringWithFormat:POL(@"Без HDR (в RAW его не было): %@"), PONumber(withoutHdr)]];
     _lastMessage = [message stringByAppendingFormat:@". %@", POL(@"Оригиналы — в Корзине.")];
+    [self updateUI];
     [self showErrors:errors title:POL(@"Не все файлы удалось сжать")];
     // The files changed under their names (and RAW became JPEG): the library is read again.
-    [self startScan];
+    if (done && !_organizing) [self startScan];
 }
 
 /// Moves the selected files to the Trash, where they stay until the user empties it.
@@ -2033,7 +2623,7 @@ static NSMapTable<POPhotoItem *, POPhotoItem *> *POKeepersOfDuplicates(NSArray<P
 
 /// `folders` go to the Trash whole, taking the files inside them along ("Дубликаты по папкам…").
 - (void)trashItems:(NSArray<POPhotoItem *> *)items folders:(NSArray<NSURL *> *)folders {
-    if (!items.count || !_plan || _scanner || _organizing) return;
+    if (!items.count || !_plan || _scanner || _organizing || _compressStop) return;
     NSMutableArray<NSString *> *errors = [NSMutableArray array];
     NSMutableArray<POPhotoItem *> *trashedItems = [NSMutableArray array];
     NSMutableArray<NSString *> *folderPrefixes = [NSMutableArray array];
@@ -2142,12 +2732,19 @@ static NSMapTable<POPhotoItem *, POPhotoItem *> *POKeepersOfDuplicates(NSArray<P
         _regroupTimer = [NSTimer scheduledTimerWithTimeInterval:8 target:self selector:@selector(regroupTimerFired:) userInfo:nil repeats:YES];
     }
     __weak typeof(self) weakSelf = self;
+    POEta *eta = [POEta new];
     [analyzer startWithProgress:^(NSUInteger done, NSUInteger total) {
         typeof(self) me = weakSelf;
         if (!me || me->_analyzer != analyzer) return;
-        // What was known from before is in place: the kinds (pictures, collages…) may have changed with it.
-        if (done == 0) [me kindsDidChange];
-        [me->_content setAnalysisStatus:[NSString stringWithFormat:POL(@"Распознавание: %@ из %@"), PONumber(done), PONumber(total)]];
+        // What was known from before is in place: the kinds (pictures, collages…) may have changed with it, and copies of
+        // one picture (a RAW and its JPEG, resized versions) can be found with it, while the rest is being recognised.
+        if (done == 0) {
+            [me kindsDidChange];
+            [me regroupCopies];
+        }
+        NSString *status = [NSString stringWithFormat:POL(@"Распознавание: %@ из %@"), PONumber(done), PONumber(total)];
+        NSString *left = [eta textForDone:done total:total];
+        [me->_content setAnalysisStatus:left.length ? [NSString stringWithFormat:@"%@ · %@", status, left] : status];
     } completion:^(NSString *errorMessage) {
         typeof(self) me = weakSelf;
         if (!me || me->_analyzer != analyzer) return;
@@ -2230,7 +2827,7 @@ static NSMapTable<POPhotoItem *, POPhotoItem *> *POKeepersOfDuplicates(NSArray<P
 }
 
 - (IBAction)chooseGrouping:(NSMenuItem *)sender {
-    [NSUserDefaults.standardUserDefaults setInteger:MIN(MAX(sender.tag, 0), 2) forKey:POGroupingKey];
+    [NSUserDefaults.standardUserDefaults setInteger:MIN(MAX(sender.tag, 0), 3) forKey:POGroupingKey];
     _schemeItem.selectedIndex = [self grouping];
     [self updateGrid];
 }
@@ -2310,7 +2907,7 @@ static NSMapTable<POPhotoItem *, POPhotoItem *> *POKeepersOfDuplicates(NSArray<P
 
 /// Shows the options and the resulting folder list; nothing moves until the sheet is confirmed.
 - (IBAction)organize:(id)sender {
-    if (!_plan || _scanner || _organizing || self.window.attachedSheet) return;
+    if (!_plan || _scanner || _organizing || _compressStop || self.window.attachedSheet) return;
     // For organizing by person: files in which exactly one named person was recognised.
     NSMapTable<POPhotoItem *, NSString *> *names = [NSMapTable strongToStrongObjectsMapTable];
     NSHashTable<POPhotoItem *> *crowded = [NSHashTable hashTableWithOptions:NSPointerFunctionsObjectPointerPersonality];

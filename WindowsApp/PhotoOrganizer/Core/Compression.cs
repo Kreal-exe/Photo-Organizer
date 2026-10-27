@@ -88,23 +88,54 @@ public static class Compression
         return (long)(6_000_000 * Math.Pow(pixels, 0.75) * Math.Pow(frames, 0.6) * factor);
     }
 
+    /// <summary>The kinds of video by resolution (their shorter side): 4K, 1440p, 1080p, 720p and less.</summary>
+    public static string[] ResolutionNames => ["4K", "1440p", "1080p", L("720p и меньше")];
+
+    /// <summary>Which of ResolutionNames a video is: 4K takes most when brought down, 1080p little.</summary>
+    public static int ResolutionClass(VideoInfo info) => ResolutionClass(info.Width, info.Height);
+
+    /// <summary>The same for a size: by the shorter side, so that a vertical video is what its horizontal twin is.</summary>
+    public static int ResolutionClass(int width, int height)
+    {
+        int shorter = Math.Min(width, height);
+        return shorter >= 2000 ? 0 : shorter >= 1400 ? 1 : shorter >= 1000 ? 2 : 3;
+    }
+
     /// <summary>
     /// What compressing a video does: its new size and bitrate, or null when it would gain too little — already
     /// small enough and at about that bitrate.
     /// </summary>
     public static VideoJob? PlanVideo(VideoInfo info, int maxHeight, int quality)
     {
-        if (info.Width <= 0 || info.Height <= 0 || info.Duration <= 0) return null;
+        if (info.Width <= 0 || info.Height <= 0 || info.Duration <= 0 || info.Kept != null) return null;
+        // Compressed by the earlier version, with B-frames: phones play it in jerks. Built again at its own size and its
+        // own bitrate, without them (5 % larger), whatever was asked.
+        if (info.Stutters)
+        {
+            long had = info.VideoBitrate > 0 ? info.VideoBitrate : Math.Max(0, info.TotalBitrate - info.AudioBitrate);
+            return new VideoJob(info.Width / 2 * 2, info.Height / 2 * 2, had,
+                                (long)((had * 1.05 + Math.Max(info.AudioBitrate, 0)) * info.Duration / 8), Rebuild: true);
+        }
         var (width, height) = VideoSize(info.Width, info.Height, maxHeight);
         long target = VideoBitrate(width, height, info.Fps, quality);
-        bool smaller = width < info.Width - 1 || height < info.Height - 1;
         long source = info.VideoBitrate > 0 ? info.VideoBitrate : Math.Max(0, info.TotalBitrate - info.AudioBitrate);
         // Never more bits than the video has; and not worth it for a few percent.
         long bitrate = Math.Min(target, (long)(source * 0.9));
-        if (!smaller && source < target * 1.3) return null;
+        // How much the video weighs against what the quality asked needs at its size and frame rate. HEVC within 1.7
+        // times of it is compressed already (by this app or anything else: the encoder runs up to 1.5 times above the
+        // plan on busy scenes) — offered apart, to squeeze further only if asked; within 1.15 times, or an older codec
+        // within 1.3 times, there is nothing to gain. Under two seconds one key frame is most of the file, and the
+        // bitrate says nothing: HEVC that short counts as compressed already.
+        double ratio = target > 0 ? (double)source / target : 0;
+        // A camera's own HEVC is never "compressed already", whatever its bitrate: an iPhone's 1080p60 at 13.6 Mbit/s
+        // (1.5 times the plan) was offered only to "squeeze further" and so skipped — it is to be compressed.
+        bool again = info.Codec == "hevc" && (info.Reencoded ? ratio < 1.7 || info.Duration < 2 : info.Duration < 2);
+        // Made smaller too: the bits it has against what the smaller size needs — an iPhone screen recording (1290 wide)
+        // is HEVC of so few bits that at 1080 it would come out no lighter.
+        if (ratio < (again ? 1.15 : 1.3)) return null;
         if (bitrate <= 0) return null;
         long estimate = (long)((bitrate + Math.Max(info.AudioBitrate, 0)) * info.Duration / 8 * 1.01);
-        return new VideoJob(width, height, bitrate, estimate);
+        return new VideoJob(width, height, bitrate, estimate, again, Math.Clamp(quality, 0, VideoQualityFactors.Length - 1));
     }
 
     // --- The gain map ---------------------------------------------------------------------------------------------
@@ -448,14 +479,32 @@ public static class Compression
     }
 
     /// <summary>"1,2 ГБ → 300 МБ (−75 %)".</summary>
-    public static string Saving(long before, long after) =>
-        $"{Size(before)} → {Size(after)}" + (before > 0 ? $" (−{Math.Max(0, 100 - after * 100.0 / before):0} %)" : "");
+    public static string Saving(long before, long after)
+    {
+        string text = $"{Size(before)} → {Size(after)}";
+        if (before <= 0) return text;
+        double percent = after * 100.0 / before - 100;
+        // Larger (a rebuild without B-frames): said so, not "−0 %".
+        return text + (percent >= 0.5 ? $" (+{percent:0} %)" : $" (−{Math.Max(0, -percent):0} %)");
+    }
 }
 
 /// <summary>What ffprobe or AVFoundation says of a video, upright (a vertical one is taller than wide).</summary>
 public sealed record VideoInfo(int Width, int Height, double Fps, double Duration, long VideoBitrate, long AudioBitrate, long TotalBitrate,
-                               string Codec, string? Primaries, string? Transfer, string? Matrix, bool TenBit)
+                               string Codec, string? Primaries, string? Transfer, string? Matrix, bool TenBit, int Rotation = 0,
+                               string? Kept = null, bool Stutters = false, double NominalFps = 0, string? DynamicHdr = null, bool FlatTimestamps = false,
+                               bool Reencoded = false)
 {
+    // Kept: why the video is not compressed at all (a 3D video, a second video track) — compressing would lose part of it.
+    // FlatTimestamps: the frames are stored out of order (B-frames) but the file says they are shown in the order
+    // stored (no ctts): players show them out of order, in jerks. The timestamps are made afresh from the order the
+    // frames are decoded in, which is the right one.
+    /// <summary>
+    /// Frames at varying intervals: the stream states another rate than it has (an iPhone marks such a video 120, an
+    /// older one 24 for intervals of 1/24 and 1/30 s). An encoder working to a bitrate shares it out by the stated rate.
+    /// </summary>
+    public bool VariableRate => NominalFps > 0 && Fps > 0 && Math.Abs(NominalFps - Fps) > Fps * 0.1;
+
     /// <summary>HLG or PQ: what an iPhone and most cameras record HDR in.</summary>
     public bool Hdr => Transfer is "arib-std-b67" or "smpte2084";
 }
@@ -467,5 +516,12 @@ public sealed record VideoInfo(int Width, int Height, double Fps, double Duratio
 public sealed record GainMapInfo(double Min, double Max, double Gamma, double OffsetSdr, double OffsetHdr, double CapacityMin, double CapacityMax,
                                  bool UseBaseColorSpace = true);
 
+/// <summary>How far a video's compression is: 0…1, times real time, frames a second, bytes written, on the graphics card.</summary>
+public sealed record VideoProgress(double Fraction, double Speed, double Fps, long Bytes, bool OnCard);
+
 /// <summary>A video to compress: its new size and bitrate, and how large it should come out.</summary>
-public sealed record VideoJob(int Width, int Height, long Bitrate, long EstimatedSize);
+/// <summary>Again: the video is compressed already (HEVC near the quality asked); it can be squeezed further, if asked.</summary>
+/// <summary>The size a video is made, the bitrate it is encoded to, and what it should come out at.</summary>
+/// Rebuild: a video the earlier version compressed with B-frames (VideoInfo.Stutters), built again as a camera builds it,
+/// at its own size and almost without loss; it replaces the old one even if it comes out larger.
+public sealed record VideoJob(int Width, int Height, long Bitrate, long EstimatedSize, bool Again = false, int Quality = 1, bool Rebuild = false);

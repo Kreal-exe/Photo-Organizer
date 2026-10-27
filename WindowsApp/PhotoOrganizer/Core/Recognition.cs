@@ -20,16 +20,15 @@ public sealed class Recognizer : IDisposable
 
     static Recognizer? _shared;
     static readonly Lock SharedLock = new();
-    readonly InferenceSession _session;
-    readonly Lock _lock = new();
+    readonly OnnxPool _sessions;
 
     public bool OnGpu { get; }
 
     Recognizer()
     {
         string path = Model.File("onnx/vision_model.onnx") ?? throw new InvalidOperationException(L("Модель распознавания объектов не загружена — «Настройки»."));
-        (_session, bool gpu) = Onnx.Open(File.ReadAllBytes(path), FaceEngine.UseGpu);
-        OnGpu = gpu;
+        _sessions = Onnx.Pool(File.ReadAllBytes(path), FaceEngine.UseGpu);
+        OnGpu = _sessions.Gpu;
     }
 
     public static Recognizer Shared
@@ -49,7 +48,7 @@ public sealed class Recognizer : IDisposable
         }
     }
 
-    public void Dispose() => _session.Dispose();
+    public void Dispose() => _sessions.Dispose();
 
     /// <summary>Unit-length vectors of the regions (x, y, w, h in pixels) of the picture, one per region, in one pass.</summary>
     public List<float[]> Embed(RasterImage image, IReadOnlyList<(double X, double Y, double W, double H)> regions)
@@ -62,32 +61,14 @@ public sealed class Recognizer : IDisposable
             // As CLIP's preprocessing: the shorter side to 256, then the middle 256×256.
             double scale = Side / Math.Min(rw, rh);
             double left = rx + (rw - Side / scale) / 2, top = ry + (rh - Side / scale) / 2;
-            for (int y = 0; y < Side; y++)
-            {
-                double sy = Math.Clamp(top + (y + 0.5) / scale - 0.5, 0, image.Height - 1);
-                int y0 = (int)sy, y1 = Math.Min(image.Height - 1, y0 + 1);
-                float fy = (float)(sy - y0);
-                for (int x = 0; x < Side; x++)
-                {
-                    double sx = Math.Clamp(left + (x + 0.5) / scale - 0.5, 0, image.Width - 1);
-                    int x0 = (int)sx, x1 = Math.Min(image.Width - 1, x0 + 1);
-                    float fx = (float)(sx - x0);
-                    for (int c = 0; c < 3; c++)   // red, green, blue from the picture's blue-green-red
-                    {
-                        int channel = 2 - c;
-                        float upper = image.Bgr[(y0 * image.Width + x0) * 3 + channel] * (1 - fx) + image.Bgr[(y0 * image.Width + x1) * 3 + channel] * fx;
-                        float lower = image.Bgr[(y1 * image.Width + x0) * 3 + channel] * (1 - fx) + image.Bgr[(y1 * image.Width + x1) * 3 + channel] * fx;
-                        buffer[((n * 3 + c) * Side + y) * Side + x] = (upper * (1 - fy) + lower * fy) / 255f;
-                    }
-                }
-            }
+            // Red, green, blue from the picture's blue-green-red.
+            Images.Sample(image, left, top, scale, scale, Side, Side, buffer, n * 3 * Side * Side, interleaved: false, [2, 1, 0], Images.SampleValue.Unit);
         }
-        float[] output;
-        lock (_lock)
+        float[] output = _sessions.Run(session =>
         {
-            using var results = _session.Run([NamedOnnxValue.CreateFromTensor("pixel_values", input)]);
-            output = results[0].AsTensor<float>().ToArray();
-        }
+            using var results = session.Run([NamedOnnxValue.CreateFromTensor("pixel_values", input)]);
+            return results[0].AsTensor<float>().ToArray();
+        });
         var vectors = new List<float[]>();
         for (int n = 0; n < regions.Count; n++)
         {
@@ -162,8 +143,7 @@ public sealed class NudityClassifier : IDisposable
 
     static NudityClassifier? _shared;
     static readonly Lock SharedLock = new();
-    readonly InferenceSession _session;
-    readonly Lock _lock = new();
+    readonly OnnxPool _sessions;
     readonly VitInfo _info;
     readonly int _explicitIndex;
     readonly bool _centerCrop;
@@ -177,7 +157,7 @@ public sealed class NudityClassifier : IDisposable
         _explicitIndex = Array.FindIndex(_info.Labels, l => l.ToLowerInvariant() is "nsfw" or "porn" or "explicit");
         if (_explicitIndex < 0) throw new InvalidDataException(model.Model.Repo);
         _centerCrop = model.CenterCrop;
-        (_session, _) = Onnx.Open(File.ReadAllBytes(Onnx.BuiltVit(folder, model.Model.Key)), FaceEngine.UseGpu);
+        _sessions = Onnx.Pool(File.ReadAllBytes(Onnx.BuiltVit(folder, model.Model.Key)), FaceEngine.UseGpu);
         Repo = model.Model.Repo;
     }
 
@@ -203,7 +183,7 @@ public sealed class NudityClassifier : IDisposable
         }
     }
 
-    public void Dispose() => _session.Dispose();
+    public void Dispose() => _sessions.Dispose();
 
     public float Score(RasterImage image)
     {
@@ -214,31 +194,13 @@ public sealed class NudityClassifier : IDisposable
         double scaleX = (double)size / image.Width, scaleY = (double)size / image.Height;
         if (_centerCrop) scaleX = scaleY = Math.Max(scaleX, scaleY);
         double left = (image.Width - size / scaleX) / 2, top = (image.Height - size / scaleY) / 2;
-        for (int y = 0; y < size; y++)
+        Images.Sample(image, left, top, scaleX, scaleY, size, size, buffer, 0, interleaved: true, [2, 1, 0], Images.SampleValue.Normalized,
+                      _info.Mean, _info.Std);
+        float[] logits = _sessions.Run(session =>
         {
-            double sy = Math.Clamp(top + (y + 0.5) / scaleY - 0.5, 0, image.Height - 1);
-            int y0 = (int)sy, y1 = Math.Min(image.Height - 1, y0 + 1);
-            float fy = (float)(sy - y0);
-            for (int x = 0; x < size; x++)
-            {
-                double sx = Math.Clamp(left + (x + 0.5) / scaleX - 0.5, 0, image.Width - 1);
-                int x0 = (int)sx, x1 = Math.Min(image.Width - 1, x0 + 1);
-                float fx = (float)(sx - x0);
-                for (int c = 0; c < 3; c++)
-                {
-                    int channel = 2 - c;
-                    float upper = image.Bgr[(y0 * image.Width + x0) * 3 + channel] * (1 - fx) + image.Bgr[(y0 * image.Width + x1) * 3 + channel] * fx;
-                    float lower = image.Bgr[(y1 * image.Width + x0) * 3 + channel] * (1 - fx) + image.Bgr[(y1 * image.Width + x1) * 3 + channel] * fx;
-                    buffer[(y * size + x) * 3 + c] = ((upper * (1 - fy) + lower * fy) / 255f - _info.Mean[c]) / _info.Std[c];
-                }
-            }
-        }
-        float[] logits;
-        lock (_lock)
-        {
-            using var results = _session.Run([NamedOnnxValue.CreateFromTensor("input", input)]);
-            logits = results[0].AsTensor<float>().ToArray();
-        }
+            using var results = session.Run([NamedOnnxValue.CreateFromTensor("input", input)]);
+            return results[0].AsTensor<float>().ToArray();
+        });
         float max = logits.Max();
         float sum = logits.Sum(l => MathF.Exp(l - max));
         return MathF.Exp(logits[_explicitIndex] - max) / sum;

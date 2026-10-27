@@ -22,6 +22,12 @@ public sealed class RecognitionStore
     static RecognitionStore? _shared;
     static readonly Lock SharedLock = new();
     readonly Dictionary<string, Entry> _entries = [];
+    /// <summary>
+    /// The same entries by the part of the key every build of the app has read alike: the size and the time of the last
+    /// change (see Stable). The first numbers of a key took in bytes past what Windows returns (AppData.FileKey read its
+    /// structure 4 bytes off), which differed from one build to another.
+    /// </summary>
+    readonly Dictionary<string, Entry> _byStable = [];
     readonly string _path;
     readonly Lock _lock = new();
     FileStream? _appender;
@@ -38,34 +44,59 @@ public sealed class RecognitionStore
     {
         _path = AppData.File("recognition.bin");
         int records = 0;
+        long length = 0;
         bool damaged = false;
         try
         {
-            using var stream = new FileStream(_path, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 20);
-            using var reader = new BinaryReader(stream);
-            int version = reader.ReadInt32();
+            byte[] data;
+            using (var file = new FileStream(_path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, 1 << 20))
+            {
+                length = file.Length;
+                data = new byte[length];
+                file.ReadExactly(data);
+            }
+            int version = data.Length >= 4 ? BitConverter.ToInt32(data, 0) : 0;
             if (version is >= 2 and <= Version)
             {
-                while (stream.Position < stream.Length)
+                // Every record is looked for on its own — a key (its length, then digits and hyphens), then the flag of
+                // the fingerprint — and read from there: one record cut short or written wrong no longer takes the
+                // ones after it along (a key's length is itself a digit, so reading on from a wrong place never ended).
+                var starts = RecordStarts(data);
+                // Read on every core (a library of 100 000 files keeps a gigabyte here: one core took 12 seconds, and
+                // the duplicates waited for it), then taken in the file's order — a later record of a file replaces
+                // an earlier one.
+                var read = new (string Key, Entry Entry)?[starts.Count];
+                Parallel.For(0, starts.Count, i =>
                 {
-                    long start = stream.Position;
+                    int start = starts[i];
                     try
                     {
+                        // A record read whole ends where the next one starts (or the file ends); one read wrong runs
+                        // past it, and is left out — each record is read on its own, so the next ones still are.
+                        // (A record is a few kilobytes: read within a megabyte, a wrong length fails at once.)
+                        using var stream = new MemoryStream(data, start, Math.Min(data.Length - start, 1 << 20), writable: false);
+                        using var reader = new BinaryReader(stream);
                         string key = reader.ReadString();
-                        if (!IsKey(key)) throw new InvalidDataException();
                         var entry = Read(reader, version);
-                        records++;
-                        // Keys without the time of the last change (before 5) are never asked for again: the files
-                        // are looked at anew, and their old results dropped.
-                        if (key.Count(c => c == '-') == 3) _entries[key] = entry;
+                        int end = start + (int)stream.Position;
+                        if (end != data.Length && starts.BinarySearch(end) < 0) throw new InvalidDataException();
+                        read[i] = (key, entry);
                     }
-                    catch (Exception e) when (e is EndOfStreamException or FormatException or InvalidDataException or ArgumentException)
+                    catch (Exception e) when (e is EndOfStreamException or FormatException or InvalidDataException or ArgumentException or IOException)
                     {
-                        // A record cut short (the app closed while writing it) with others appended after it: they are
-                        // found again from the next record's key on, and the file is written anew without the damage.
-                        damaged = true;
-                        if (!SkipToNextRecord(stream, start + 1)) break;
                     }
+                });
+                foreach (var record in read)
+                {
+                    if (record is not { } r)
+                    {
+                        damaged = true;
+                        continue;
+                    }
+                    records++;
+                    // Keys without the time of the last change (before 5) are never asked for again: the files are
+                    // looked at anew, and their old results dropped.
+                    if (HasTime(r.Key)) Add(r.Key, r.Entry);
                 }
                 // Results of an older version are kept: rewritten in the new format, they are only completed.
                 if (version != Version) records = 0;
@@ -76,33 +107,30 @@ public sealed class RecognitionStore
         {
             // A missing file: nothing is known yet.
         }
-        if (damaged || records > _entries.Count * 2 + 100 || !File.Exists(_path) || records == 0) Rewrite();
+        // Written anew only to drop results replaced since, or to start one: never when part of it could not be read —
+        // results this reader cannot make out (as it once could not read negative keys) must stay for a better one.
+        if (!damaged && (records > _entries.Count * 2 + 100 || !File.Exists(_path) || (records == 0 && length < 1 << 20))) Rewrite();
     }
 
-    /// <summary>A file key (AppData.FileKey): four numbers joined by hyphens (three before version 5).</summary>
-    static bool IsKey(string key) => key.Length is > 4 and < 64 && key.All(c => char.IsAsciiDigit(c) || c == '-') && key.Count(c => c == '-') is 2 or 3;
-
-    /// <summary>Moves the stream to the first place from `from` on where a record's key starts; false when there is none.</summary>
-    static bool SkipToNextRecord(FileStream stream, long from)
+    /// <summary>
+    /// How many numbers a file key (AppData.FileKey) holds: four joined by hyphens (three before version 5). A second
+    /// hyphen right after one is a minus sign ("…--4436918954398919957"): on a disk whose serial number has its top bit
+    /// set every key ends like that.
+    /// </summary>
+    static int Numbers(string key)
     {
-        var buffer = new byte[1 << 20];
-        for (long at = from; at < stream.Length; at += buffer.Length - 64)
+        if (key.Length == 0 || !char.IsAsciiDigit(key[0]) || !char.IsAsciiDigit(key[^1])) return 0;
+        int numbers = 1;
+        for (int i = 1; i < key.Length; i++)
         {
-            stream.Position = at;
-            int read = stream.ReadAtLeast(buffer, buffer.Length, throwOnEndOfStream: false);
-            for (int i = 0; i + 1 < read; i++)
-            {
-                int length = buffer[i];   // a key is shorter than 128 bytes: its length prefix is one byte
-                if (length is < 5 or >= 64 || i + 1 + length > read) continue;
-                var key = buffer.AsSpan(i + 1, length);
-                if (key.IndexOfAnyExcept("0123456789-"u8) >= 0 || key.Count((byte)'-') is not (2 or 3)) continue;
-                stream.Position = at + i;
-                return true;
-            }
-            if (read < buffer.Length) break;
+            if (key[i] != '-') continue;
+            if (key[i - 1] == '-') { if (i + 1 >= key.Length || !char.IsAsciiDigit(key[i + 1])) return 0; continue; }
+            numbers++;
         }
-        return false;
+        return key.Contains("---") ? 0 : numbers;
     }
+
+    static int Numbers(ReadOnlySpan<byte> key) => Numbers(System.Text.Encoding.ASCII.GetString(key));
 
     static byte[]? Bytes(BinaryReader reader)
     {
@@ -191,7 +219,56 @@ public sealed class RecognitionStore
 
     public Entry? Get(string key)
     {
-        lock (_lock) return _entries.GetValueOrDefault(key);
+        lock (_lock)
+        {
+            if (_entries.TryGetValue(key, out var entry)) return entry;
+            return Stable(key) is { } stable ? _byStable.GetValueOrDefault(stable) : null;
+        }
+    }
+
+    void Add(string key, Entry entry)
+    {
+        _entries[key] = entry;
+        if (Stable(key) is { } stable) _byStable[stable] = entry;
+    }
+
+    /// <summary>A key that holds the time of the last change: four numbers, or three of which the last is negative.</summary>
+    static bool HasTime(string key) => Numbers(key) == 4 || (Numbers(key) == 3 && key.Contains("--"));
+
+    /// <summary>The last two numbers of a key with the time (the size and the time of the last change); null otherwise.</summary>
+    static string? Stable(string key)
+    {
+        if (!HasTime(key)) return null;
+        // The last number starts after the last hyphen that is not a minus sign; the one before it, likewise.
+        int last = key.LastIndexOf('-');
+        if (last > 0 && key[last - 1] == '-') last--;
+        int before = key.LastIndexOf('-', last - 1);
+        return before < 0 ? null : key[(before + 1)..];
+    }
+
+    /// <summary>Where records may start: a key's length, the key, then the fingerprint's flag (0 or 1).</summary>
+    static List<int> RecordStarts(byte[] data)
+    {
+        // In pieces on every core, put together in order.
+        const int Piece = 16 << 20;
+        int pieces = Math.Max(1, (data.Length - 4 + Piece - 1) / Piece);
+        var found = new List<int>[pieces];
+        Parallel.For(0, pieces, piece =>
+        {
+            var starts = new List<int>();
+            int from = 4 + piece * Piece, to = Math.Min(data.Length, from + Piece);
+            for (int i = from; i < to && i + 2 < data.Length; i++)
+            {
+                int length = data[i];
+                if (length is < 5 or >= 64 || i + 1 + length >= data.Length || data[i + 1 + length] > 1) continue;
+                if (!char.IsAsciiDigit((char)data[i + 1]) || !char.IsAsciiDigit((char)data[i + length])) continue;
+                var key = data.AsSpan(i + 1, length);
+                if (key.IndexOfAnyExcept("0123456789-"u8) >= 0 || Numbers(key) is not (3 or 4)) continue;
+                starts.Add(i);
+            }
+            found[piece] = starts;
+        });
+        return found.SelectMany(s => s).ToList();
     }
 
     public void Put(string key, Entry entry)
@@ -202,7 +279,7 @@ public sealed class RecognitionStore
         using (var writer = new BinaryWriter(record, System.Text.Encoding.UTF8, leaveOpen: true)) Write(writer, key, entry);
         lock (_lock)
         {
-            _entries[key] = entry;
+            Add(key, entry);
             try
             {
                 _appender ??= new FileStream(_path, FileMode.Append, FileAccess.Write, FileShare.Read);
@@ -250,6 +327,11 @@ public sealed class Analyzer(IReadOnlyList<PhotoItem> items, bool withFaces)
     /// <summary>Why something could not be looked at (a model is missing or failed), or null.</summary>
     public string? Error { get; internal set; }
     public string? Device { get; private set; }
+    /// <summary>
+    /// Called (from the worker) once what was known from before is on the files — their fingerprints included — before
+    /// anything new is looked at: look-alike copies can be found then, not only after the whole analysis.
+    /// </summary>
+    public Action? KnownApplied { get; set; }
 
     public void Cancel() => _cancel.Cancel();
 
@@ -333,10 +415,12 @@ public sealed class Analyzer(IReadOnlyList<PhotoItem> items, bool withFaces)
         }
         done = total - todo.Count;
         progress?.Invoke(done, total);
+        KnownApplied?.Invoke();
         try
         {
-            // Decoding runs on several cores; the models serialise themselves on the graphics card.
-            Parallel.ForEach(todo, new ParallelOptions { MaxDegreeOfParallelism = Math.Clamp(Environment.ProcessorCount / 2, 2, 6), CancellationToken = token },
+            // Decoding runs on most cores, the models on the graphics card several pictures at a time (see OnnxPool):
+            // enough workers to keep both busy, a couple of cores left for the window.
+            Parallel.ForEach(todo, new ParallelOptions { MaxDegreeOfParallelism = Math.Clamp(Environment.ProcessorCount - 2, 2, 14), CancellationToken = token },
                 work =>
                 {
                     // One file that cannot be read must not end the whole analysis (it did, silently, for the rest).

@@ -2,6 +2,7 @@
 #import "POActions.h"
 #import "POScanner.h"
 #import "POStrings.h"
+#import "POCompression.h"
 
 #pragma mark - Drop frame
 
@@ -116,6 +117,33 @@ static NSStackView *POCenteredStack(NSArray<NSView *> *views, NSView *container)
 
 #pragma mark - Controller
 
+/// A row that scrolls sideways: the mouse wheel's up and down move it left and right, a trackpad's sideways swipe as
+/// usual.
+@interface POSidewaysScrollView : NSScrollView
+@end
+
+@implementation POSidewaysScrollView
+
+- (void)scrollWheel:(NSEvent *)event {
+    if (fabs(event.scrollingDeltaX) >= fabs(event.scrollingDeltaY)) {
+        [super scrollWheel:event];
+        return;
+    }
+    NSClipView *clip = self.contentView;
+    CGFloat room = NSWidth(self.documentView.frame) - NSWidth(clip.bounds);
+    if (room <= 0) {
+        [self.nextResponder scrollWheel:event];
+        return;
+    }
+    CGFloat step = event.hasPreciseScrollingDeltas ? event.scrollingDeltaY : event.scrollingDeltaY * 10;
+    NSPoint origin = clip.bounds.origin;
+    origin.x = MIN(MAX(origin.x - step, 0), room);
+    [clip scrollToPoint:origin];
+    [self reflectScrolledClipView:clip];
+}
+
+@end
+
 @implementation POContentViewController {
     PODropFrameView *_emptyView;
     NSView *_progressView;
@@ -127,6 +155,9 @@ static NSStackView *POCenteredStack(NSArray<NSView *> *views, NSView *container)
     NSButton *_allButton;
     NSArray<NSButton *> *_kindButtons, *_kindBoxes;   // by POMediaKind
     NSButton *_cleanupButton;
+    NSPopUpButton *_rawPreferencePopup;
+    NSPopUpButton *_compressedPreferencePopup;
+    NSPopUpButton *_videoResolutionPopup;
     NSButton *_byFoldersButton;
     NSButton *_soloCheckbox;
     NSStackView *_stripExtras;
@@ -138,6 +169,10 @@ static NSStackView *POCenteredStack(NSArray<NSView *> *views, NSView *container)
     NSButton *_extraButton;
     NSButton *_acceptSuggestionsButton;
     NSButton *_organizeButton;
+    NSButton *_compressButton;
+    NSStackView *_compressBar;
+    NSTextField *_compressLabel;
+    NSProgressIndicator *_compressProgress;
     PODropFrameView *_dropOverlay;
 }
 
@@ -240,7 +275,7 @@ static NSStackView *POCenteredStack(NSArray<NSView *> *views, NSView *container)
     for (NSInteger kind = POMediaKindPhotos; kind <= POMediaKindScreenshots; kind++) {
         NSButton *box = [NSButton checkboxWithTitle:@"" target:nil action:@selector(toggleKindIncluded:)];
         box.tag = kind;
-        box.toolTip = POL(@"Отмечено — в медиатеке и раскладывается; без галочки — скрыто и остаётся на месте");
+        box.toolTip = POL(@"Отмечено — показано в медиатеке; без галочки — скрыто. Что раскладывать по папкам, выбирается в окне «Разложить по папкам»");
         NSButton *button = tab(@"", POQuickFilterAll + 1 + kind);
         button.toolTip = tips[kind];
         [strip addObject:[POStripTab tabWithViews:@[box, button] button:button]];
@@ -274,7 +309,23 @@ static NSStackView *POCenteredStack(NSArray<NSView *> *views, NSView *container)
     _backToMapButton.hidden = YES;
     _extraButton = [NSButton buttonWithTitle:@"" target:nil action:NULL];
     _extraButton.hidden = YES;
-    _stripExtras = [NSStackView stackViewWithViews:@[_extraButton, _backToMapButton, _cleanupButton, _byFoldersButton, _soloCheckbox, _setDateButton, _acceptSuggestionsButton]];
+    _rawPreferencePopup = [NSPopUpButton new];
+    [_rawPreferencePopup addItemsWithTitles:@[POL(@"RAW и JPEG: по качеству"), POL(@"RAW и JPEG: оставлять RAW"), POL(@"RAW и JPEG: оставлять JPEG")]];
+    for (NSInteger i = 0; i < 3; i++) [_rawPreferencePopup itemAtIndex:i].tag = i;
+    _rawPreferencePopup.action = @selector(chooseRawPreference:);
+    _rawPreferencePopup.toolTip = POL(@"Если один кадр есть и в RAW, и в JPEG (или HEIC): какой из них остаётся оригиналом, а какой считается копией и уходит в Корзину при удалении дубликатов");
+    _rawPreferencePopup.hidden = YES;
+    _compressedPreferencePopup = [NSPopUpButton new];
+    [_compressedPreferencePopup addItemsWithTitles:@[POL(@"Копии: лучшее качество"), POL(@"Копии: оставлять сжатые")]];
+    for (NSInteger i = 0; i < 2; i++) [_compressedPreferencePopup itemAtIndex:i].tag = i;
+    _compressedPreferencePopup.action = @selector(chooseCompressedPreference:);
+    _compressedPreferencePopup.toolTip = POL(@"Какая копия остаётся: лучшая по качеству (из копий видео — файл камеры, не перекодированный) — или сжатая, чтобы сжатое не сменилось тяжёлым оригиналом: из RAW и JPEG одного кадра — JPEG, из копий видео — самая лёгкая");
+    _compressedPreferencePopup.hidden = YES;
+    _videoResolutionPopup = [NSPopUpButton new];
+    _videoResolutionPopup.action = @selector(chooseVideoResolution:);
+    _videoResolutionPopup.toolTip = POL(@"Показывать видео одного разрешения — например, только 4K: их сжатие даёт больше всего");
+    _videoResolutionPopup.hidden = YES;
+    _stripExtras = [NSStackView stackViewWithViews:@[_extraButton, _backToMapButton, _cleanupButton, _byFoldersButton, _compressedPreferencePopup, _rawPreferencePopup, _videoResolutionPopup, _soloCheckbox, _setDateButton, _acceptSuggestionsButton]];
     _stripExtras.spacing = 12;
     _stripExtras.translatesAutoresizingMaskIntoConstraints = NO;
 
@@ -318,7 +369,33 @@ static NSStackView *POCenteredStack(NSArray<NSView *> *views, NSView *container)
     __weak typeof(self) weakSelf = self;
     _grid.onSelectionChange = ^{ [weakSelf updateSizeLabel]; };
 
-    NSStackView *bar = [NSStackView stackViewWithViews:@[_statusLabel, _sizeLabel, sizeSlider, _organizeButton]];
+    // "Сжать…": the selection, or everything shown when nothing is selected.
+    _compressButton = [NSButton buttonWithTitle:POL(@"Сжать…") target:nil action:@selector(compressSelection:)];
+    _compressButton.toolTip = POL(@"Сжать выбранные RAW-фото и видео (или все показанные, если ничего не выбрано) — сначала покажет, сколько получится");
+
+    // Compressing in the background: how far, and a way to stop it.
+    _compressLabel = [NSTextField labelWithString:@""];
+    _compressLabel.lineBreakMode = NSLineBreakByTruncatingTail;
+    [_compressLabel setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
+    [_compressLabel.widthAnchor constraintLessThanOrEqualToConstant:560].active = YES;
+    _compressProgress = [NSProgressIndicator new];
+    _compressProgress.style = NSProgressIndicatorStyleBar;
+    _compressProgress.controlSize = NSControlSizeSmall;
+    _compressProgress.minValue = 0;
+    _compressProgress.maxValue = 1;
+    [_compressProgress.widthAnchor constraintEqualToConstant:110].active = YES;
+    NSButton *stop = [NSButton buttonWithTitle:POL(@"Остановить") target:nil action:@selector(stopCompressing:)];
+    stop.toolTip = POL(@"Остановить сжатие после текущего файла: что уже сжато, остаётся");
+    // The button first, then how far, then the text, which is cut short when the window is narrow; a click on the
+    // text or the bar opens the details.
+    _compressBar = [NSStackView stackViewWithViews:@[stop, _compressProgress, _compressLabel]];
+    _compressLabel.toolTip = POL(@"Щёлкните, чтобы увидеть подробности и очередь");
+    [_compressLabel addGestureRecognizer:[[NSClickGestureRecognizer alloc] initWithTarget:self action:@selector(compressBarClicked:)]];
+    [_compressProgress addGestureRecognizer:[[NSClickGestureRecognizer alloc] initWithTarget:self action:@selector(compressBarClicked:)]];
+    _compressBar.spacing = 8;
+    _compressBar.hidden = YES;
+
+    NSStackView *bar = [NSStackView stackViewWithViews:@[_compressBar, _statusLabel, _sizeLabel, sizeSlider, _compressButton, _organizeButton]];
     bar.spacing = 16;
     bar.edgeInsets = NSEdgeInsetsMake(0, 16, 0, 16);
     bar.translatesAutoresizingMaskIntoConstraints = NO;
@@ -328,7 +405,26 @@ static NSStackView *POCenteredStack(NSArray<NSView *> *views, NSView *container)
     NSView *mapView = _map.view;
     mapView.translatesAutoresizingMaskIntoConstraints = NO;
     mapView.hidden = YES;
-    for (NSView *subview in @[_filterControl, _stripExtras, _analysisLabel, gridView, mapView, separator, bar]) [view addSubview:subview];
+    // The kinds and the view's controls in a row that scrolls sideways when the window is too narrow for it — with the
+    // mouse wheel over it as well; the status of the analysis stays on the right. As on Windows.
+    NSStackView *stripRow = [NSStackView stackViewWithViews:@[_filterControl, _stripExtras]];
+    stripRow.spacing = 12;
+    stripRow.translatesAutoresizingMaskIntoConstraints = NO;
+    POSidewaysScrollView *stripScroller = [POSidewaysScrollView new];
+    stripScroller.drawsBackground = NO;
+    stripScroller.hasHorizontalScroller = NO;
+    stripScroller.hasVerticalScroller = NO;
+    stripScroller.documentView = stripRow;
+    stripScroller.translatesAutoresizingMaskIntoConstraints = NO;
+    NSLayoutConstraint *stripWidth = [stripScroller.widthAnchor constraintEqualToAnchor:stripRow.widthAnchor];
+    stripWidth.priority = NSLayoutPriorityDefaultLow + 10;   // as wide as the row, unless the window is narrower
+    [NSLayoutConstraint activateConstraints:@[
+        [stripRow.leadingAnchor constraintEqualToAnchor:stripScroller.contentView.leadingAnchor],
+        [stripRow.topAnchor constraintEqualToAnchor:stripScroller.contentView.topAnchor],
+        [stripScroller.heightAnchor constraintEqualToAnchor:stripRow.heightAnchor],
+        stripWidth,
+    ]];
+    for (NSView *subview in @[stripScroller, _analysisLabel, gridView, mapView, separator, bar]) [view addSubview:subview];
     [NSLayoutConstraint activateConstraints:@[
         [mapView.topAnchor constraintEqualToAnchor:gridView.topAnchor],
         [mapView.bottomAnchor constraintEqualToAnchor:gridView.bottomAnchor],
@@ -337,14 +433,12 @@ static NSStackView *POCenteredStack(NSArray<NSView *> *views, NSView *container)
     ]];
     [NSLayoutConstraint activateConstraints:@[
         // Below the toolbar rather than underneath it, so pinned section headers stay visible.
-        [_filterControl.topAnchor constraintEqualToAnchor:view.safeAreaLayoutGuide.topAnchor constant:10],
-        [_filterControl.leadingAnchor constraintEqualToAnchor:view.leadingAnchor constant:18],
-        [_stripExtras.leadingAnchor constraintEqualToAnchor:_filterControl.trailingAnchor constant:12],
-        [_stripExtras.centerYAnchor constraintEqualToAnchor:_filterControl.centerYAnchor],
-        [_analysisLabel.leadingAnchor constraintGreaterThanOrEqualToAnchor:_stripExtras.trailingAnchor constant:12],
+        [stripScroller.topAnchor constraintEqualToAnchor:view.safeAreaLayoutGuide.topAnchor constant:10],
+        [stripScroller.leadingAnchor constraintEqualToAnchor:view.leadingAnchor constant:18],
+        [_analysisLabel.leadingAnchor constraintGreaterThanOrEqualToAnchor:stripScroller.trailingAnchor constant:12],
         [_analysisLabel.trailingAnchor constraintEqualToAnchor:view.trailingAnchor constant:-18],
-        [_analysisLabel.centerYAnchor constraintEqualToAnchor:_filterControl.centerYAnchor],
-        [gridView.topAnchor constraintEqualToAnchor:_filterControl.bottomAnchor constant:10],
+        [_analysisLabel.centerYAnchor constraintEqualToAnchor:stripScroller.centerYAnchor],
+        [gridView.topAnchor constraintEqualToAnchor:stripScroller.bottomAnchor constant:10],
         [gridView.leadingAnchor constraintEqualToAnchor:view.leadingAnchor],
         [gridView.trailingAnchor constraintEqualToAnchor:view.trailingAnchor],
         [gridView.bottomAnchor constraintEqualToAnchor:separator.topAnchor],
@@ -422,8 +516,23 @@ static NSStackView *POCenteredStack(NSArray<NSView *> *views, NSView *container)
     (void)self.view;
     _statusLabel.stringValue = text;
     _statusLabel.toolTip = text;
-    _organizeButton.enabled = canOrganize;
+    _organizeButton.enabled = _compressButton.enabled = canOrganize;
     [self updateSizeLabel];
+}
+
+- (void)compressBarClicked:(NSGestureRecognizer *)recognizer {
+    [NSApp sendAction:@selector(toggleCompressionDetails:) to:nil from:_compressBar];
+}
+
+- (void)setCompressionStatus:(NSString *)text fraction:(double)fraction {
+    (void)self.view;
+    _compressBar.hidden = text == nil;
+    _statusLabel.hidden = text != nil;   // the bar takes its place meanwhile
+    if (!text) return;
+    _compressLabel.stringValue = text;
+    _compressProgress.indeterminate = fraction < 0;
+    if (fraction < 0) [_compressProgress startAnimation:nil];
+    else _compressProgress.doubleValue = fraction;
 }
 
 /// "Выбрано 12 из 345 · 1,2 ГБ", or what everything shown weighs when nothing is selected.
@@ -510,6 +619,33 @@ static void POSetTab(NSButton *button, NSString *title, BOOL selected) {
 - (void)setShowsDuplicatesByFolder:(BOOL)shows {
     (void)self.view;
     _byFoldersButton.hidden = !shows;
+}
+
+- (void)setVideoResolutionCounts:(NSArray<NSNumber *> *)counts selected:(NSInteger)selected {
+    (void)self.view;
+    _videoResolutionPopup.hidden = counts == nil;
+    if (!counts) return;
+    [_videoResolutionPopup removeAllItems];
+    NSArray<NSString *> *names = POVideoResolutionNames();
+    for (NSUInteger i = 0; i < counts.count; i++) {
+        NSString *title = i == 0 ? [NSString stringWithFormat:POL(@"Все разрешения (%@)"), PONumber(counts[0].integerValue)]
+                                 : [NSString stringWithFormat:@"%@ (%@)", names[i - 1], PONumber(counts[i].integerValue)];
+        [_videoResolutionPopup addItemWithTitle:title];
+        [_videoResolutionPopup itemAtIndex:(NSInteger)i].tag = (NSInteger)i;
+    }
+    [_videoResolutionPopup selectItemAtIndex:MIN(MAX(selected, 0), (NSInteger)counts.count - 1)];
+}
+
+- (void)setShowsCompressedPreference:(BOOL)shows selected:(NSInteger)selected {
+    (void)self.view;
+    _compressedPreferencePopup.hidden = !shows;
+    [_compressedPreferencePopup selectItemAtIndex:MIN(MAX(selected, 0), 1)];
+}
+
+- (void)setShowsRawPreference:(BOOL)shows selected:(NSInteger)selected {
+    (void)self.view;
+    _rawPreferencePopup.hidden = !shows;
+    [_rawPreferencePopup selectItemAtIndex:MIN(MAX(selected, 0), 2)];
 }
 
 - (NSString *)analysisStatus {

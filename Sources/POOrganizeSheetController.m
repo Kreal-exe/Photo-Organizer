@@ -12,6 +12,35 @@
 - (BOOL)isFlipped { return YES; }
 @end
 
+/// The line between the options and the folders, dragged sideways: the options narrower, the folders wider.
+@interface POSplitHandle : NSView
+@property (nonatomic, weak) NSLayoutConstraint *width;
+@end
+
+@implementation POSplitHandle {
+    CGFloat _start, _startWidth;
+}
+
+- (void)drawRect:(NSRect)dirtyRect {
+    [NSColor.separatorColor setFill];
+    NSRectFill(NSMakeRect(floor(NSMidX(self.bounds)), 0, 1, self.bounds.size.height));
+}
+
+- (void)resetCursorRects {
+    [self addCursorRect:self.bounds cursor:NSCursor.resizeLeftRightCursor];
+}
+
+- (void)mouseDown:(NSEvent *)event {
+    _start = event.locationInWindow.x;
+    _startWidth = self.width.constant;
+}
+
+- (void)mouseDragged:(NSEvent *)event {
+    self.width.constant = MAX(260, _startWidth + event.locationInWindow.x - _start);
+}
+
+@end
+
 @implementation POOrganizeSheetController {
     NSView *_options, *_footer;   // for the size the window opens at
     BOOL _sized;
@@ -24,8 +53,7 @@
     NSButton *_datesInsideCheckbox;
     NSPopUpButton *_schemePopup, *_yearPopup, *_monthPopup, *_dayPopup;
     NSButton *_nestedCheckbox;
-    NSButton *_screenshotsCheckbox;
-    NSTextField *_screenshotsField;
+    NSButton *_screenshotsCheckbox, *_ownPhotosCheckbox, *_ownVideosCheckbox, *_ownPicturesCheckbox, *_ownCollagesCheckbox;
     NSPopUpButton *_screenshotsPlacePopup;
     NSButton *_removeDuplicatesCheckbox, *_duplicatesCheckbox;
     NSTextField *_duplicatesField;
@@ -34,6 +62,7 @@
     NSTableView *_tableView;
     NSButton *_resetButton;
     NSTextField *_summaryLabel;
+    NSLayoutConstraint *_optionsWidth;   // the width of the options, changed by dragging the handle
     NSButton *_confirmButton;
 }
 
@@ -116,12 +145,9 @@ static NSStackView *POIndented(NSArray<NSView *> *views) {
     _picturesCheckbox.toolTip = POL(@"Открытки, мемы, рисунки, документы — то, что не фотография. Без галочки остаются на месте.");
     _collagesCheckbox = [self checkbox:POL(@"Коллажи")];
     _collagesCheckbox.toolTip = POL(@"Коллажи, рамки, анимации, фильмы и правки, которые сделал Google Фото. Без галочки остаются на месте.");
-    NSStackView *kinds = [NSStackView stackViewWithViews:@[PORow(@[_photosCheckbox, _videosCheckbox, _screenshotKindCheckbox]),
-                                                           PORow(@[_picturesCheckbox, _collagesCheckbox])]];
-    kinds.orientation = NSUserInterfaceLayoutOrientationVertical;
-    kinds.alignment = NSLayoutAttributeLeading;
-    kinds.spacing = 6;
-    for (NSStackView *row in kinds.arrangedSubviews) row.spacing = 16;
+    // One row, in the order of the row of folders of their own below — as on Windows.
+    NSStackView *kinds = PORow(@[_photosCheckbox, _videosCheckbox, _screenshotKindCheckbox, _picturesCheckbox, _collagesCheckbox]);
+    kinds.spacing = 16;
     _removeUnorganizedCheckbox = [self checkbox:POL(@"Неотмеченное — удалить в Корзину")];
     _removeUnorganizedCheckbox.toolTip = POL(@"Без галочки неотмеченные виды остаются на месте. С ней — уходят в Корзину (при переносе; при копировании ничего не удаляется), их можно вернуть оттуда.");
 
@@ -135,10 +161,16 @@ static NSStackView *POIndented(NSArray<NSView *> *views) {
     _dayPopup = [self popupWithTitles:@[@"2024-03-15", @"15", POL(@"15 марта")]];
     _nestedCheckbox = [self checkbox:POL(@"Вкладывать папки друг в друга (год → месяц → день)")];
 
-    // Screenshots, duplicates, thumbnails: what happens to each, and under it, set in, where they go otherwise.
-    _screenshotsCheckbox = [self checkbox:POL(@"В отдельную папку")];
-    _screenshotsField = [self folderField];
-    _screenshotsPlacePopup = [self popupWithTitles:@[POL(@"Одна папка, даты внутри"), POL(@"Внутри папки каждой даты")]];
+    // The kinds with folders of their own: the same list as what is organized; unticked, they lie together by date.
+    _ownPhotosCheckbox = [self checkbox:POL(@"Фото")];
+    _ownVideosCheckbox = [self checkbox:POL(@"Видео")];
+    _screenshotsCheckbox = [self checkbox:POL(@"Скриншоты")];
+    _ownPicturesCheckbox = [self checkbox:POL(@"Картинки")];
+    _ownCollagesCheckbox = [self checkbox:POL(@"Коллажи")];
+    NSStackView *own = PORow(@[_ownPhotosCheckbox, _ownVideosCheckbox, _screenshotsCheckbox, _ownPicturesCheckbox, _ownCollagesCheckbox]);
+    own.spacing = 16;
+    _screenshotsPlacePopup = [self popupWithTitles:@[POL(@"Внутри папки каждой даты (2024/Видео)"), POL(@"Сверху, даты внутри (Видео/2024)")]];
+    // Duplicates, thumbnails: what happens to each, and under it, set in, where they go otherwise.
     _removeDuplicatesCheckbox = [self checkbox:POL(@"Удалить в Корзину")];
     _removeDuplicatesCheckbox.toolTip = POL(@"Точные копии и уменьшенные или пережатые версии снимка при переносе уходят в Корзину (при копировании — не копируются): раскладывается только оригинал или лучшая версия. Копия удаляется, только если её оригинал остаётся.");
     _duplicatesCheckbox = [self checkbox:POL(@"Иначе — в папку:")];
@@ -158,8 +190,8 @@ static NSStackView *POIndented(NSArray<NSView *> *views) {
         @[POFormLabel(POL(@"Группировать:")), _schemePopup],
         @[POFormLabel(POL(@"Названия папок:")), PORow(@[_yearPopup, _monthPopup, _dayPopup])],
         @[NSGridCell.emptyContentView, _nestedCheckbox],
-        @[POFormLabel(POL(@"Скриншоты:")), _screenshotsCheckbox],
-        @[NSGridCell.emptyContentView, POIndented(@[_screenshotsField, _screenshotsPlacePopup])],
+        @[POFormLabel(POL(@"В свои папки:")), own],
+        @[POFormLabel(POL(@"Где эти папки:")), _screenshotsPlacePopup],
         @[POFormLabel(POL(@"Дубликаты:")), _removeDuplicatesCheckbox],
         @[NSGridCell.emptyContentView, POIndented(@[_duplicatesCheckbox, _duplicatesField])],
         @[POFormLabel(POL(@"Миниатюры:")), _removeTinyCheckbox],
@@ -183,6 +215,7 @@ static NSStackView *POIndented(NSArray<NSView *> *views) {
     [document addSubview:form];
     NSScrollView *optionsScroller = [NSScrollView new];
     optionsScroller.hasVerticalScroller = YES;
+    optionsScroller.hasHorizontalScroller = YES;   // narrowed by the handle, the options scroll sideways
     optionsScroller.autohidesScrollers = YES;
     optionsScroller.drawsBackground = NO;
     optionsScroller.documentView = document;
@@ -194,8 +227,11 @@ static NSStackView *POIndented(NSArray<NSView *> *views) {
         [form.bottomAnchor constraintEqualToAnchor:document.bottomAnchor],
         [document.topAnchor constraintEqualToAnchor:optionsScroller.contentView.topAnchor],
         [document.leadingAnchor constraintEqualToAnchor:optionsScroller.contentView.leadingAnchor],
-        [optionsScroller.widthAnchor constraintEqualToConstant:formSize.width + 16],
     ]];
+    // As wide as the options at first; the handle between them and the folders makes it narrower or wider.
+    _optionsWidth = [optionsScroller.widthAnchor constraintEqualToConstant:formSize.width + 16];
+    _optionsWidth.active = YES;
+    [optionsScroller.widthAnchor constraintGreaterThanOrEqualToConstant:260].active = YES;
 
     // What it comes to: the folders, renamed by clicking.
     NSTextField *previewTitle = [NSTextField labelWithString:POL(@"Что получится")];
@@ -257,7 +293,10 @@ static NSStackView *POIndented(NSArray<NSView *> *views) {
 
     // Header on top, options on the left and the folders on the right, buttons below.
     NSView *root = [NSView new];
-    NSArray<NSView *> *parts = @[title, subtitle, optionsScroller, preview, footer];
+    POSplitHandle *handle = [POSplitHandle new];
+    handle.width = _optionsWidth;
+    handle.toolTip = POL(@"Потяните, чтобы сузить настройки и расширить список папок");
+    NSArray<NSView *> *parts = @[title, subtitle, optionsScroller, handle, preview, footer];
     for (NSView *part in parts) {
         part.translatesAutoresizingMaskIntoConstraints = NO;
         [root addSubview:part];
@@ -275,7 +314,11 @@ static NSStackView *POIndented(NSArray<NSView *> *views) {
         [optionsScroller.heightAnchor constraintGreaterThanOrEqualToConstant:160],
         optionsHeight,
         [preview.topAnchor constraintEqualToAnchor:optionsScroller.topAnchor],
-        [preview.leadingAnchor constraintEqualToAnchor:optionsScroller.trailingAnchor constant:16],
+        [handle.leadingAnchor constraintEqualToAnchor:optionsScroller.trailingAnchor],
+        [handle.widthAnchor constraintEqualToConstant:16],
+        [handle.topAnchor constraintEqualToAnchor:optionsScroller.topAnchor],
+        [handle.bottomAnchor constraintEqualToAnchor:optionsScroller.bottomAnchor],
+        [preview.leadingAnchor constraintEqualToAnchor:handle.trailingAnchor],
         [preview.trailingAnchor constraintEqualToAnchor:root.trailingAnchor constant:-20],
         [preview.bottomAnchor constraintEqualToAnchor:optionsScroller.bottomAnchor],
         [footer.topAnchor constraintEqualToAnchor:optionsScroller.bottomAnchor constant:16],
@@ -339,11 +382,14 @@ static NSStackView *POIndented(NSArray<NSView *> *views) {
     _screenshotKindCheckbox.state = _plan.organizesScreenshots ? NSControlStateValueOn : NSControlStateValueOff;
     _removeUnorganizedCheckbox.state = _plan.removesUnorganized ? NSControlStateValueOn : NSControlStateValueOff;
     _removeUnorganizedCheckbox.enabled = !_plan.copiesFiles;
+    _ownPhotosCheckbox.state = _plan.separatePhotos ? NSControlStateValueOn : NSControlStateValueOff;
+    _ownVideosCheckbox.state = _plan.separateVideos ? NSControlStateValueOn : NSControlStateValueOff;
+    _ownPicturesCheckbox.state = _plan.separatePictures ? NSControlStateValueOn : NSControlStateValueOff;
+    _ownCollagesCheckbox.state = _plan.separateCollages ? NSControlStateValueOn : NSControlStateValueOff;
     _screenshotsCheckbox.state = _plan.separateScreenshots ? NSControlStateValueOn : NSControlStateValueOff;
-    _screenshotsField.stringValue = _plan.screenshotsFolderName;
-    _screenshotsField.enabled = _plan.separateScreenshots;
-    [_screenshotsPlacePopup selectItemAtIndex:_plan.screenshotsInEachDate ? 1 : 0];
-    _screenshotsPlacePopup.enabled = _plan.separateScreenshots;
+    [_screenshotsPlacePopup selectItemAtIndex:_plan.screenshotsInEachDate ? 0 : 1];
+    _screenshotsPlacePopup.enabled = _plan.separatePhotos || _plan.separateVideos || _plan.separatePictures || _plan.separateCollages ||
+                                     _plan.separateScreenshots;
     [_schemePopup selectItemAtIndex:_plan.scheme];
     [_yearPopup selectItemAtIndex:_plan.yearStyle];
     [_monthPopup selectItemAtIndex:_plan.monthStyle];
@@ -376,6 +422,11 @@ static NSStackView *POIndented(NSArray<NSView *> *views) {
     NSUInteger toTrash = _plan.duplicatesToRemove.count + _plan.unorganizedToRemove.count;
     if (toTrash) {
         what = [what stringByAppendingFormat:POL(@" В Корзину: %@."), PONumber(toTrash)];
+    }
+    // What the library will hold afterwards: what goes to the Trash is no longer in it. As on Windows.
+    if (!copies) {
+        what = [what stringByAppendingFormat:POL(@" В медиатеке будет %@."),
+                POCount(_plan.items.count - toTrash, POL(@"файл"), POL(@"файла"), POL(@"файлов"))];
     }
     if (_plan.merging && !copies) {
         what = [what stringByAppendingFormat:POL(@" Что уже лежит в «%@», остаётся как есть; из других папок добавляется только то, чего в ней нет, а копии того, что в ней есть, идут в Корзину."),
@@ -411,9 +462,12 @@ static NSStackView *POIndented(NSArray<NSView *> *views) {
     _plan.organizesCollages = _collagesCheckbox.state == NSControlStateValueOn;
     _plan.organizesScreenshots = _screenshotKindCheckbox.state == NSControlStateValueOn;
     _plan.removesUnorganized = _removeUnorganizedCheckbox.state == NSControlStateValueOn;
+    _plan.separatePhotos = _ownPhotosCheckbox.state == NSControlStateValueOn;
+    _plan.separateVideos = _ownVideosCheckbox.state == NSControlStateValueOn;
+    _plan.separatePictures = _ownPicturesCheckbox.state == NSControlStateValueOn;
+    _plan.separateCollages = _ownCollagesCheckbox.state == NSControlStateValueOn;
     _plan.separateScreenshots = _screenshotsCheckbox.state == NSControlStateValueOn;
-    _plan.screenshotsInEachDate = _screenshotsPlacePopup.indexOfSelectedItem == 1;
-    _plan.screenshotsFolderName = _screenshotsField.stringValue;
+    _plan.screenshotsInEachDate = _screenshotsPlacePopup.indexOfSelectedItem != 1;
     _plan.scheme = _schemePopup.indexOfSelectedItem;
     _plan.yearStyle = _yearPopup.indexOfSelectedItem;
     _plan.monthStyle = _monthPopup.indexOfSelectedItem;

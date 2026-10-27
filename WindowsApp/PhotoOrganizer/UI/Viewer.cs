@@ -228,6 +228,15 @@ public sealed class Viewer : DockPanel
         if (item.DestinationFolder != null) info.Add(item.NeedsMove ? "→ " + item.DestinationFolder.Replace('/', '\\') : L("уже на месте"));
         _title.Text = string.Join("  ·  ", info);
         _title.ToolTip = item.Path;
+        // The frame rate and HDR, read from the file after it is shown (a few hundredths of a second), after the size.
+        int at = Math.Min(info.Count, item.PixelWidth > 0 ? 3 : 2);
+        string detailed = item.Path;
+        Task.Run(() => Details(item)).ContinueWith(task =>
+        {
+            if (Current?.Path != detailed || task.Result.Count == 0) return;
+            info.InsertRange(at, task.Result);
+            _title.Text = string.Join("  ·  ", info);
+        }, TaskScheduler.FromCurrentSynchronizationContext());
         _counter.Text = F("%@ из %@", Number(_index + 1), Number(_items.Count));
         _previous.IsEnabled = _index > 0;
         _next.IsEnabled = _index < _items.Count - 1;
@@ -256,6 +265,30 @@ public sealed class Viewer : DockPanel
             Layout();
             if (task.Result != null && path.EndsWith(".gif", StringComparison.OrdinalIgnoreCase)) Animate(path);
         }, TaskScheduler.FromCurrentSynchronizationContext());
+    }
+
+    /// <summary>A video's frame rate and HDR ("60 кадр/с", "Dolby Vision"); a picture's HDR. As on the Mac.</summary>
+    static List<string> Details(PhotoItem item)
+    {
+        var details = new List<string>();
+        if (item.Video)
+        {
+            if (VideoCompressor.ProbeRemembered(item.Path) is not { } video) return details;
+            if (video.Fps > 0) details.Add(F("%@ кадр/с", ((int)Math.Round(video.Fps)).ToString(System.Globalization.CultureInfo.InvariantCulture)));
+            string? hdr = video.DynamicHdr switch
+            {
+                "dolby vision" => "Dolby Vision",
+                "vivid" => "HDR Vivid",
+                "hdr10+" => "HDR10+",
+                _ => video.Transfer is "arib-std-b67" or "smpte2084" ? "HDR" : null,
+            };
+            if (hdr != null) details.Add(hdr);
+        }
+        else if (Images.IsHdr(item.Path))
+        {
+            details.Add("HDR");
+        }
+        return details;
     }
 
     /// <summary>

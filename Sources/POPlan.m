@@ -19,13 +19,24 @@ static NSString *const PODefaultsCopiesFiles = @"organizeCopiesFiles";
 static NSString *const PODefaultsArrangement = @"arrangement";
 static NSString *const PODefaultsDatesInside = @"datesInside";
 static NSString *const PODefaultsSeparateScreenshots = @"separateScreenshots";
-static NSString *const PODefaultsScreenshotsInEachDate = @"screenshotsInEachDate";
+static NSString *const PODefaultsScreenshotsInEachDate = @"ownFoldersInEachDate";
+static NSString *const PODefaultsSeparatePhotos = @"separatePhotos";
+static NSString *const PODefaultsSeparateVideos = @"separateVideos";
+static NSString *const PODefaultsSeparatePictures = @"separatePictures";
+static NSString *const PODefaultsSeparateCollages = @"separateCollages";
 static NSString *const PODefaultsScreenshotsFolder = @"screenshotsFolderName";
 static NSString *const PODefaultsOrganizesPhotos = @"organizesPhotos";
 static NSString *const PODefaultsOrganizesVideos = @"organizesVideos";
 static NSString *const PODefaultsOrganizesPictures = @"organizesPictures";
 static NSString *const PODefaultsOrganizesCollages = @"organizesCollages";
 static NSString *const PODefaultsOrganizesScreenshots = @"organizesScreenshots";
+// What is organized is chosen in the organize sheet alone (every kind unless unticked there): the kinds ticked above
+// the grid (organizesPhotos…, the earlier keys) only show and hide. As on Windows.
+static NSString *const PODefaultsOrganizeKindPhotos = @"organizeKindPhotos";
+static NSString *const PODefaultsOrganizeKindVideos = @"organizeKindVideos";
+static NSString *const PODefaultsOrganizeKindPictures = @"organizeKindPictures";
+static NSString *const PODefaultsOrganizeKindCollages = @"organizeKindCollages";
+static NSString *const PODefaultsOrganizeKindScreenshots = @"organizeKindScreenshots";
 static NSString *const PODefaultsKeptFolders = @"keptFolders";   // library path (lower case) → [top-level folder]
 
 @interface POGroup ()
@@ -71,6 +82,12 @@ static NSString *const PODefaultsKeptFolders = @"keptFolders";   // library path
         PODefaultsOrganizesPictures: @YES,
         PODefaultsOrganizesCollages: @YES,
         PODefaultsOrganizesScreenshots: @YES,
+        PODefaultsOrganizeKindPhotos: @YES,
+        PODefaultsOrganizeKindVideos: @YES,
+        PODefaultsOrganizeKindPictures: @YES,
+        PODefaultsOrganizeKindCollages: @YES,
+        PODefaultsOrganizeKindScreenshots: @YES,
+        PODefaultsScreenshotsInEachDate: @YES,
     }];
 }
 
@@ -125,6 +142,7 @@ static NSString *const PODefaultsKeptFolders = @"keptFolders";   // library path
         _screenshotsFolderName = POPlan.defaultScreenshotsFolderName;
         _datesInside = YES;
         _organizesPhotos = _organizesVideos = _organizesPictures = _organizesCollages = _organizesScreenshots = YES;
+        _screenshotsInEachDate = YES;
         _customNames = [NSMutableDictionary dictionary];
         NSArray *kept = [[NSUserDefaults.standardUserDefaults dictionaryForKey:PODefaultsKeptFolders] objectForKey:rootURL.path.lowercaseString];
         _keptFolders = [NSMutableSet setWithArray:[kept isKindOfClass:NSArray.class] ? kept : @[]];
@@ -212,9 +230,20 @@ static NSString *const PODefaultsKeptFolders = @"keptFolders";   // library path
          : item.isVideo ? self.organizesVideos : self.organizesPhotos;
 }
 
+/// The folder of its own the kind of `item` goes to (see separatePhotos…); nil when it lies with the rest. The same
+/// kinds as organizesItem:.
+- (NSString *)ownFolderOfItem:(POPhotoItem *)item {
+    if (POIsCollage(item)) return self.separateCollages ? POL(@"Коллажи") : nil;
+    if (POIsScreenshot(item) && !item.pictureMark) return self.separateScreenshots ? self.screenshotsFolderName : nil;
+    if (POIsPicture(item)) return self.separatePictures ? POL(@"Картинки") : nil;
+    if (item.isVideo) return self.separateVideos ? POL(@"Видео") : nil;
+    return self.separatePhotos ? POL(@"Фото") : nil;
+}
+
 /// The first-level folder of a file when the library is not organized by date; nil for the date folders.
 - (NSString *)sectionOfItem:(POPhotoItem *)item {
-    if (self.separateScreenshots && POIsScreenshot(item)) return self.screenshotsFolderName;
+    NSString *own = [self ownFolderOfItem:item];
+    if (own) return own;
     switch (self.arrangement) {
         case POArrangementType: return POTypeFolder(item);
         case POArrangementFormat: return POFormatFolder(item);
@@ -293,11 +322,15 @@ static NSString *const PODefaultsKeptFolders = @"keptFolders";   // library path
     self.copiesFiles = [defaults boolForKey:PODefaultsCopiesFiles];
     self.arrangement = MIN(MAX([defaults integerForKey:PODefaultsArrangement], POArrangementDate), POArrangementFormat);
     self.datesInside = [defaults boolForKey:PODefaultsDatesInside];
-    self.organizesPhotos = [defaults boolForKey:PODefaultsOrganizesPhotos];
-    self.organizesVideos = [defaults boolForKey:PODefaultsOrganizesVideos];
-    self.organizesPictures = [defaults boolForKey:PODefaultsOrganizesPictures];
-    self.organizesCollages = [defaults boolForKey:PODefaultsOrganizesCollages];
-    self.organizesScreenshots = [defaults boolForKey:PODefaultsOrganizesScreenshots];
+    self.organizesPhotos = [defaults boolForKey:PODefaultsOrganizeKindPhotos];
+    self.organizesVideos = [defaults boolForKey:PODefaultsOrganizeKindVideos];
+    self.organizesPictures = [defaults boolForKey:PODefaultsOrganizeKindPictures];
+    self.organizesCollages = [defaults boolForKey:PODefaultsOrganizeKindCollages];
+    self.organizesScreenshots = [defaults boolForKey:PODefaultsOrganizeKindScreenshots];
+    self.separatePhotos = [defaults boolForKey:PODefaultsSeparatePhotos];
+    self.separateVideos = [defaults boolForKey:PODefaultsSeparateVideos];
+    self.separatePictures = [defaults boolForKey:PODefaultsSeparatePictures];
+    self.separateCollages = [defaults boolForKey:PODefaultsSeparateCollages];
     self.separateScreenshots = [defaults boolForKey:PODefaultsSeparateScreenshots];
     self.screenshotsInEachDate = [defaults boolForKey:PODefaultsScreenshotsInEachDate];
     NSString *screenshots = [defaults stringForKey:PODefaultsScreenshotsFolder];
@@ -326,11 +359,15 @@ static NSString *const PODefaultsKeptFolders = @"keptFolders";   // library path
     [defaults setBool:self.copiesFiles forKey:PODefaultsCopiesFiles];
     [defaults setInteger:self.arrangement forKey:PODefaultsArrangement];
     [defaults setBool:self.datesInside forKey:PODefaultsDatesInside];
-    [defaults setBool:self.organizesPhotos forKey:PODefaultsOrganizesPhotos];
-    [defaults setBool:self.organizesVideos forKey:PODefaultsOrganizesVideos];
-    [defaults setBool:self.organizesPictures forKey:PODefaultsOrganizesPictures];
-    [defaults setBool:self.organizesCollages forKey:PODefaultsOrganizesCollages];
-    [defaults setBool:self.organizesScreenshots forKey:PODefaultsOrganizesScreenshots];
+    [defaults setBool:self.organizesPhotos forKey:PODefaultsOrganizeKindPhotos];
+    [defaults setBool:self.organizesVideos forKey:PODefaultsOrganizeKindVideos];
+    [defaults setBool:self.organizesPictures forKey:PODefaultsOrganizeKindPictures];
+    [defaults setBool:self.organizesCollages forKey:PODefaultsOrganizeKindCollages];
+    [defaults setBool:self.organizesScreenshots forKey:PODefaultsOrganizeKindScreenshots];
+    [defaults setBool:self.separatePhotos forKey:PODefaultsSeparatePhotos];
+    [defaults setBool:self.separateVideos forKey:PODefaultsSeparateVideos];
+    [defaults setBool:self.separatePictures forKey:PODefaultsSeparatePictures];
+    [defaults setBool:self.separateCollages forKey:PODefaultsSeparateCollages];
     [defaults setBool:self.separateScreenshots forKey:PODefaultsSeparateScreenshots];
     [defaults setBool:self.screenshotsInEachDate forKey:PODefaultsScreenshotsInEachDate];
     [defaults setObject:self.screenshotsFolderName forKey:PODefaultsScreenshotsFolder];
@@ -514,10 +551,10 @@ static NSString *const PODefaultsKeptFolders = @"keptFolders";   // library path
             group = tiny;
         } else if (self.separateDuplicates && (item.isDuplicate || item.betterCopy)) {
             group = duplicates;
-        } else if (self.separateScreenshots && self.screenshotsInEachDate && POIsScreenshot(item)) {
-            // A screenshots folder inside the folder of its date (or of the undated files).
+        } else if (self.screenshotsInEachDate && [self ownFolderOfItem:item]) {
+            // The folder of its kind inside the folder of its date (or of the undated files).
             NSString *date = item.isUndated ? POPlan.undatedFolderName : [self dateFolderForItem:item];
-            group = groupFor([date stringByAppendingPathComponent:self.screenshotsFolderName], dateGroups);
+            group = groupFor([date stringByAppendingPathComponent:[self ownFolderOfItem:item]], dateGroups);
         } else if ([self sectionOfItem:item]) {
             // By type, person or format: that folder first, the date folders (or the undated one) inside. The
             // screenshots folder always has its dates.
