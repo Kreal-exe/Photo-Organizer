@@ -132,6 +132,7 @@ static NSStackView *POCenteredStack(NSArray<NSView *> *views, NSView *container)
     NSStackView *_stripExtras;
     NSTextField *_analysisLabel;
     NSTextField *_statusLabel;
+    NSTextField *_sizeLabel;
     NSButton *_setDateButton;
     NSButton *_backToMapButton;
     NSButton *_extraButton;
@@ -308,7 +309,16 @@ static NSStackView *POCenteredStack(NSArray<NSView *> *views, NSView *container)
     _grid.onCellWidthChange = ^(CGFloat width) { weakSlider.doubleValue = width; };
     [sizeSlider.widthAnchor constraintEqualToConstant:110].active = YES;
 
-    NSStackView *bar = [NSStackView stackViewWithViews:@[_statusLabel, sizeSlider, _organizeButton]];
+    // How many files are selected (or shown) and how much they weigh.
+    _sizeLabel = [NSTextField labelWithString:@""];
+    _sizeLabel.textColor = NSColor.secondaryLabelColor;
+    _sizeLabel.font = [NSFont monospacedDigitSystemFontOfSize:NSFont.systemFontSize weight:NSFontWeightRegular];
+    _sizeLabel.toolTip = POL(@"Сколько весят выбранные файлы (или все показанные, если ничего не выбрано)");
+    [_sizeLabel setContentCompressionResistancePriority:NSLayoutPriorityDefaultHigh forOrientation:NSLayoutConstraintOrientationHorizontal];
+    __weak typeof(self) weakSelf = self;
+    _grid.onSelectionChange = ^{ [weakSelf updateSizeLabel]; };
+
+    NSStackView *bar = [NSStackView stackViewWithViews:@[_statusLabel, _sizeLabel, sizeSlider, _organizeButton]];
     bar.spacing = 16;
     bar.edgeInsets = NSEdgeInsetsMake(0, 16, 0, 16);
     bar.translatesAutoresizingMaskIntoConstraints = NO;
@@ -413,6 +423,20 @@ static NSStackView *POCenteredStack(NSArray<NSView *> *views, NSView *container)
     _statusLabel.stringValue = text;
     _statusLabel.toolTip = text;
     _organizeButton.enabled = canOrganize;
+    [self updateSizeLabel];
+}
+
+/// "Выбрано 12 из 345 · 1,2 ГБ", or what everything shown weighs when nothing is selected.
+- (void)updateSizeLabel {
+    NSArray<POPhotoItem *> *shown = _grid.allItems, *selected = _grid.selectedItems;
+    unsigned long long bytes = 0;
+    for (POPhotoItem *item in selected.count ? selected : shown) bytes += item.fileSize;
+    NSString *size = [NSByteCountFormatter stringFromByteCount:(long long)bytes countStyle:NSByteCountFormatterCountStyleFile];
+    if (selected.count) {
+        _sizeLabel.stringValue = [NSString stringWithFormat:POL(@"Выбрано %@ из %@ · %@"), PONumber(selected.count), PONumber(shown.count), size];
+    } else {
+        _sizeLabel.stringValue = shown.count ? [NSString stringWithFormat:@"%@ · %@", POCount(shown.count, POL(@"файл"), POL(@"файла"), POL(@"файлов")), size] : @"";
+    }
 }
 
 static void POSetTab(NSButton *button, NSString *title, BOOL selected) {

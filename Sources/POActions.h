@@ -25,6 +25,8 @@ NS_ASSUME_NONNULL_BEGIN
 - (IBAction)findSimilarToSelection:(nullable id)sender;
 - (IBAction)moveSelectionToFolder:(nullable id)sender;
 - (IBAction)trashSelection:(nullable id)sender;
+/// "Сжать…": the selected RAW photos and videos (or everything shown when nothing is selected).
+- (IBAction)compressSelection:(nullable id)sender;
 /// Moves everything the grid shows (a search result, a person, the flagged files…) into one folder.
 - (IBAction)moveShownToFolder:(nullable id)sender;
 - (IBAction)showPhotoSearch:(nullable id)sender;

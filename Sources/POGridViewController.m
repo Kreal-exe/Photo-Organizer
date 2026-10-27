@@ -604,6 +604,7 @@ static NSTextField *POCaptionLabel(NSFont *font, NSColor *color) {
     [menu addItemWithTitle:POL(@"Это фото") action:@selector(markSelectionAsPhoto:) keyEquivalent:@""];
     [menu addItem:NSMenuItem.separatorItem];
     [menu addItemWithTitle:POL(@"Переместить в папку…") action:@selector(moveSelectionToFolder:) keyEquivalent:@""];
+    [menu addItemWithTitle:POL(@"Сжать…") action:@selector(compressSelection:) keyEquivalent:@""];
     [menu addItemWithTitle:POL(@"Переместить в Корзину") action:@selector(trashSelection:) keyEquivalent:@""];
     return menu;
 }
@@ -901,6 +902,7 @@ static NSTextField *POCaptionLabel(NSFont *font, NSColor *color) {
 }
 
 - (void)selectionDidChange {
+    if (self.onSelectionChange) self.onSelectionChange();
     _previewURLs = [self selectedURLs];
     if (QLPreviewPanel.sharedPreviewPanelExists && QLPreviewPanel.sharedPreviewPanel.dataSource == self) {
         [QLPreviewPanel.sharedPreviewPanel reloadData];

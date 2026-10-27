@@ -18,7 +18,7 @@ static BOOL POMatches(NSString *pattern, NSString *text) {
 }
 
 /// Camera RAW formats: scanned as photos, and organized by type into "RAW". The same list as on Windows.
-static NSSet<NSString *> *PORawExtensions(void) {
+NSSet<NSString *> *PORawExtensions(void) {
     static NSSet<NSString *> *raw;
     static dispatch_once_t once;
     dispatch_once(&once, ^{

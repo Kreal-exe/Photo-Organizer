@@ -25,6 +25,8 @@
 #import "POFolderDuplicatesController.h"
 #import "POArrangeController.h"
 #import "POThumbnailCache.h"
+#import "POCompression.h"
+#import "POCompressController.h"
 
 static NSToolbarItemIdentifier const POToolbarOpen = @"open";
 static NSToolbarItemIdentifier const POToolbarAddFolder = @"addFolder";
@@ -246,6 +248,7 @@ static POMediaKind POMediaKindOfItem(POPhotoItem *item);
     BOOL idle = _plan && !_scanner && !_organizing && (_content.showsResults || _content.showsViewer);
     if (action == @selector(moveShownToFolder:)) return idle && _content.grid.allItems.count > 0;
     if (action == @selector(moveSelectionToFolder:)) return idle && _content.grid.selectedItems.count > 0;
+    if (action == @selector(compressSelection:)) return idle && !self.window.attachedSheet && [self compressibleIn:[self itemsToCompress]];
     // ⌘⌫ also clears a line in a text field: it only means "to the Trash" while the grid has the focus, or from
     // the grid's own menu.
     if (action == @selector(trashSelection:)) {
@@ -1859,6 +1862,121 @@ static BOOL POIsStillThere(POPhotoItem *item) {
 - (void)beginMovingFiles {
     [self stopAnalysis];
     _organizing = YES;
+}
+
+#pragma mark - Compressing
+
+/// The selected files, the one in the viewer, or everything shown when nothing is selected.
+- (NSArray<POPhotoItem *> *)itemsToCompress {
+    if (_content.showsViewer && _content.viewer.currentItem) return @[_content.viewer.currentItem];
+    return _content.grid.selectedItems.count ? _content.grid.selectedItems : _content.grid.allItems;
+}
+
+- (BOOL)compressibleIn:(NSArray<POPhotoItem *> *)items {
+    for (POPhotoItem *item in items) {
+        if (!item.isCloudOnly && (item.isVideo || POIsRawItem(item))) return YES;
+    }
+    return NO;
+}
+
+/// "Сжать…": the sheet says what it would give; then the RAW photos (a few at a time) and the videos (one after
+/// another: the encoder is busy enough) are compressed, each taking the place of its original, which goes to the
+/// Trash. Can be stopped between two files; the library is read again afterwards.
+- (IBAction)compressSelection:(id)sender {
+    if (!_plan || _scanner || _organizing || self.window.attachedSheet) return;
+    NSArray<POPhotoItem *> *items = [self itemsToCompress];
+    if (![self compressibleIn:items]) return;
+    POCompressController *sheet = [[POCompressController alloc] initWithItems:items library:_plan.items];
+    __weak typeof(self) weakSelf = self;
+    sheet.completion = ^(POCompressController *controller) {
+        [weakSelf compressPhotos:controller.photos megapixels:controller.megapixels videos:controller.videos];
+    };
+    [self.window.contentViewController presentViewControllerAsSheet:sheet];
+}
+
+- (void)compressPhotos:(NSArray<POPhotoItem *> *)photos megapixels:(NSInteger)megapixels videos:(NSArray<NSArray *> *)videos {
+    if (!photos.count && !videos.count) return;
+    if (_content.showsViewer) [_content.viewer close];
+    POStopFlag *stop = [POStopFlag new];
+    _copyStop = stop;
+    [self beginMovingFiles];
+    [_content showProgressWithText:POL(@"Сжатие…") fraction:-1 cancelTitle:POL(@"Остановить")];
+    [self updateUI];
+    NSUInteger total = photos.count + videos.count;
+    NSMutableArray<POCompressionOutcome *> *outcomes = [NSMutableArray array];
+    __block long long freed = 0;
+    __weak typeof(self) weakSelf = self;
+    void (^report)(NSString *, double) = ^(NSString *current, double fraction) {
+        NSUInteger done;
+        long long saved;
+        @synchronized (outcomes) {
+            done = outcomes.count;
+            saved = freed;
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            typeof(self) me = weakSelf;
+            if (!me || !me->_organizing) return;
+            NSString *text = [NSString stringWithFormat:POL(@"Сжатие: %@ из %@ · освобождено %@"), PONumber(done), PONumber(total), POByteSize(saved)];
+            if (current) text = [text stringByAppendingFormat:@"\n%@ — %.0f %%", current, fraction * 100];
+            [me->_content showProgressWithText:text fraction:(done + fraction) / total cancelTitle:POL(@"Остановить")];
+        });
+    };
+    void (^finished)(POCompressionOutcome *) = ^(POCompressionOutcome *outcome) {
+        @synchronized (outcomes) {
+            [outcomes addObject:outcome];
+            if (outcome.compressedURL) freed += outcome.before - outcome.after;
+        }
+    };
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        // Each photo takes a few hundred megabytes while it is made: a few at a time.
+        NSOperationQueue *queue = [NSOperationQueue new];
+        queue.maxConcurrentOperationCount = MIN(MAX((NSInteger)NSProcessInfo.processInfo.activeProcessorCount / 4, 1), 4);
+        for (POPhotoItem *item in photos) {
+            [queue addOperationWithBlock:^{
+                if (stop.stopped) return;
+                finished(POCompressPhotoItem(item, megapixels));
+                report(nil, 0);
+            }];
+        }
+        [queue waitUntilAllOperationsAreFinished];
+        for (NSArray *video in videos) {
+            if (stop.stopped) break;
+            POPhotoItem *item = video[0];
+            POCompressionOutcome *outcome = POCompressVideoItem(item, video[1], video[2], ^(double fraction) { report(item.url.lastPathComponent, fraction); },
+                                                                ^BOOL { return stop.stopped; });
+            // Stopped in the middle: that video stays as it was, and is not counted.
+            if (stop.stopped && !outcome.compressedURL) break;
+            finished(outcome);
+            report(nil, 0);
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [weakSelf didFinishCompressing:outcomes stopped:stop.stopped];
+        });
+    });
+}
+
+- (void)didFinishCompressing:(NSArray<POCompressionOutcome *> *)outcomes stopped:(BOOL)stopped {
+    _organizing = NO;
+    _copyStop = nil;
+    NSMutableArray<NSString *> *errors = [NSMutableArray array];
+    long long before = 0, after = 0;
+    NSUInteger done = 0, withoutHdr = 0;
+    for (POCompressionOutcome *outcome in outcomes) {
+        if (outcome.error) [errors addObject:[NSString stringWithFormat:@"%@: %@", outcome.item.relativePath, outcome.error]];
+        if (!outcome.compressedURL) continue;
+        done++;
+        before += outcome.before;
+        after += outcome.after;
+        if (!outcome.item.isVideo && !outcome.hdr) withoutHdr++;
+    }
+    NSString *message = [NSString stringWithFormat:POL(@"Сжато: %@ — %@"), POCount(done, POL(@"файл"), POL(@"файла"), POL(@"файлов")),
+                         POCompressionSaving(before, after)];
+    if (stopped) message = [NSString stringWithFormat:@"%@ %@", POL(@"Сжатие остановлено."), message];
+    if (withoutHdr) message = [message stringByAppendingFormat:@". %@", [NSString stringWithFormat:POL(@"Без HDR (в RAW его не было): %@"), PONumber(withoutHdr)]];
+    _lastMessage = [message stringByAppendingFormat:@". %@", POL(@"Оригиналы — в Корзине.")];
+    [self showErrors:errors title:POL(@"Не все файлы удалось сжать")];
+    // The files changed under their names (and RAW became JPEG): the library is read again.
+    [self startScan];
 }
 
 /// Moves the selected files to the Trash, where they stay until the user empties it.

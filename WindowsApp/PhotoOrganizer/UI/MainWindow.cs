@@ -48,6 +48,8 @@ public sealed class MainWindow : Window
     readonly Button _setDate, _accept, _cleanup, _byFolders, _pickAnother, _backToMap, _arrange;
     readonly TextBlock _analysis = new() { TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = VerticalAlignment.Center, MaxWidth = 280 };
     readonly TextBlock _status = new() { TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = VerticalAlignment.Center };
+    /// <summary>How many files are selected (or shown) and how much they weigh, at the right of the bottom bar.</summary>
+    readonly TextBlock _sizeInfo = new() { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(16, 0, 0, 0) };
     readonly Slider _size = new() { Minimum = 110, Maximum = 420, Width = 150, VerticalAlignment = VerticalAlignment.Center };
     readonly Button _organize;
     readonly UIElement _welcome, _library;
@@ -294,6 +296,9 @@ public sealed class MainWindow : Window
         _results.Content = _grid;
 
         _status.SetResourceReference(TextBlock.ForegroundProperty, "Secondary");
+        _sizeInfo.SetResourceReference(TextBlock.ForegroundProperty, "Secondary");
+        _sizeInfo.ToolTip = L("Сколько весят выбранные файлы (или все показанные, если ничего не выбрано)");
+        _grid.SelectionChanged += UpdateSizeInfo;
         _size.Value = Settings.Shared.Get("thumbnailSize", DefaultThumbnailSize);
         _size.ToolTip = L("Размер миниатюр в сетке");
         _size.ValueChanged += (_, _) =>
@@ -309,8 +314,10 @@ public sealed class MainWindow : Window
         DockPanel.SetDock(_organize, Dock.Right);
         _size.Margin = new Thickness(16, 0, 16, 0);
         DockPanel.SetDock(_size, Dock.Right);
+        DockPanel.SetDock(_sizeInfo, Dock.Right);
         bottom.Children.Add(_organize);
         bottom.Children.Add(_size);
+        bottom.Children.Add(_sizeInfo);
         bottom.Children.Add(_status);
         var bottomBar = Ui.Bar("Toolbar", new Thickness(0, 1, 0, 0));
         bottomBar.Child = bottom;
@@ -1298,6 +1305,22 @@ public sealed class MainWindow : Window
             : _plan.Items.Count == 0 ? L("В этой папке нет фото и видео")
             : pending > 0 ? F(_plan.CopiesFiles ? "Будет скопировано %@ из %@" : "Будет перемещено %@ из %@", Number(pending), Number(_plan.Items.Count))
             : _lastMessage ?? L("Все файлы уже лежат на своих местах");
+        UpdateSizeInfo();
+    }
+
+    /// <summary>"Выбрано 12 из 345 · 1,2 ГБ", or what everything shown weighs when nothing is selected.</summary>
+    void UpdateSizeInfo()
+    {
+        if (_plan == null)
+        {
+            _sizeInfo.Text = "";
+            return;
+        }
+        var shown = _grid.ShownItems;
+        var selected = _grid.SelectedItems;
+        _sizeInfo.Text = selected.Count > 0
+            ? F("Выбрано %@ из %@ · %@", Number(selected.Count), Number(shown.Count), Strings.Size(selected.Sum(i => i.FileSize)))
+            : shown.Count > 0 ? $"{FilesDetail(shown.Count)} · {Strings.Size(shown.Sum(i => i.FileSize))}" : "";
     }
 
     // --- Viewer -------------------------------------------------------------------------------------------------
@@ -1397,12 +1420,14 @@ public sealed class MainWindow : Window
             menu.Items.Add(new Separator());
             // Files that move away leave the viewer for the grid.
             Add(L("Переместить в папку…"), () => { CloseViewer(); MoveSelectionToFolder(); }, !_busy);
+            Add(L("Сжать…"), () => { CloseViewer(); Compress(selected); }, !_busy && selected.Any(Compressible));
             Add(L("Переместить в Корзину"), TrashSelection, !_busy);
         }
         else
         {
             Add(L("Выбрать всё"), _grid.SelectAll);
             if (_grid.ShownItems.Count > 0) Add(L("Переместить показанное в папку…"), MoveShownToFolder, !_busy);
+            if (_grid.ShownItems.Count > 0) Add(L("Сжать показанное…"), () => Compress(_grid.ShownItems), !_busy && _grid.ShownItems.Any(Compressible));
         }
         menu.PlacementTarget = target;
         menu.Placement = PlacementMode.RelativePoint;
@@ -1779,6 +1804,92 @@ public sealed class MainWindow : Window
         MessageBox.Show(this, text, title, MessageBoxButton.OK, MessageBoxImage.Warning);
     }
 
+    // --- Compressing --------------------------------------------------------------------------------------------
+
+    static bool Compressible(PhotoItem item) => !item.CloudOnly && (item.Video || Compression.IsRaw(item));
+
+    /// <summary>
+    /// "Сжать…": the window says what it would give; then the RAW photos (several at a time) and the videos (one after
+    /// another: the encoder is busy enough) are compressed, each replacing its original, which goes to the Recycle Bin.
+    /// Can be stopped between two files; the library is read again afterwards.
+    /// </summary>
+    void Compress(List<PhotoItem> items)
+    {
+        if (_plan == null || _busy) return;
+        var dialog = new CompressDialog(this, items, _plan.Items);
+        if (dialog.ShowDialog() != true) return;
+        var photos = dialog.Photos;
+        var videos = dialog.Videos;
+        int megapixels = dialog.Megapixels;
+        if (photos.Count + videos.Count == 0 || !RecycleBinHolds(photos.Concat(videos.Select(v => v.Item)))) return;
+
+        _busy = true;
+        StopAnalysis();
+        CloseViewer();
+        var cancel = new CancellationTokenSource();
+        _copyCancel = cancel;
+        ShowProgress(L("Сжатие…"), cancellable: true);
+        _progressCancel.Content = L("Остановить");
+        UpdateUi();
+        int total = photos.Count + videos.Count, done = 0;
+        long freed = 0;
+        var outcomes = new System.Collections.Concurrent.ConcurrentBag<Compressor.Outcome>();
+        void Finished(Compressor.Outcome outcome)
+        {
+            outcomes.Add(outcome);
+            Interlocked.Increment(ref done);
+            if (outcome.NewPath != null) Interlocked.Add(ref freed, outcome.Before - outcome.After);
+        }
+        void Report(string? current, double fraction) => Dispatcher.BeginInvoke(() =>
+        {
+            _progressText.Text = F("Сжатие: %@ из %@ · освобождено %@", Number(Volatile.Read(ref done)), Number(total), Strings.Size(Interlocked.Read(ref freed)))
+                                 + (current != null ? $"\n{current} — {fraction * 100:0} %" : "");
+            _progressBar.IsIndeterminate = false;
+            _progressBar.Maximum = total;
+            _progressBar.Value = Volatile.Read(ref done) + fraction;
+        });
+        Task.Run(() =>
+        {
+            try
+            {
+                // Each photo takes a few hundred megabytes while it is made: a few at a time.
+                Parallel.ForEach(photos, new ParallelOptions { MaxDegreeOfParallelism = Math.Clamp(Environment.ProcessorCount / 4, 1, 4), CancellationToken = cancel.Token },
+                    item =>
+                    {
+                        Finished(Compressor.Photo(item, megapixels));
+                        Report(null, 0);
+                    });
+                foreach (var (item, info, job) in videos)
+                {
+                    if (cancel.IsCancellationRequested) break;
+                    var outcome = Compressor.Video(item, info, job, fraction => Report(item.Name, fraction), cancel.Token);
+                    // Stopped in the middle: that video stays as it was, and is not counted.
+                    if (cancel.IsCancellationRequested && outcome.NewPath == null) break;
+                    Finished(outcome);
+                    Report(null, 0);
+                }
+            }
+            catch (OperationCanceledException)
+            {
+            }
+        }).ContinueWith(_ => CompressDone([.. outcomes], cancel.IsCancellationRequested), TaskScheduler.FromCurrentSynchronizationContext());
+    }
+
+    void CompressDone(List<Compressor.Outcome> outcomes, bool stopped)
+    {
+        _busy = false;
+        _copyCancel = null;
+        var errors = outcomes.Where(o => o.Error != null).Select(o => $"{o.Item.RelativePath.Replace('/', '\\')}: {o.Error}").ToList();
+        int withoutHdr = outcomes.Count(o => o.NewPath != null && !o.Item.Video && !o.Hdr);
+        _lastMessage = (stopped ? L("Сжатие остановлено.") + " " : "") + Compressor.Summary(outcomes)
+                       + (withoutHdr > 0 ? ". " + F("Без HDR (в RAW его не было): %@", Number(withoutHdr)) : "")
+                       + ". " + L("Оригиналы — в Корзине.");
+        _pages.Content = _library;
+        ShowErrors(errors, L("Не все файлы удалось сжать"));
+        // The files changed under their names (and RAW became JPEG): the library is read again.
+        Rescan();
+    }
+
     // --- Recycle Bin --------------------------------------------------------------------------------------------
 
     static void Recycle(IEnumerable<string> paths) => Organizer.Recycle(paths);
@@ -1804,8 +1915,21 @@ public sealed class MainWindow : Window
     /// </summary>
     void Trash(List<PhotoItem> items, List<string>? folders = null)
     {
-        if (_plan == null || items.Count == 0) return;
-        // More than the Recycle Bin holds: Windows would delete the rest for good without asking — said first.
+        if (_plan == null || items.Count == 0 || !RecycleBinHolds(items)) return;
+        // Folders that go whole take the files inside them along.
+        folders ??= [];
+        var paths = folders.Concat(items.Select(i => i.Path)
+                                        .Where(path => !folders.Any(f => path.StartsWith(f.TrimEnd('\\') + "\\", StringComparison.OrdinalIgnoreCase))))
+                           .ToList();
+        TrashPaths(items, paths);
+    }
+
+    /// <summary>
+    /// Whether the files fit in the Recycle Bin of their disks; when not, Windows would delete the rest for good without
+    /// asking — said first, and the user decides.
+    /// </summary>
+    bool RecycleBinHolds(IEnumerable<PhotoItem> items)
+    {
         foreach (var disk in items.GroupBy(i => Path.GetPathRoot(i.Path) ?? "", StringComparer.OrdinalIgnoreCase))
         {
             long size = disk.Sum(i => i.FileSize);
@@ -1814,14 +1938,14 @@ public sealed class MainWindow : Window
                                      disk.Key.TrimEnd('\\'), Strings.Size(room), Strings.Size(size)),
                                    L("Корзина переполнится"), MessageBoxButton.OKCancel, MessageBoxImage.Warning) != MessageBoxResult.OK)
             {
-                return;
+                return false;
             }
         }
-        // Folders that go whole take the files inside them along.
-        folders ??= [];
-        var paths = folders.Concat(items.Select(i => i.Path)
-                                        .Where(path => !folders.Any(f => path.StartsWith(f.TrimEnd('\\') + "\\", StringComparison.OrdinalIgnoreCase))))
-                           .ToList();
+        return true;
+    }
+
+    void TrashPaths(List<PhotoItem> items, List<string> paths)
+    {
         if (paths.Count <= 20)
         {
             Mouse.OverrideCursor = Cursors.Wait;

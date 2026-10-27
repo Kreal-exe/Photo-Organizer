@@ -25,6 +25,9 @@ FOUNDATION_EXPORT PONameTrait PONameTraits(POPhotoItem *item);
 /// Pictures (postcards, memes, drawings).
 FOUNDATION_EXPORT NSString *POTypeFolder(POPhotoItem *item);
 
+/// Camera RAW extensions, lower-case ("dng", "cr2"…): the same list as on Windows.
+FOUNDATION_EXPORT NSSet<NSString *> *PORawExtensions(void);
+
 /// What Google Photos made out of photos rather than a camera took: collages, photo frames, animations, movies,
 /// video snippets and effects ("…-COLLAGE.jpg", "…-PHOTO_FRAME.jpg", "MOVIE.mp4") — told by the names Google Photos
 /// and Google Takeout give them. An edited copy ("…-отредактировано.jpg") is still a photo.

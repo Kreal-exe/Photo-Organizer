@@ -7,7 +7,8 @@ Photo Organizer is a small native app for macOS (Objective-C / AppKit) and Windo
 has: a phone backup, a Google Takeout export, years of “Camera Uploads”. It finds out when every photo and video was
 really taken, shows the library the way Apple Photos does, finds duplicates and thumbnails, recognises objects and
 people, and — when you ask — moves or copies the files into `2016/`, `2016/07 July/` or `2016-07-14/` folders. Files
-are **never renamed or re-encoded**, nothing is ever overwritten, and every move or copy can be undone.
+are **never renamed or re-encoded** unless you ask for it (*Compress…*), nothing is ever overwritten, and every move or
+copy can be undone.
 
 Both versions have the same window, the same date rules, the same folders and the same models. Everything runs
 locally. No cloud, no account, no subscription.
@@ -142,6 +143,23 @@ models are downloaded the same way, nothing else is needed.
   best-quality file of each set and moves the rest to the Trash / Recycle Bin. *Duplicates by Folder…* shows the
   exact copies grouped by the folders they are in and lets you pick the folder that keeps them — folders left with
   nothing else go to the Trash too. A copy is removed only while the file that stays is still there, unchanged in size.
+- **Compress…** (in the menu of the selected files, or of everything shown) — the window says first what it would
+  give, before anything is touched:
+  - **RAW photos** become JPEGs of the size most photos of the library have (offered first — 12 MP for an iPhone
+    library; 24 or 48 MP if wanted), **HDR kept**: the camera's own gain map (iPhone ProRAW carries Apple's) goes
+    along as an Ultra HDR / ISO 21496-1 gain map, which iPhones and Macs (iOS 18, macOS 15), Android and Chrome / Edge
+    show in HDR; for other linear DNGs it is worked out from the RAW data. The colour profile (Display P3), the capture
+    date, the place
+    and the camera stay. A 75 MB 48 MP ProRAW becomes a 2–4 MB 12 MP JPEG; the estimate comes from a trial
+    compression of two of them.
+  - **Videos** become HEVC no larger than 1080p (4K or 720p if wanted) at a bitrate that loses nothing visible, **HDR
+    kept** (10 bits, HLG / PQ, the colour description as it was — Dolby Vision's extra layer is not kept, the HLG HDR
+    under it is); the sound, the date and the place are copied as they are, and a video that already weighs little is
+    left alone. On a Mac with AVFoundation; on Windows with FFmpeg (the one installed, or downloaded once, ~200 MB) on
+    the graphics card when it can (NVIDIA, Intel, AMD), otherwise x265.
+  - Each compressed file takes the place of its original (a RAW becomes a `.jpg` of the same name), keeping its file
+    dates; the original goes to the Trash / Recycle Bin, and stays if anything fails. It can be stopped between files.
+- The bottom bar says how many files are selected (or shown) and what they weigh.
 - **Search**
   - **by text**: what’s in the picture, the text written in it (read on the device in Russian and English —
     screenshots, documents, signs) or a file name;
@@ -253,8 +271,8 @@ Photo Organizer — небольшое нативное приложение д�
 которая есть у всех: бэкап телефона, выгрузка Google Takeout, годы «Camera Uploads». Оно выясняет, когда на самом
 деле снят каждый файл, показывает медиатеку как «Фото» от Apple, находит дубликаты и миниатюры, распознаёт объекты и
 людей и — когда вы попросите — перемещает или копирует файлы в папки `2016/`, `2016/07 Июль/` или `2016-07-14/`.
-Файлы **не переименовываются и не пережимаются**, ничего не перезаписывается, любое перемещение или копирование
-можно отменить.
+Файлы **не переименовываются и не пережимаются**, пока вы сами не попросите (*«Сжать…»*), ничего не перезаписывается,
+любое перемещение или копирование можно отменить.
 
 У обеих версий одно и то же окно, те же правила дат, те же папки и те же модели. Всё работает локально: без облака,
 аккаунтов и подписок.
@@ -386,6 +404,21 @@ open /Applications/PhotoOrganizer.app
   лучшего качества из каждого набора, остальные перемещает в Корзину. *«Дубликаты по папкам…»* показывает точные копии,
   собранные по папкам, где они лежат, и даёт выбрать папку, которая их сохранит, — папки, где больше ничего не останется,
   тоже уходят в Корзину. Копия удаляется, только если оставляемый файл на месте и его размер не изменился.
+- **«Сжать…»** (в меню выбранных файлов или всего показанного) — окно сначала показывает, что получится, ничего не
+  трогая:
+  - **RAW-фото** становятся JPEG того размера, как у большинства фото медиатеки (предлагается первым — 12 Мп для
+    медиатеки с iPhone; по желанию 24 или 48 Мп), **HDR сохраняется**: карта яркости самой камеры (в iPhone ProRAW —
+    от Apple) переносится как карта Ultra HDR / ISO 21496-1, которую в HDR показывают iPhone и Mac (iOS 18, macOS 15),
+    Android и Chrome / Edge; для других линейных DNG она вычисляется из RAW. Цветовой профиль (Display P3), дата и место съёмки и камера
+    остаются. ProRAW на 48 Мп и 75 МБ становится JPEG на 12 Мп и 2–4 МБ; оценка — по пробному сжатию двух снимков.
+  - **Видео** становятся HEVC не больше 1080p (по желанию 4K или 720p) с битрейтом без видимых потерь, **HDR
+    сохраняется** (10 бит, HLG / PQ, описание цвета как было — дополнительный слой Dolby Vision не переносится, HDR в
+    HLG под ним остаётся); звук, дата и место съёмки копируются как есть, а видео, которое и так весит немного, не
+    трогается. На Mac — средствами AVFoundation, в Windows — FFmpeg (установленный или скачанный один раз, ~200 МБ)
+    на видеокарте, если она умеет (NVIDIA, Intel, AMD), иначе x265.
+  - Сжатый файл встаёт на место оригинала (RAW становится `.jpg` с тем же именем) с его датами файла; оригинал уходит
+    в Корзину, а если что-то пошло не так — остаётся. Сжатие можно остановить между файлами.
+- Внизу окна видно, сколько файлов выбрано (или показано) и сколько они весят.
 - **Поиск**
   - **по тексту**: что на снимке, написанный на нём текст (читается на устройстве, по-русски и по-английски —
     скриншоты, документы, вывески) или имя файла;

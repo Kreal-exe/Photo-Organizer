@@ -199,6 +199,21 @@ public static class Strings
         ["Проверьте дату: она не может быть позже сегодняшнего дня."] = "Check the date: it can't be later than today.",
         ["Альбом VK ещё скачивается. Если закрыть настройки, загрузка остановится."] = "A VK album is still downloading. Closing Settings stops the download.",
         ["Не удалось выйти: сохранённый доступ не удаляется из папки данных приложения."] = "Could not sign out: the saved access can't be removed from the app's data folder.",
+        ["Сжатые файлы занимают место оригиналов: RAW станет JPEG с тем же именем, видео останется под своим именем. Оригиналы уходят в Корзину — их можно вернуть оттуда, пока Корзина не очищена."] =
+            "Compressed files take the place of the originals: a RAW becomes a JPEG of the same name, a video keeps its name. The originals go to the Recycle Bin, from where they can be put back until it is emptied.",
+        ["Оригиналы — в Корзине."] = "The originals are in the Recycle Bin.",
+        ["Сжать показанное…"] = "Compress Everything Shown…",
+        ["Скачать FFmpeg"] = "Download FFmpeg",
+        ["Для видео нужен FFmpeg — бесплатная программа для работы с видео (около 200 МБ, скачивается один раз)."] =
+            "Videos need FFmpeg, a free video tool (about 200 MB, downloaded once).",
+        ["Скачивание: %@ из %@"] = "Downloading: %@ of %@",
+        ["Скачивание: %@"] = "Downloading: %@",
+        ["Не удалось скачать FFmpeg"] = "FFmpeg could not be downloaded",
+        ["Кодирует: %@."] = "Encoded by: %@.",
+        ["видеокарта NVIDIA"] = "the NVIDIA graphics card",
+        ["видеокарта Intel"] = "the Intel graphics",
+        ["видеокарта AMD"] = "the AMD graphics card",
+        ["процессор (x265) — медленно, но качественно"] = "the processor (x265): slow, but good",
     };
 
     static Dictionary<string, string>? _english;

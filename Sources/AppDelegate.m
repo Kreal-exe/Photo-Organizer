@@ -164,6 +164,7 @@ static NSMenu *POSubmenu(NSMenu *mainMenu, NSString *title) {
     POItem(fileMenu, POL(@"Переместить в папку…"), @selector(moveSelectionToFolder:), @"M");
     POItem(fileMenu, POL(@"Переместить показанное в папку…"), @selector(moveShownToFolder:), @"M").keyEquivalentModifierMask =
         NSEventModifierFlagCommand | NSEventModifierFlagShift | NSEventModifierFlagOption;
+    POItem(fileMenu, POL(@"Сжать…"), @selector(compressSelection:), @"");
     POItem(fileMenu, POL(@"Переместить в Корзину"), @selector(trashSelection:), @"\b");
     POItem(fileMenu, POL(@"Удалить дубликаты…"), @selector(removeDuplicates:), @"");
     POItem(fileMenu, POL(@"Дубликаты по папкам…"), @selector(removeDuplicatesByFolder:), @"");

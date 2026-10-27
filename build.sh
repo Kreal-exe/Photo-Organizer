@@ -53,6 +53,7 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
   -framework Cocoa -framework Quartz -framework QuickLookThumbnailing -framework UniformTypeIdentifiers \
   -framework ImageIO -framework AVFoundation -framework AVKit -framework CoreMedia -framework Vision \
   -framework CoreML -framework Accelerate -framework WebKit -framework MapKit -framework CoreLocation \
+  -framework CoreImage -framework VideoToolbox \
   "$ROOT"/Sources/*.m -o "$APP/Contents/MacOS/$NAME"
 
 cp "$ROOT/Resources/Info.plist" "$APP/Contents/Info.plist"

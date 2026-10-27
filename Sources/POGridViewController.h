@@ -51,6 +51,8 @@ NS_ASSUME_NONNULL_BEGIN
 /// YES while the grid itself (not a text field) has the keyboard focus.
 @property (nonatomic, readonly) BOOL hasKeyboardFocus;
 
+/// Called whenever the selection changes, and when the grid is filled anew.
+@property (nonatomic, copy, nullable) void (^onSelectionChange)(void);
 /// Files selected in the grid, in display order.
 @property (nonatomic, readonly) NSArray<POPhotoItem *> *selectedItems;
 /// Everything the grid currently shows.
