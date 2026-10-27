@@ -7,9 +7,10 @@
 The interface is written in Russian in the sources; POL() looks the text up in en.lproj/Localizable.strings
 when the app runs in another language. Adjacent literals (@"a" @"b") form one key.
 """
-import glob, json, re, sys
+import glob, json, os, re, sys
 
-SKIP = {"Sources/POLabels.m"}          # its tables are data, translated by hand
+ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
+SKIP = {"POLabels.m"}                  # its tables are data, translated by hand
 CYRILLIC = re.compile("[А-Яа-яЁё]")
 
 
@@ -51,9 +52,10 @@ def key_of(source):
 
 def main():
     mode = sys.argv[1]
+    sys.stdout.reconfigure(encoding="utf-8")   # the keys are Cyrillic; Windows consoles default to a code page
     keys = []
-    for path in sorted(glob.glob("Sources/*.m")):
-        if path in SKIP: continue
+    for path in sorted(glob.glob(os.path.join(ROOT, "Sources", "*.m"))):
+        if os.path.basename(path) in SKIP: continue
         text = open(path, encoding="utf-8").read()
         out, last = [], 0
         for start, end in literals(text):

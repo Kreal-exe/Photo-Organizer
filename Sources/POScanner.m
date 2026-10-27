@@ -160,15 +160,72 @@ static void POReadVideoMetadata(POPhotoItem *item) {
         for (int i = 0; i < 8; i++) [name appendFormat:@"%02x", digest[i]];
         _fileURL = [folder URLByAppendingPathComponent:[name stringByAppendingString:@".plist"]];
         _records = [NSMutableDictionary dictionary];
-        NSDictionary *saved = [NSDictionary dictionaryWithContentsOfURL:_fileURL];
-        if ([saved isKindOfClass:NSDictionary.class] && [saved[@"version"] isEqual:@1] && [saved[@"files"] isKindOfClass:NSDictionary.class]) {
-            [saved[@"files"] enumerateKeysAndObjectsUsingBlock:^(NSString *key, NSDictionary *record, BOOL *stop) {
-                if ([record isKindOfClass:NSDictionary.class]) self->_records[key] = [record mutableCopy];
-            }];
+        [POScanCache load:_fileURL into:_records];
+        // A folder opened for the first time at this place — moved or copied from another (another disk, another
+        // name): the cache of its old place fits its files and is taken over, so nothing is read again. As on Windows.
+        if (!_records.count && [self adoptCacheIn:folder forRoot:rootURL]) {
+            _unsaved = 1;
+            [self save];
         }
         _lastSave = CFAbsoluteTimeGetCurrent();
     }
     return self;
+}
+
++ (void)load:(NSURL *)fileURL into:(NSMutableDictionary<NSString *, NSMutableDictionary *> *)records {
+    NSDictionary *saved = [NSDictionary dictionaryWithContentsOfURL:fileURL];
+    if ([saved isKindOfClass:NSDictionary.class] && [saved[@"version"] isEqual:@1] && [saved[@"files"] isKindOfClass:NSDictionary.class]) {
+        [saved[@"files"] enumerateKeysAndObjectsUsingBlock:^(NSString *key, NSDictionary *record, BOOL *stop) {
+            if ([record isKindOfClass:NSDictionary.class]) records[key] = [record mutableCopy];
+        }];
+    }
+}
+
+/// The stamp of the file at a path: size and modification time, as POFileStamp writes it.
+static NSString *POStampAtPath(NSString *path) {
+    struct stat info;
+    if (stat(path.fileSystemRepresentation, &info) != 0) return nil;
+    return [NSString stringWithFormat:@"%lld-%ld.%09ld", (long long)info.st_size, (long)info.st_mtimespec.tv_sec, (long)info.st_mtimespec.tv_nsec];
+}
+
+/// Takes over the cache of another folder when it describes this one: its files under the same relative paths, of
+/// the same sizes and modification times (which a move or a copy keeps). Of 400 records sampled, those whose file is
+/// here are judged — a cache keeps records of files since moved within the folder (organized into years) or gone — and
+/// at least half of them, ten or more, must be unchanged. The cache with most such files wins. NO when none fits.
+- (BOOL)adoptCacheIn:(NSURL *)folder forRoot:(NSURL *)rootURL {
+    NSDictionary<NSString *, NSMutableDictionary *> *best = nil;
+    NSUInteger bestMatched = 0;
+    NSArray<NSURL *> *files = [NSFileManager.defaultManager contentsOfDirectoryAtURL:folder includingPropertiesForKeys:@[NSURLContentModificationDateKey]
+                                                                             options:NSDirectoryEnumerationSkipsHiddenFiles error:NULL];
+    files = [files sortedArrayUsingComparator:^NSComparisonResult(NSURL *a, NSURL *b) {
+        NSDate *da = nil, *db = nil;
+        [a getResourceValue:&da forKey:NSURLContentModificationDateKey error:NULL];
+        [b getResourceValue:&db forKey:NSURLContentModificationDateKey error:NULL];
+        return [db ?: NSDate.distantPast compare:da ?: NSDate.distantPast];
+    }];
+    for (NSURL *file in files) {
+        if (![file.pathExtension isEqualToString:@"plist"] || [file.path isEqualToString:_fileURL.path]) continue;
+        NSMutableDictionary<NSString *, NSMutableDictionary *> *records = [NSMutableDictionary dictionary];
+        [POScanCache load:file into:records];
+        if (records.count < 20) continue;
+        NSUInteger step = MAX(1, records.count / 400), index = 0, sampled = 0, present = 0, matched = 0;
+        for (NSString *key in records) {
+            if (index++ % step != 0) continue;
+            sampled++;
+            NSString *stamp = POStampAtPath([rootURL.path stringByAppendingPathComponent:key]);
+            if (stamp) {
+                present++;
+                if ([records[key][@"stamp"] isEqual:stamp]) matched++;
+            }
+            if (sampled >= 400) break;
+        }
+        if (matched < 10 || matched * 2 < present || matched <= bestMatched) continue;
+        best = records;
+        bestMatched = matched;
+    }
+    if (!best) return NO;
+    [_records addEntriesFromDictionary:best];
+    return YES;
 }
 
 static const NSInteger POMetadataVersion = 2;

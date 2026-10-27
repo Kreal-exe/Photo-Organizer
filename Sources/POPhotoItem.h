@@ -93,6 +93,11 @@ FOUNDATION_EXPORT NSString *POItemDateText(POPhotoItem *item, BOOL withTime);
 @property (atomic, weak, nullable) POPhotoItem *betterCopy;
 /// Set on the best version of a picture that also exists as lesser copies.
 @property (atomic) BOOL bestOfCopies;
+/// On a copy: as good as the kept one — the same frame and the size within 1 % (a video exported again with other
+/// metadata); on the kept one: every copy of its set is. Shown as a copy and the original, not as lesser quality.
+@property (atomic) BOOL sameAsBest;
+/// Why this copy stands where it does among its copies ("Перекодирован", "Меньше пикселей", "Файл камеры"); nil when nothing to say.
+@property (atomic, copy, nullable) NSString *rankNote;
 /// What the file's name and folder say about its kind (see PONameTraits in POMediaTypes.h), worked out once: 0 until
 /// then, and again after the file moves.
 @property (atomic) uint32_t nameTraits;

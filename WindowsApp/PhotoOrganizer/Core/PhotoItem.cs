@@ -76,6 +76,13 @@ public sealed class PhotoItem
     /// <summary>On a resized or recompressed copy: the better version of the same picture.</summary>
     public PhotoItem? BetterCopy;
     public bool BestOfCopies;
+    /// <summary>
+    /// On a copy: as good as the kept one — the same frame and the size within 1 % (a video exported again with other
+    /// metadata); on the kept one: every copy of its set is. Shown as a copy and the original, not as lesser quality.
+    /// </summary>
+    public bool SameAsBest;
+    /// <summary>Why this copy stands where it does among its copies ("Перекодирован", "Меньше пикселей", "Файл камеры"); null when nothing to say.</summary>
+    public string? CopyNote;
     public string? ContentHash;
     /// <summary>On every exact copy: the file kept as the original.</summary>
     public PhotoItem? DuplicateOf;
@@ -163,31 +170,38 @@ public sealed partial class NaturalComparer : IComparer<string>
 {
     public static readonly NaturalComparer Instance = new();
 
-    [GeneratedRegex(@"(\d+)")]
-    private static partial Regex Digits();
-
+    /// <summary>
+    /// Text and numbers in turn: the text ignoring case, the numbers by value ("IMG_2" before "IMG_10"); the name with
+    /// more numbers last when all else is equal. Walks both names in place — sorting a folder of 90,000 files compares
+    /// a million and a half pairs, too many to cut each name into pieces every time.
+    /// </summary>
     public int Compare(string? x, string? y)
     {
         if (ReferenceEquals(x, y)) return 0;
         if (x == null) return -1;
         if (y == null) return 1;
-        var a = Digits().Split(x);
-        var b = Digits().Split(y);
-        for (int i = 0; i < Math.Min(a.Length, b.Length); i++)
+        var culture = System.Globalization.CultureInfo.CurrentCulture.CompareInfo;
+        int i = 0, j = 0;
+        while (true)
         {
-            bool numberA = i % 2 == 1, numberB = i % 2 == 1;
-            int result;
-            if (numberA && numberB)
-            {
-                string ta = a[i].TrimStart('0'), tb = b[i].TrimStart('0');
-                result = ta.Length != tb.Length ? ta.Length.CompareTo(tb.Length) : string.CompareOrdinal(ta, tb);
-            }
-            else
-            {
-                result = string.Compare(a[i], b[i], StringComparison.CurrentCultureIgnoreCase);
-            }
+            int textEndX = i, textEndY = j;
+            while (textEndX < x.Length && !char.IsAsciiDigit(x[textEndX])) textEndX++;
+            while (textEndY < y.Length && !char.IsAsciiDigit(y[textEndY])) textEndY++;
+            int result = culture.Compare(x.AsSpan(i, textEndX - i), y.AsSpan(j, textEndY - j), System.Globalization.CompareOptions.IgnoreCase);
             if (result != 0) return result;
+            i = textEndX;
+            j = textEndY;
+            bool moreX = i < x.Length, moreY = j < y.Length;
+            if (!moreX || !moreY) return moreX == moreY ? 0 : moreX ? 1 : -1;
+            int numberEndX = i, numberEndY = j;
+            while (numberEndX < x.Length && char.IsAsciiDigit(x[numberEndX])) numberEndX++;
+            while (numberEndY < y.Length && char.IsAsciiDigit(y[numberEndY])) numberEndY++;
+            var numberX = x.AsSpan(i, numberEndX - i).TrimStart('0');
+            var numberY = y.AsSpan(j, numberEndY - j).TrimStart('0');
+            result = numberX.Length != numberY.Length ? numberX.Length.CompareTo(numberY.Length) : numberX.SequenceCompareTo(numberY);
+            if (result != 0) return Math.Sign(result);
+            i = numberEndX;
+            j = numberEndY;
         }
-        return a.Length.CompareTo(b.Length);
     }
 }

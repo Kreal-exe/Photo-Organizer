@@ -331,9 +331,8 @@ public sealed class OrganizeDialog : Dialog
     readonly ComboBox _arrangement = new(), _screenshotsPlace = new(), _scheme = new(), _year = new(), _month = new(), _day = new();
     readonly CheckBox _nested = new(), _datesInside = new(), _screenshots = new(), _removeDuplicates = new(), _duplicates = new(),
                       _removeTiny = new(), _tiny = new(), _photos = new(), _videos = new(), _pictures = new(), _collages = new(),
-                      _removeUnorganized = new();
-    readonly TextBox _duplicatesField = new() { Width = 200, Height = 30 }, _tinyField = new() { Width = 200, Height = 30 },
-                     _screenshotsField = new() { Width = 200, Height = 30 };
+                      _removeUnorganized = new(), _screenshotKind = new(), _ownPhotos = new(), _ownVideos = new(), _ownPictures = new(), _ownCollages = new();
+    readonly TextBox _duplicatesField = new() { Width = 200, Height = 30 }, _tinyField = new() { Width = 200, Height = 30 };
     // Grouped by day, a library makes thousands of folders: only the rows on screen are made.
     readonly PreviewList _preview = new();
     readonly TextBlock _summary = new() { TextWrapping = TextWrapping.Wrap, FontSize = 12 };
@@ -391,13 +390,15 @@ public sealed class OrganizeDialog : Dialog
         Fill(_arrangement, L("По датам"), L("По типам"), L("По людям"), L("По форматам"));
         _arrangement.ToolTip = L("По типам: скриншоты, записи экрана, WhatsApp, Telegram, видео, анимации, панорамы, RAW, фото. По людям: фото, где узнан ровно один названный человек, — в папку с его именем, остальное по датам. По форматам: JPEG, HEIC, PNG, MOV…");
         Fill(_scheme, L("По годам"), L("По месяцам"), L("По дням"));
-        Fill(_screenshotsPlace, L("Одна папка, даты внутри"), L("Внутри папки каждой даты"));
+        Fill(_screenshotsPlace, L("Внутри папки каждой даты (2024/Видео)"), L("Сверху, даты внутри (Видео/2024)"));
         Fill(_year, "2024", L("2024 год"));
         Fill(_month, "2024-03", L("2024-03 Март"), L("03 Март"), L("Март 2024"));
         Fill(_day, "2024-03-15", "15", L("15 марта"));
         // Each kind when ticked — unticked, it stays where it is.
         _photos.Content = L("Фото");
         _videos.Content = L("Видео");
+        _screenshotKind.Content = L("Скриншоты");
+        _screenshotKind.ToolTip = L("Снимки экрана, и те, что пришли через мессенджер. Без галочки остаются на месте.");
         _pictures.Content = L("Картинки");
         _pictures.ToolTip = L("Открытки, мемы, рисунки, документы — то, что не фотография. Без галочки остаются на месте.");
         _collages.Content = L("Коллажи");
@@ -406,20 +407,26 @@ public sealed class OrganizeDialog : Dialog
         _removeUnorganized.ToolTip = L("Без галочки неотмеченные виды остаются на месте. С ней — уходят в Корзину (при переносе; при копировании ничего не удаляется), их можно вернуть оттуда.");
         _datesInside.Content = L("Внутри — по датам");
         _nested.Content = L("Вкладывать папки друг в друга (год → месяц → день)");
-        // Screenshots, duplicates, thumbnails: what happens to each, and under it, set in, where they go otherwise.
-        _screenshots.Content = L("В отдельную папку");
+        // The kinds with folders of their own: the same list as what is organized; unticked, they lie together by date.
+        _ownPhotos.Content = L("Фото");
+        _ownVideos.Content = L("Видео");
+        _ownPictures.Content = L("Картинки");
+        _ownCollages.Content = L("Коллажи");
+        _screenshots.Content = L("Скриншоты");
+        // Duplicates, thumbnails: what happens to each, and under it, set in, where they go otherwise.
         _removeDuplicates.Content = L("Удалить в Корзину");
         _removeDuplicates.ToolTip = L("Точные копии и уменьшенные или пережатые версии снимка при переносе уходят в Корзину (при копировании — не копируются): раскладывается только оригинал или лучшая версия. Копия удаляется, только если её оригинал остаётся.");
         _duplicates.Content = L("Иначе — в папку:");
         _removeTiny.Content = L("Удалить в Корзину");
         _removeTiny.ToolTip = L("Уменьшенные копии других фото уходят в Корзину, только если их большая версия остаётся.");
         _tiny.Content = L("Иначе — в папку:");
-        foreach (var box in new[] { _nested, _datesInside, _screenshots, _removeDuplicates, _duplicates, _removeTiny, _tiny, _photos, _videos, _pictures, _collages, _removeUnorganized })
+        foreach (var box in new[] { _nested, _datesInside, _screenshots, _removeDuplicates, _duplicates, _removeTiny, _tiny, _photos, _videos, _pictures, _collages, _removeUnorganized,
+                                    _screenshotKind, _ownPhotos, _ownVideos, _ownPictures, _ownCollages })
         {
             box.VerticalAlignment = VerticalAlignment.Center;
             box.Click += (_, _) => OptionChanged();
         }
-        foreach (var field in new[] { _duplicatesField, _tinyField, _screenshotsField })
+        foreach (var field in new[] { _duplicatesField, _tinyField })
         {
             field.VerticalContentAlignment = VerticalAlignment.Center;
             field.LostFocus += (_, _) => OptionChanged();
@@ -431,19 +438,20 @@ public sealed class OrganizeDialog : Dialog
         _form.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         FormRow(L("Куда сложить:"), Row(_destinationText, change));
         FormRow(L("Файлы:"), _mode);
-        FormRow(L("Что раскладывать:"), Row(_photos, _videos, _pictures, _collages), gap: 12);
+        FormRow(L("Что раскладывать:"), Row(_photos, _videos, _screenshotKind, _pictures, _collages), gap: 12);
         FormRow(null, _removeUnorganized);
         FormRow(L("Раскладывать:"), Row(_arrangement, _datesInside), gap: 12);
         FormRow(L("Группировать:"), _scheme);
         FormRow(L("Названия папок:"), Row(_year, _month, _day));
         FormRow(null, _nested);
-        FormRow(L("Скриншоты:"), _screenshots, gap: 12);
-        FormRow(null, Indented(_screenshotsField, _screenshotsPlace));
+        FormRow(L("В свои папки:"), Row(_ownPhotos, _ownVideos, _screenshots, _ownPictures, _ownCollages), gap: 12);
+        FormRow(L("Где эти папки:"), _screenshotsPlace);
         FormRow(L("Дубликаты:"), _removeDuplicates);
         FormRow(null, Indented(_duplicates, _duplicatesField));
         FormRow(L("Миниатюры:"), _removeTiny);
         FormRow(null, Indented(_tiny, _tinyField));
-        var options = new ScrollViewer { Content = _form, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled, Padding = new Thickness(0, 0, 8, 0) };
+        // Narrowed by the splitter, the options scroll sideways rather than being cut off.
+        var options = new ScrollViewer { Content = _form, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto, Padding = new Thickness(0, 0, 8, 0) };
 
         // What it comes to: the folders, renamed by clicking.
         var previewHeader = new DockPanel { Margin = new Thickness(0, 0, 0, 6) };
@@ -491,10 +499,24 @@ public sealed class OrganizeDialog : Dialog
 
         // Header on top, options on the left and the folders on the right, buttons below.
         var body = new Grid();
-        body.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        body.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto, MinWidth = 260 });
         body.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(18) });
         body.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star), MinWidth = 260 });
         body.Children.Add(options);
+        // Between them, a line to drag: the options narrower, the folders wider.
+        var splitter = new GridSplitter
+        {
+            Width = 18, HorizontalAlignment = HorizontalAlignment.Stretch, VerticalAlignment = VerticalAlignment.Stretch,
+            ResizeBehavior = GridResizeBehavior.PreviousAndNext, ResizeDirection = GridResizeDirection.Columns,
+            Background = Brushes.Transparent, Cursor = Cursors.SizeWE, ShowsPreview = false,
+            ToolTip = L("Потяните, чтобы сузить настройки и расширить список папок"),
+        };
+        var line = new Border { Width = 1, HorizontalAlignment = HorizontalAlignment.Center, IsHitTestVisible = false };
+        line.SetResourceReference(Border.BackgroundProperty, "Separator");
+        Grid.SetColumn(line, 1);
+        Grid.SetColumn(splitter, 1);
+        body.Children.Add(line);
+        body.Children.Add(splitter);
         Grid.SetColumn(preview, 2);
         body.Children.Add(preview);
         var root = new DockPanel { Margin = new Thickness(22, 20, 22, 20) };
@@ -561,11 +583,13 @@ public sealed class OrganizeDialog : Dialog
         _arrangement.SelectedIndex = (int)_plan.Arrangement;
         _datesInside.IsChecked = _plan.DatesInside;
         _datesInside.IsEnabled = _plan.Arrangement != Arrangement.Date;
+        _ownPhotos.IsChecked = _plan.SeparatePhotos;
+        _ownVideos.IsChecked = _plan.SeparateVideos;
+        _ownPictures.IsChecked = _plan.SeparatePictures;
+        _ownCollages.IsChecked = _plan.SeparateCollages;
         _screenshots.IsChecked = _plan.SeparateScreenshots;
-        _screenshotsField.Text = _plan.ScreenshotsFolderName;
-        _screenshotsField.IsEnabled = _plan.SeparateScreenshots;
-        _screenshotsPlace.SelectedIndex = _plan.ScreenshotsInEachDate ? 1 : 0;
-        _screenshotsPlace.IsEnabled = _plan.SeparateScreenshots;
+        _screenshotsPlace.SelectedIndex = _plan.ScreenshotsInEachDate ? 0 : 1;
+        _screenshotsPlace.IsEnabled = _plan.SeparatePhotos || _plan.SeparateVideos || _plan.SeparatePictures || _plan.SeparateCollages || _plan.SeparateScreenshots;
         _scheme.SelectedIndex = (int)_plan.Scheme;
         _year.SelectedIndex = (int)_plan.YearStyle;
         _month.SelectedIndex = (int)_plan.MonthStyle;
@@ -584,6 +608,7 @@ public sealed class OrganizeDialog : Dialog
         _videos.IsChecked = _plan.OrganizesVideos;
         _pictures.IsChecked = _plan.OrganizesPictures;
         _collages.IsChecked = _plan.OrganizesCollages;
+        _screenshotKind.IsChecked = _plan.OrganizesScreenshots;
         _removeUnorganized.IsChecked = _plan.RemovesUnorganized;
         _removeUnorganized.IsEnabled = !_plan.CopiesFiles;
         _removeTiny.IsChecked = _plan.RemovesTiny;
@@ -602,6 +627,8 @@ public sealed class OrganizeDialog : Dialog
             : L("Все файлы уже лежат на своих местах.");
         int removed = _plan.DuplicatesToRemove.Count + _plan.UnorganizedToRemove.Count;
         if (removed > 0) what += F(" В Корзину: %@.", Number(removed));
+        // What the library will hold afterwards: what goes to the Recycle Bin is no longer in it.
+        if (!copies) what += F(" В медиатеке будет %@.", FilesDetail(_plan.Items.Count - removed));
         if (_plan.Merging && !copies)
         {
             string name = Path.GetFileName(_plan.Root);
@@ -694,9 +721,12 @@ public sealed class OrganizeDialog : Dialog
         if (_updating) return;
         _plan.Arrangement = (Arrangement)Math.Max(0, _arrangement.SelectedIndex);
         _plan.DatesInside = _datesInside.IsChecked == true;
+        _plan.SeparatePhotos = _ownPhotos.IsChecked == true;
+        _plan.SeparateVideos = _ownVideos.IsChecked == true;
+        _plan.SeparatePictures = _ownPictures.IsChecked == true;
+        _plan.SeparateCollages = _ownCollages.IsChecked == true;
         _plan.SeparateScreenshots = _screenshots.IsChecked == true;
-        _plan.ScreenshotsInEachDate = _screenshotsPlace.SelectedIndex == 1;
-        _plan.ScreenshotsFolderName = _screenshotsField.Text;
+        _plan.ScreenshotsInEachDate = _screenshotsPlace.SelectedIndex != 1;
         _plan.Scheme = (Scheme)Math.Max(0, _scheme.SelectedIndex);
         _plan.YearStyle = (YearStyle)Math.Max(0, _year.SelectedIndex);
         _plan.MonthStyle = (MonthStyle)Math.Max(0, _month.SelectedIndex);
@@ -708,6 +738,7 @@ public sealed class OrganizeDialog : Dialog
         _plan.OrganizesVideos = _videos.IsChecked == true;
         _plan.OrganizesPictures = _pictures.IsChecked == true;
         _plan.OrganizesCollages = _collages.IsChecked == true;
+        _plan.OrganizesScreenshots = _screenshotKind.IsChecked == true;
         _plan.RemovesUnorganized = _removeUnorganized.IsChecked == true;
         _plan.SeparateTiny = _tiny.IsChecked == true;
         _plan.RemovesTiny = _removeTiny.IsChecked == true;

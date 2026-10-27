@@ -101,7 +101,7 @@ public static partial class MetadataReader
             }
             else if (!video && extension.Equals("png", StringComparison.OrdinalIgnoreCase))
             {
-                ReadPngSize(path, meta);
+                ReadPng(path, meta);
             }
             else if (video && QuickTimeBased.Contains(extension))
             {
@@ -161,14 +161,50 @@ public static partial class MetadataReader
         return meta.Width > 0;
     }
 
-    static void ReadPngSize(string path, Metadata meta)
+    /// <summary>
+    /// The size of a PNG and, from the chunks before its picture data, its date and place: the EXIF chunk (eXIf, where
+    /// an iPhone keeps the moment of a screenshot), or else the XMP's date.
+    /// </summary>
+    static void ReadPng(string path, Metadata meta)
     {
-        using var stream = File.OpenRead(path);
+        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 65536);
         Span<byte> head = stackalloc byte[24];
         if (stream.Read(head) < 24 || head[12] != 'I' || head[13] != 'H') return;
-        meta.Width = BinaryPrimitives.ReadInt32BigEndian(head[16..]);
-        meta.Height = BinaryPrimitives.ReadInt32BigEndian(head[20..]);
+        int width = BinaryPrimitives.ReadInt32BigEndian(head[16..]), height = BinaryPrimitives.ReadInt32BigEndian(head[20..]);
+        meta.Width = width;
+        meta.Height = height;
+        long position = 8;
+        Span<byte> chunk = stackalloc byte[8];
+        DateTime? xmpDate = null;
+        while (position + 12 <= stream.Length)
+        {
+            stream.Position = position;
+            if (stream.Read(chunk) < 8) break;
+            long length = BinaryPrimitives.ReadUInt32BigEndian(chunk);
+            if (chunk[4..].SequenceEqual("IDAT"u8) || chunk[4..].SequenceEqual("IEND"u8)) break;
+            if (length <= 1 << 20 && (chunk[4..].SequenceEqual("eXIf"u8) || chunk[4..].SequenceEqual("iTXt"u8)))
+            {
+                var body = new byte[length];
+                stream.ReadExactly(body);
+                if (chunk[4..].SequenceEqual("eXIf"u8)) ParseTiff(body, meta);
+                else if (body.AsSpan().StartsWith("XML:com.adobe.xmp"u8)) xmpDate = XmpDate(Encoding.UTF8.GetString(body));
+            }
+            position += 12 + length;
+        }
+        meta.Date ??= xmpDate;
+        // The EXIF may name another size (the one before a crop): the picture's own counts.
+        meta.Width = width;
+        meta.Height = height;
     }
+
+    [GeneratedRegex(@"(?:photoshop:DateCreated|exif:DateTimeOriginal|xmp:CreateDate)(?:>|=\s*"")(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?)")]
+    private static partial Regex XmpDateTag();
+
+    /// <summary>The date an XMP packet gives the picture was made (local time, as EXIF writes it); null when none.</summary>
+    static DateTime? XmpDate(string xmp) =>
+        XmpDateTag().Match(xmp) is { Success: true } match
+        && DateTime.TryParse(match.Groups[1].Value, CultureInfo.InvariantCulture, DateTimeStyles.None, out var date)
+        && date.Year >= 1990 && date <= DateTime.Now.AddDays(1) ? date : null;
 
     // --- TIFF structure (EXIF blocks, TIFF and RAW files) ----------------------------------------------------------
 

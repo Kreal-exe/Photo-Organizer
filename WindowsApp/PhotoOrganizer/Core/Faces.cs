@@ -38,8 +38,7 @@ public sealed class FaceEngine : IDisposable
     static FaceEngine? _shared;
     static readonly Lock SharedLock = new();
 
-    readonly InferenceSession _detector, _embedder;
-    readonly Lock _detectorLock = new(), _embedderLock = new();
+    readonly OnnxPool _detector, _embedder;
     readonly int _inputSize;
     readonly float[] _mean, _std;
 
@@ -59,9 +58,9 @@ public sealed class FaceEngine : IDisposable
         var info = VitOnnx.Info(embedderFolder);
         (_inputSize, _mean, _std) = (info.InputSize, info.Mean, info.Std);
         bool gpu = UseGpu;
-        (_detector, bool detectorOnGpu) = Onnx.Open(File.ReadAllBytes(detectorPath), gpu);
-        (_embedder, bool embedderOnGpu) = Onnx.Open(File.ReadAllBytes(Onnx.BuiltVit(embedderFolder, "arcface")), gpu);
-        Device = detectorOnGpu && embedderOnGpu ? L("Видеокарта (DirectML)") : L("Процессор");
+        _detector = Onnx.Pool(File.ReadAllBytes(detectorPath), gpu);
+        _embedder = Onnx.Pool(File.ReadAllBytes(Onnx.BuiltVit(embedderFolder, "arcface")), gpu);
+        Device = _detector.Gpu && _embedder.Gpu ? L("Видеокарта (DirectML)") : L("Процессор");
     }
 
     /// <summary>The loaded engine; throws when a model is missing.</summary>
@@ -122,35 +121,16 @@ public sealed class FaceEngine : IDisposable
     {
         float scale = DetectorSide / side;
         var input = new DenseTensor<float>([1, 3, DetectorSide, DetectorSide]);
-        var buffer = input.Buffer.Span;
-        int plane = DetectorSide * DetectorSide;
-        for (int y = 0; y < DetectorSide; y++)
-        {
-            double sy = top + (y + 0.5) / scale - 0.5;
-            if (sy < -0.5 || sy > image.Height - 0.5) continue;
-            sy = Math.Clamp(sy, 0, image.Height - 1);
-            int y0 = (int)sy, y1 = Math.Min(image.Height - 1, y0 + 1);
-            float fy = (float)(sy - y0);
-            for (int x = 0; x < DetectorSide; x++)
-            {
-                double sx = left + (x + 0.5) / scale - 0.5;
-                if (sx < -0.5 || sx > image.Width - 0.5) continue;
-                sx = Math.Clamp(sx, 0, image.Width - 1);
-                int x0 = (int)sx, x1 = Math.Min(image.Width - 1, x0 + 1);
-                float fx = (float)(sx - x0);
-                for (int c = 0; c < 3; c++)   // blue, green, red: YuNet was trained on OpenCV's channel order
-                {
-                    float upper = image.Bgr[(y0 * image.Width + x0) * 3 + c] * (1 - fx) + image.Bgr[(y0 * image.Width + x1) * 3 + c] * fx;
-                    float lower = image.Bgr[(y1 * image.Width + x0) * 3 + c] * (1 - fx) + image.Bgr[(y1 * image.Width + x1) * 3 + c] * fx;
-                    buffer[c * plane + y * DetectorSide + x] = upper * (1 - fy) + lower * fy;
-                }
-            }
-        }
+        // Blue, green, red: YuNet was trained on OpenCV's channel order. Outside the picture stays black.
+        Images.Sample(image, left, top, scale, scale, DetectorSide, DetectorSide, input.Buffer.Span, 0, interleaved: false, [0, 1, 2],
+                      Images.SampleValue.Raw, blankOutside: true);
         var faces = new List<Face>();
-        lock (_detectorLock)
         {
-            using var results = _detector.Run([NamedOnnxValue.CreateFromTensor("input", input)]);
-            var outputs = results.ToDictionary(r => r.Name, r => r.AsTensor<float>().ToArray());
+            var outputs = _detector.Run(session =>
+            {
+                using var results = session.Run([NamedOnnxValue.CreateFromTensor("input", input)]);
+                return results.ToDictionary(r => r.Name, r => r.AsTensor<float>().ToArray());
+            });
             foreach (int stride in new[] { 8, 16, 32 })
             {
                 float[] cls = outputs[$"cls_{stride}"], obj = outputs[$"obj_{stride}"], box = outputs[$"bbox_{stride}"], kps = outputs[$"kps_{stride}"];
@@ -259,12 +239,11 @@ public sealed class FaceEngine : IDisposable
                 }
             }
         }
-        float[] vectors;
-        lock (_embedderLock)
+        float[] vectors = _embedder.Run(session =>
         {
-            using var results = _embedder.Run([NamedOnnxValue.CreateFromTensor("input", input)]);
-            vectors = results[0].AsTensor<float>().ToArray();
-        }
+            using var results = session.Run([NamedOnnxValue.CreateFromTensor("input", input)]);
+            return results[0].AsTensor<float>().ToArray();
+        });
         int dimension = vectors.Length / faces.Count;
         var embeddings = new List<byte[]>();
         for (int n = 0; n < faces.Count; n++)

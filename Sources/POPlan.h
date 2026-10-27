@@ -139,8 +139,10 @@ typedef NS_ENUM(NSInteger, POGroupKind) {
 @property (nonatomic) BOOL organizesPictures;
 @property (nonatomic) BOOL organizesCollages;
 @property (nonatomic) BOOL organizesScreenshots;
-/// Screenshots to a folder of their own, whatever the rest is organized by: one folder at the top with the date
-/// folders inside (Скриншоты/2024/…), or, with screenshotsInEachDate, one inside every date folder (2024/Скриншоты/…).
+/// The kinds that go to folders of their own (Фото, Видео, Скриншоты, Картинки, Коллажи) rather than lie together in
+/// the date folders; none by default. With screenshotsInEachDate (the default) those folders are inside every date
+/// folder (2024/Видео/…); without, at the top with the date folders inside (Видео/2024/…). As on Windows.
+@property (nonatomic) BOOL separatePhotos, separateVideos, separatePictures, separateCollages;
 @property (nonatomic) BOOL separateScreenshots;
 @property (nonatomic) BOOL screenshotsInEachDate;
 @property (nonatomic, copy) NSString *screenshotsFolderName;

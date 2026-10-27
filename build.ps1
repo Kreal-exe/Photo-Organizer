@@ -1,6 +1,6 @@
 # Builds Photo Organizer for Windows (C# / WPF, WindowsApp\) and installs it for the current user.
 #
-#   .\build.ps1          build and put PhotoOrganizer.exe on the Desktop (restarts a running copy)
+#   .\build.ps1          build, put PhotoOrganizer.exe on the Desktop and open it
 #   .\build.ps1 -Zip     also write dist\PhotoOrganizer-Windows-v<version>.zip for a release
 #
 # $env:INSTALL_DIR = "D:\Apps\PhotoOrganizer"; .\build.ps1   puts it somewhere else.
@@ -57,7 +57,7 @@ try {
     New-Item -ItemType Directory -Force $Dest | Out-Null
     Copy-Item -Recurse -Force (Join-Path $App "*") $Dest
     Write-Host "Installed: $Exe"
-    if ($running) { Start-Process $Exe }
+    if (-not $env:CI) { Start-Process $Exe }   # opened right away, except on a CI runner
 }
 finally {
     Remove-Item -Recurse -Force $Out -ErrorAction SilentlyContinue

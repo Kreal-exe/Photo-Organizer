@@ -34,6 +34,12 @@ public sealed class MainWindow : Window
     // The grid follows the search field once typing pauses, not on every key: a library can hold ~100,000 files.
     readonly DispatcherTimer _searchTimer = new() { Interval = TimeSpan.FromMilliseconds(250) };
     readonly CheckBox _solo = new();
+    /// <summary>In the duplicates view: of a RAW and a JPEG of one shot, which is kept (see SimilarCopies.RawPreference).</summary>
+    readonly ComboBox _rawPreference = new() { MinWidth = 200 };
+    readonly ComboBox _compressedPreference = new() { MinWidth = 200 };
+    /// <summary>Where videos are shown: all of them, or one resolution (4K, 1440p, 1080p, 720p and less) — 4K gains most from compressing.</summary>
+    readonly ComboBox _videoResolution = new() { MinWidth = 170 };
+    bool _fillingResolution;
     /// <summary>The kind of a file in the strip — the same one organizing goes by (see Plan).</summary>
     static int KindOf(PhotoItem item) =>
         MediaTypes.IsGooglePhotosCreation(item) ? KindCollages : item.IsPicture ? KindPictures : item.Video ? KindVideos : KindPhotos;
@@ -46,12 +52,17 @@ public sealed class MainWindow : Window
     /// <summary>Whether a file is shown and counted: only the ticked kinds.</summary>
     bool Shown(PhotoItem item) => _included[KindOf(item)];
     readonly Button _setDate, _accept, _cleanup, _byFolders, _pickAnother, _backToMap, _arrange;
-    readonly TextBlock _analysis = new() { TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = VerticalAlignment.Center, MaxWidth = 280 };
+    readonly TextBlock _analysis = new() { TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = VerticalAlignment.Center, MaxWidth = 460 };
     readonly TextBlock _status = new() { TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = VerticalAlignment.Center };
     /// <summary>How many files are selected (or shown) and how much they weigh, at the right of the bottom bar.</summary>
     readonly TextBlock _sizeInfo = new() { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(16, 0, 0, 0) };
     readonly Slider _size = new() { Minimum = 110, Maximum = 420, Width = 150, VerticalAlignment = VerticalAlignment.Center };
-    readonly Button _organize;
+    readonly Button _organize, _compress;
+    /// <summary>Compressing in the background, at the left of the bottom bar: how far, and "Остановить".</summary>
+    readonly StackPanel _compressPanel = new() { Orientation = Orientation.Horizontal, Visibility = Visibility.Collapsed, Margin = new Thickness(0, 0, 16, 0) };
+    readonly TextBlock _compressText = new() { VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis, MaxWidth = 460 };
+    readonly ProgressBar _compressProgress = new() { Width = 110, Height = 6, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(10, 0, 10, 0) };
+    readonly Button _compressStop;
     readonly UIElement _welcome, _library;
     readonly Grid _progressPage = new();
     // "Отпустите, чтобы открыть папку" over the window while folders are dragged over it, as on the Mac.
@@ -60,7 +71,7 @@ public sealed class MainWindow : Window
     ColumnDefinition _sidebarColumn = null!;
     GridSplitter _splitter = null!;
     bool _sidebarHidden;
-    readonly TextBlock _progressText = new() { HorizontalAlignment = HorizontalAlignment.Center };
+    readonly TextBlock _progressText = new() { HorizontalAlignment = HorizontalAlignment.Center, TextAlignment = TextAlignment.Center };
     readonly ProgressBar _progressBar = new() { Width = 380, Margin = new Thickness(0, 12, 0, 12) };
     readonly Button _progressCancel;
     /// <summary>Stops a copy run between two files ("Остановить" on the progress page); what was copied stays, undoable.</summary>
@@ -128,7 +139,7 @@ public sealed class MainWindow : Window
         _revealButton = Ui.IconButton("open-external", L("Показать папку в Проводнике"), RevealRoot);
         _settingsButton = Ui.IconButton("settings", L("Настройки"), ShowSettings);
         _sidebarButton = Ui.IconButton("sidebar", L("Показать или скрыть боковую панель") + " (Ctrl+Alt+S)", () => ToggleSidebar());
-        _grouping = new SegmentedControl([L("По годам"), L("По месяцам"), L("По дням")]) { Selected = Grouping, ToolTip = L("Как делить фото на разделы в окне: по годам, месяцам или дням. На раскладку файлов по папкам не влияет.") };
+        _grouping = new SegmentedControl([L("По годам"), L("По месяцам"), L("По дням"), L("По размеру")]) { Selected = Grouping, ToolTip = L("Как делить фото на разделы в окне: по годам, месяцам, дням или по размеру файла (сначала самые большие). На раскладку файлов по папкам не влияет.") };
         _grouping.Changed += index => { Settings.Shared.Set("gridGrouping", index); UpdateGrid(); };
         _search.TextChanged += (_, _) =>
         {
@@ -197,21 +208,13 @@ public sealed class MainWindow : Window
         };
         _media.SetToolTips([L("Все отмеченные виды файлов"), L("Фотографии"), L("Видео"), L("Открытки, мемы, рисунки, документы — то, что не фотография"),
                             L("Коллажи, рамки, анимации, фильмы и эффекты, которые сделал Google Фото")],
-                           L("Отмечено — в медиатеке и раскладывается; без галочки — скрыто и остаётся на месте"));
+                           L("Отмечено — показано в медиатеке; без галочки — скрыто. Что раскладывать по папкам, выбирается в окне «Разложить по папкам»"));
         _media.Changed += index => { Settings.Shared.Set("mediaKind", index); UpdateGrid(); };
         _media.Ticked += (index, on) =>
         {
             int kind = index - 1;
             Settings.Shared.Set(KindKeys[kind], on);
-            _included = Included();
-            if (_plan != null)
-            {
-                _plan.OrganizesPhotos = _included[KindPhotos];
-                _plan.OrganizesVideos = _included[KindVideos];
-                _plan.OrganizesPictures = _included[KindPictures];
-                _plan.OrganizesCollages = _included[KindCollages];
-                _plan.Rebuild();
-            }
+            _included = Included();   // shown or hidden only: what is organized is chosen in the organize window
             _objectFilterCounts.Clear();
             ReloadSidebar();
             UpdateGrid();
@@ -225,6 +228,35 @@ public sealed class MainWindow : Window
         _accept.ToolTip = L("Дать каждому файлу дату по лучшей подсказке: соседние файлы, имя файла, название папки");
         _cleanup = Ui.TextButton(L("Удалить дубликаты…"), RemoveDuplicates);
         _cleanup.ToolTip = L("Переместить в Корзину все копии, оставив в каждом наборе оригинал или файл лучшего качества");
+        _rawPreference.Items.Add(L("RAW и JPEG: по качеству"));
+        _rawPreference.Items.Add(L("RAW и JPEG: оставлять RAW"));
+        _rawPreference.Items.Add(L("RAW и JPEG: оставлять JPEG"));
+        _rawPreference.SelectedIndex = SimilarCopies.RawPreference;
+        _rawPreference.ToolTip = L("Если один кадр есть и в RAW, и в JPEG (или HEIC): какой из них остаётся оригиналом, а какой считается копией и уходит в Корзину при удалении дубликатов");
+        _rawPreference.SelectionChanged += (_, _) =>
+        {
+            if (_rawPreference.SelectedIndex < 0 || _rawPreference.SelectedIndex == SimilarCopies.RawPreference) return;
+            SimilarCopies.RawPreference = _rawPreference.SelectedIndex;
+            if (_plan == null) return;
+            SimilarCopies.Reorder(_plan.Items, _copySets);
+            _plan.Rebuild();
+            ReloadSidebar();
+            UpdateGrid();
+        };
+        _compressedPreference.Items.Add(L("Копии: лучшее качество"));
+        _compressedPreference.Items.Add(L("Копии: оставлять сжатые"));
+        _compressedPreference.SelectedIndex = SimilarCopies.CompressedPreference;
+        _compressedPreference.ToolTip = L("Какая копия остаётся: лучшая по качеству (из копий видео — файл камеры, не перекодированный) — или сжатая, чтобы сжатое не сменилось тяжёлым оригиналом: из RAW и JPEG одного кадра — JPEG, из копий видео — самая лёгкая");
+        _compressedPreference.SelectionChanged += (_, _) =>
+        {
+            if (_compressedPreference.SelectedIndex < 0 || _compressedPreference.SelectedIndex == SimilarCopies.CompressedPreference) return;
+            SimilarCopies.CompressedPreference = _compressedPreference.SelectedIndex;
+            if (_plan == null) return;
+            SimilarCopies.Reorder(_plan.Items, _copySets);
+            _plan.Rebuild();
+            ReloadSidebar();
+            UpdateGrid();
+        };
         _byFolders = Ui.TextButton(L("Дубликаты по папкам…"), RemoveDuplicatesByFolder);
         _byFolders.ToolTip = L("Для одинаковых фото в разных папках выбрать, какая папка останется");
         _arrange = Ui.TextButton(L("Разложить…"), ArrangeShown);
@@ -239,21 +271,42 @@ public sealed class MainWindow : Window
         backToMapContent.Children.Add(new TextBlock { Text = L("К карте"), VerticalAlignment = VerticalAlignment.Center });
         _backToMap.Content = backToMapContent;
         _analysis.SetResourceReference(TextBlock.ForegroundProperty, "Secondary");
-        var strip = new DockPanel { Margin = new Thickness(18, 6, 18, 6), LastChildFill = false };
+        // The kinds and the view's controls in a row that scrolls sideways when the window is too narrow for it — with
+        // the mouse wheel over it; the status of the analysis stays on the right.
+        var strip = new DockPanel { Margin = new Thickness(18, 6, 18, 6) };
+        var row = new StackPanel { Orientation = Orientation.Horizontal };
         _media.Margin = new Thickness(0, 0, 12, 0);
-        DockPanel.SetDock(_media, Dock.Left);
-        strip.Children.Add(_media);
+        row.Children.Add(_media);
         // In the Mac's order: the view's own action, the way back to the map, the clean-up, then the person and dates controls.
-        foreach (var control in new FrameworkElement[] { _arrange, _pickAnother, _backToMap, _cleanup, _byFolders, _solo, _setDate, _accept })
+        _videoResolution.ToolTip = L("Показывать видео одного разрешения — например, только 4K: их сжатие даёт больше всего");
+        _videoResolution.SelectionChanged += (_, _) =>
+        {
+            if (_fillingResolution || _videoResolution.SelectedIndex < 0) return;
+            Settings.Shared.Set("videoResolution", _videoResolution.SelectedIndex);
+            UpdateGrid();
+        };
+        foreach (var control in new FrameworkElement[] { _arrange, _pickAnother, _backToMap, _cleanup, _byFolders, _compressedPreference, _rawPreference, _videoResolution, _solo, _setDate, _accept })
         {
             control.Margin = new Thickness(0, 0, 10, 0);
             control.VerticalAlignment = VerticalAlignment.Center;
             control.Visibility = Visibility.Collapsed;
-            DockPanel.SetDock(control, Dock.Left);
-            strip.Children.Add(control);
+            row.Children.Add(control);
         }
+        _analysis.Margin = new Thickness(12, 0, 0, 0);
         DockPanel.SetDock(_analysis, Dock.Right);
         strip.Children.Add(_analysis);
+        var rowScroller = new ScrollViewer
+        {
+            Content = row, HorizontalScrollBarVisibility = ScrollBarVisibility.Hidden, VerticalScrollBarVisibility = ScrollBarVisibility.Disabled,
+            Focusable = false, VerticalAlignment = VerticalAlignment.Center,
+        };
+        rowScroller.PreviewMouseWheel += (_, e) =>
+        {
+            if (rowScroller.ScrollableWidth <= 0) return;
+            rowScroller.ScrollToHorizontalOffset(rowScroller.HorizontalOffset - e.Delta);
+            e.Handled = true;
+        };
+        strip.Children.Add(rowScroller);
         var stripBar = Ui.Bar("Toolbar", new Thickness(0, 0, 0, 1));
         stripBar.Child = strip;
 
@@ -310,14 +363,29 @@ public sealed class MainWindow : Window
         // A plain bordered button, as on the Mac.
         _organize = Ui.TextButton(L("Разложить по папкам"), Organize);
         _organize.ToolTip = "Ctrl+Enter";
+        // "Сжать…" next to it: the selection, or everything shown when nothing is selected.
+        _compress = Ui.TextButton(L("Сжать…"), () => Compress(_grid.SelectedItems.Count > 0 ? _grid.SelectedItems : _grid.ShownItems));
+        _compress.ToolTip = L("Сжать выбранные RAW-фото и видео (или все показанные, если ничего не выбрано) — сначала покажет, сколько получится");
+        _compress.Margin = new Thickness(0, 0, 8, 0);
+        _compressStop = Ui.TextButton(L("Остановить"), StopCompressing);
+        _compressStop.ToolTip = L("Остановить сжатие после текущего файла: что уже сжато, остаётся");
+        // The button first, then how far, then the text, which is cut short when the window is narrow.
+        _compressPanel.Children.Add(_compressStop);
+        _compressPanel.Children.Add(_compressProgress);
+        _compressPanel.Children.Add(_compressText);
+        BuildCompressPopup();
         var bottom = new DockPanel { Margin = new Thickness(18, 8, 18, 8) };
+        DockPanel.SetDock(_compressPanel, Dock.Left);
         DockPanel.SetDock(_organize, Dock.Right);
+        DockPanel.SetDock(_compress, Dock.Right);
         _size.Margin = new Thickness(16, 0, 16, 0);
         DockPanel.SetDock(_size, Dock.Right);
         DockPanel.SetDock(_sizeInfo, Dock.Right);
         bottom.Children.Add(_organize);
+        bottom.Children.Add(_compress);
         bottom.Children.Add(_size);
         bottom.Children.Add(_sizeInfo);
+        bottom.Children.Add(_compressPanel);
         bottom.Children.Add(_status);
         var bottomBar = Ui.Bar("Toolbar", new Thickness(0, 1, 0, 0));
         bottomBar.Child = bottom;
@@ -380,8 +448,15 @@ public sealed class MainWindow : Window
             SavePlacement();
             StopAnalysis();
             _scanner?.Cancel();
-            RecognitionStore.Shared.Flush();
+            _compressCancel?.Cancel();   // FFmpeg stopped, its half-written file removed; the originals stay
+            Hide();
+            // What was recognised is written out — waited for a few seconds at most, so a busy disk can't hold the window.
+            Task.Run(RecognitionStore.Shared.Flush).Wait(TimeSpan.FromSeconds(5));
         };
+        // Everything worth keeping is on the disk by now: the process ends at once rather than waiting for the
+        // recognition's workers (a frame being decoded, a model mid-run on the graphics card) to notice they were
+        // stopped, which kept a closed app hanging. Half-written compressed files are removed at the next start.
+        Closed += (_, _) => Process.GetCurrentProcess().Kill();
     }
 
     static void Place(Grid grid, UIElement element, int column)
@@ -482,6 +557,7 @@ public sealed class MainWindow : Window
         Bind(Key.D1, ModifierKeys.Control, () => SetGrouping(0));
         Bind(Key.D2, ModifierKeys.Control, () => SetGrouping(1));
         Bind(Key.D3, ModifierKeys.Control, () => SetGrouping(2));
+        Bind(Key.D4, ModifierKeys.Control, () => SetGrouping(3));
     }
 
     void SetGrouping(int index)
@@ -691,9 +767,9 @@ public sealed class MainWindow : Window
 
     void Rescan()
     {
-        if (_root == null || _busy) return;
+        if (_root == null || _busy || RefuseWhileCompressing()) return;
         StopAnalysis();
-        StartScan();
+        StartScan(again: true);
     }
 
     /// <summary>Results of searches and a chosen map place belong to the files scanned before: forgotten with them.</summary>
@@ -721,17 +797,36 @@ public sealed class MainWindow : Window
         _pages.Content = _progressPage;
     }
 
-    void StartScan()
+    /// <summary>
+    /// Scans the folders behind the library, its progress in the status line — never a page in place of the library.
+    /// The open library scanned `again` stays on screen until the new result replaces it; a folder opened anew shows
+    /// the library at once, empty for the second the scan takes (it reads what earlier scans found from ScanCache).
+    /// </summary>
+    void StartScan(bool again = false)
     {
         ForgetResults();
+        _scanner?.Cancel();
         _busy = true;
         CloseViewer();
-        ShowProgress(L("Поиск фото и видео…"), cancellable: true);
+        if (!again || _plan == null)
+        {
+            _plan = null;
+            _copySets = [];
+            _people = [];
+        }
+        _analysis.Text = L("Поиск фото и видео…");
+        _pages.Content = _library;
+        ShowSidebar();
         // Until the scan and the recognition after it are through, the folder is opened again at the next start, and
         // both go on from where they stopped (ScanCache, RecognitionStore).
         Settings.Shared.Set("unfinishedFolders", _roots);
         var scanner = new Scanner(_roots) { DeprioritizedFolders = [Plan.SavedDuplicatesFolderName, Plan.DefaultTinyFolderName] };
         _scanner = scanner;
+        if (_plan == null)
+        {
+            ReloadSidebar();
+            UpdateGrid();   // "Загрузка медиатеки…"
+        }
         UpdateUi();
         Task.Run(() => scanner.Scan((phase, done, total) => Dispatcher.BeginInvoke(() => ScanProgress(scanner, phase, done, total))))
             .ContinueWith(task => ScanDone(scanner, task.IsFaulted ? null : task.Result), TaskScheduler.FromCurrentSynchronizationContext());
@@ -740,15 +835,8 @@ public sealed class MainWindow : Window
     void ScanProgress(Scanner scanner, ScanPhase phase, int done, int total)
     {
         if (scanner != _scanner) return;
-        if (phase == ScanPhase.Enumerating)
-        {
-            _progressText.Text = F("Поиск фото и видео… найдено %@", Number(done));
-            return;
-        }
-        _progressText.Text = F(phase == ScanPhase.Metadata ? "Чтение дат и размеров: %@ из %@" : "Поиск дубликатов: %@ из %@", Number(done), Number(total));
-        _progressBar.IsIndeterminate = false;
-        _progressBar.Maximum = Math.Max(total, 1);
-        _progressBar.Value = done;
+        _analysis.Text = phase == ScanPhase.Enumerating ? F("Поиск фото и видео… найдено %@", Number(done))
+            : F(phase == ScanPhase.Metadata ? "Чтение дат и размеров: %@ из %@" : "Сверка файлов одного размера: %@ из %@", Number(done), Number(total));
     }
 
     void ScanDone(Scanner scanner, List<PhotoItem>? items)
@@ -759,6 +847,7 @@ public sealed class MainWindow : Window
         if (items == null)   // cancelled
         {
             if (_closing) return;
+            _analysis.Text = "";
             Settings.Shared.Set("unfinishedFolders", null);
             Settings.Shared.Set("unfinishedFolder", null);
             if (_plan != null)
@@ -788,6 +877,8 @@ public sealed class MainWindow : Window
         ReloadSidebar();
         UpdateGrid();
         StartAnalysis();
+        // After the window has drawn the library: leftovers of a compressing closed halfway, and whether to go on.
+        Dispatcher.BeginInvoke(ResumeCompressing, DispatcherPriority.ApplicationIdle);
     }
 
     // --- Recognition --------------------------------------------------------------------------------------------
@@ -812,10 +903,18 @@ public sealed class MainWindow : Window
         bool withFaces = SettingsDialog.GroupsFaces && FaceEngine.ModelsReady;
         var analyzer = new Analyzer(_plan.Items.ToList(), withFaces);
         _analyzer = analyzer;
+        // Copies of one picture (a RAW and its JPEG, resized versions) are found with what is known already, so that
+        // "Удалить дубликаты" has them while the rest is being recognised; found again when the analysis ends.
+        analyzer.KnownApplied = () => Dispatcher.BeginInvoke(() => { if (analyzer == _analyzer) FindCopiesInBackground(); });
         _analysis.Text = L("Распознавание…");
+        var eta = new Eta();
         Task.Run(() => analyzer.Run((done, total) => Dispatcher.BeginInvoke(() =>
             {
-                if (analyzer == _analyzer && total > 0) _analysis.Text = F("Распознавание: %@ из %@", Number(done), Number(total)) + (analyzer.Device is { } device ? $" · {device}" : "");
+                if (analyzer != _analyzer || total <= 0) return;
+                string left = eta.Text(done, total);
+                _analysis.Text = F("Распознавание: %@ из %@", Number(done), Number(total)) + (left.Length > 0 ? $" · {left}" : "")
+                                 + (analyzer.Device is { } device ? $" · {device}" : "");
+                _analysis.ToolTip = _analysis.Text;
             })))
             .ContinueWith(task =>
             {
@@ -907,12 +1006,21 @@ public sealed class MainWindow : Window
     /// Resized and recompressed copies: the candidates are compared pixel by pixel, which reads the files, so it runs
     /// on a worker; the result is applied here.
     /// </summary>
+    /// <summary>While look-alike copies are being looked for ("Удалить дубликаты" says so instead of nothing).</summary>
+    bool _findingCopies => _copySearches > 0;
+    int _copySearches;   // two can overlap: one when the known results are applied, one when the analysis ends
+
     async void FindCopiesInBackground()
     {
         var plan = _plan!;
         var items = plan.Items.ToList();
-        string status = _analysis.Text;
-        _analysis.Text = L("Поиск похожих копий…");
+        // Said in the status line only when no analysis is running — as on the Mac. While one runs, its progress is
+        // what the line shows: a search that ended after it would otherwise put back its last count ("112 026 из
+        // 112 026") as if it were still going.
+        string searching = L("Поиск похожих копий…"), status = _analysis.Text;
+        bool said = _analyzer == null;
+        if (said) _analysis.Text = searching;
+        _copySearches++;
         List<List<PhotoItem>> sets;
         try
         {
@@ -922,8 +1030,12 @@ public sealed class MainWindow : Window
         {
             sets = [];
         }
+        finally
+        {
+            _copySearches--;
+        }
+        if (said && _copySearches == 0 && _analysis.Text == searching) _analysis.Text = status;
         if (plan != _plan || _closing || _busy) return;
-        if (_analysis.Text == L("Поиск похожих копий…")) _analysis.Text = status;
         SimilarCopies.Mark(plan.Items, sets);
         _copySets = sets;
         if (SimilarCopies.ShareDates(_copySets) > 0)
@@ -1033,7 +1145,8 @@ public sealed class MainWindow : Window
                          personCount: person => person.Items.Count(Shown), types: types);
     }
 
-    static int Grouping => Math.Clamp(Settings.Shared.Get("gridGrouping", 1), 0, 2);
+    /// <summary>0 years, 1 months, 2 days, 3 by size.</summary>
+    static int Grouping => Math.Clamp(Settings.Shared.Get("gridGrouping", 1), 0, 3);
 
     /// <summary>The files the search field lets through (all of them when it is empty).</summary>
     List<PhotoItem> Searched(IEnumerable<PhotoItem> items) => _searchTokens.Length == 0 ? items.ToList()
@@ -1095,6 +1208,7 @@ public sealed class MainWindow : Window
     static List<Section> SectionsByDate(List<PhotoItem> items)
     {
         int grouping = Grouping;
+        if (grouping == 3) return SectionsBySize(items);
         var sections = new List<Section>();
         var current = new List<PhotoItem>();
         var undated = new List<PhotoItem>();
@@ -1127,6 +1241,26 @@ public sealed class MainWindow : Window
         }
         Flush();
         if (undated.Count > 0) sections.Add(new Section(L("Без даты"), FilesDetail(undated.Count), "calendar-warning", undated));
+        return sections;
+    }
+
+    /// <summary>The largest files first, in sections by size: what weighs the most is found at once (videos to compress).</summary>
+    static List<Section> SectionsBySize(List<PhotoItem> items)
+    {
+        (long From, string Title)[] bands =
+        [
+            (1_000_000_000, L("Больше 1 ГБ")), (500_000_000, L("500 МБ – 1 ГБ")), (100_000_000, L("100–500 МБ")),
+            (10_000_000, L("10–100 МБ")), (1_000_000, L("1–10 МБ")), (0, L("Меньше 1 МБ")),
+        ];
+        var sections = new List<Section>();
+        var sorted = items.OrderByDescending(i => i.FileSize).ThenBy(i => i.Date).ToList();
+        int at = 0;
+        foreach (var (from, title) in bands)
+        {
+            var band = new List<PhotoItem>();
+            while (at < sorted.Count && sorted[at].FileSize >= from) band.Add(sorted[at++]);
+            if (band.Count > 0) sections.Add(new Section(title, $"{FilesDetail(band.Count)} · {Strings.Size(band.Sum(i => i.FileSize))}", "calendar", band));
+        }
         return sections;
     }
 
@@ -1173,6 +1307,7 @@ public sealed class MainWindow : Window
         if (_plan == null)
         {
             _grid.SetSections([]);
+            _grid.Placeholder = _scanner != null ? L("Загрузка медиатеки…") : "";
             return;
         }
         var filter = _sidebar.Selected;
@@ -1184,6 +1319,34 @@ public sealed class MainWindow : Window
             Searched(list).Where(i => media == MediaAll ? included[KindOf(i)] : KindOf(i) == media - 1).ToList();
         var baseItems = ItemsFor(filter);
         var items = baseItems != null ? Narrow(baseItems) : [];
+        // Where only videos are shown, one resolution of them can be chosen.
+        bool videosOnly = filter.Kind == FilterKind.Videos || (media == MediaAll + 1 + KindVideos && filter.Kind is FilterKind.All);
+        int resolution = Math.Clamp(Settings.Shared.Get("videoResolution", 0), 0, Compression.ResolutionNames.Length);
+        if (videosOnly && items.Any(i => i.Video))
+        {
+            var counts = new int[Compression.ResolutionNames.Length];
+            foreach (var video in items.Where(i => i.Video && i.PixelWidth > 0)) counts[Compression.ResolutionClass(video.PixelWidth, video.PixelHeight)]++;
+            // The resolution chosen has no video left (the last one deleted or compressed): all of them again, rather
+            // than an empty view.
+            if (resolution > 0 && counts[resolution - 1] == 0)
+            {
+                resolution = 0;
+                Settings.Shared.Set("videoResolution", 0);
+            }
+            _fillingResolution = true;
+            _videoResolution.Items.Clear();
+            _videoResolution.Items.Add(F("Все разрешения (%@)", Number(items.Count(i => i.Video))));
+            for (int kind = 0; kind < counts.Length; kind++) _videoResolution.Items.Add($"{Compression.ResolutionNames[kind]} ({Number(counts[kind])})");
+            _videoResolution.SelectedIndex = resolution;
+            _fillingResolution = false;
+            _videoResolution.Visibility = Visibility.Visible;
+            if (resolution > 0) items = items.Where(i => !i.Video || (i.PixelWidth > 0 && Compression.ResolutionClass(i.PixelWidth, i.PixelHeight) == resolution - 1)).ToList();
+        }
+        else
+        {
+            _videoResolution.Visibility = Visibility.Collapsed;
+            resolution = 0;
+        }
         var sections = new List<Section>();
         string placeholder = "";
         switch (filter.Kind)
@@ -1231,9 +1394,14 @@ public sealed class MainWindow : Window
                 // Resized or recompressed versions of one picture: the best one, then the lesser ones.
                 foreach (var set in _copySets)
                 {
-                    if (Narrow(set).Count == 0) continue;
-                    shown.AddRange(set);
-                    sections.Add(new Section(set[0].Name, Count(set.Count - 1, L("копия хуже качеством"), L("копии хуже качеством"), L("копий хуже качеством")), "similar", set));
+                    // The thumbnails have a view (and a button) of their own: here only the copies "Удалить дубликаты"
+                    // takes, so that what it leaves is no longer shown as duplicates.
+                    var members = set.Where((item, index) => index == 0 || !item.Tiny).ToList();
+                    if (members.Count < 2 || Narrow(members).Count == 0) continue;
+                    shown.AddRange(members);
+                    string detail = set[0].SameAsBest ? Count(members.Count - 1, L("копия"), L("копии"), L("копий"))
+                                                      : Count(members.Count - 1, L("копия хуже качеством"), L("копии хуже качеством"), L("копий хуже качеством"));
+                    sections.Add(new Section(set[0].Name, detail, "similar", members));
                 }
                 // One section per set: the kept original followed by its exact copies.
                 foreach (var item in _plan.Items.Where(i => i.Duplicates is { Count: > 0 }))
@@ -1273,12 +1441,21 @@ public sealed class MainWindow : Window
         _cleanup.Content = filter.Kind == FilterKind.Tiny ? L("Удалить миниатюры…") : L("Удалить дубликаты…");
         _cleanup.ToolTip = filter.Kind == FilterKind.Tiny ? L("Переместить в Корзину все миниатюры, у которых есть оригинал большего размера")
                                                           : L("Переместить в Корзину все копии, оставив в каждом наборе оригинал или файл лучшего качества");
+        // Only where there is a RAW and another version of the same shot — and not while the compressed copies are kept,
+        // which keeps the JPEG of such a pair.
+        _rawPreference.Visibility = filter.Kind == FilterKind.Duplicates && SimilarCopies.CompressedPreference == 0
+                                    && _copySets.Any(s => s.Any(Compression.IsRaw) && s.Any(i => !Compression.IsRaw(i)))
+            ? Visibility.Visible : Visibility.Collapsed;
+        // Only where a copy could be the compressed one: a video kept twice, a RAW next to another version of its shot.
+        _compressedPreference.Visibility = filter.Kind == FilterKind.Duplicates
+            && _copySets.Any(s => s.Count > 1 && (s[0].Video || (s.Any(Compression.IsRaw) && s.Any(i => !Compression.IsRaw(i)))))
+            ? Visibility.Visible : Visibility.Collapsed;
         _byFolders.Visibility = filter.Kind == FilterKind.Duplicates && _plan.Items.Any(i => i.Duplicates is { Count: > 0 })
             ? Visibility.Visible : Visibility.Collapsed;
         _arrange.Visibility = filter.Kind is FilterKind.Screenshots or FilterKind.Type or FilterKind.Videos or FilterKind.Person or FilterKind.Object && items.Count > 0
             ? Visibility.Visible : Visibility.Collapsed;
 
-        string gridKey = $"{filter}|{media}|{string.Concat(_included.Select(on => on ? '1' : '0'))}|{Grouping}|{string.Join(" ", _searchTokens)}";
+        string gridKey = $"{filter}|{media}|{string.Concat(_included.Select(on => on ? '1' : '0'))}|{Grouping}|{resolution}|{string.Join(" ", _searchTokens)}";
         _grid.SetSections(sections, filter.Kind == FilterKind.Duplicates, gridKey == _lastGridKey);
         _lastGridKey = gridKey;
         // The strip counts within the selection (and the search), so "Видео 3" means three videos of this view.
@@ -1299,7 +1476,7 @@ public sealed class MainWindow : Window
         // Something to do: files to put in place, or only duplicates to remove ("Удалить дубликаты").
         // The organize window opens whenever a library is open: it shows what it would do, and its own button is on
         // when there is something to do.
-        _organize.IsEnabled = hasPlan;
+        _organize.IsEnabled = _compress.IsEnabled = hasPlan;
         // What organizing would do comes first, as on the Mac; the last message while there is nothing to do.
         _status.Text = _plan == null ? ""
             : _plan.Items.Count == 0 ? L("В этой папке нет фото и видео")
@@ -1528,7 +1705,7 @@ public sealed class MainWindow : Window
 
     void Organize()
     {
-        if (_plan == null || _busy) return;
+        if (_plan == null || _busy || RefuseWhileCompressing()) return;
         // For organizing by person: files in which exactly one named person was recognised.
         var names = new Dictionary<PhotoItem, string>();
         var crowded = new HashSet<PhotoItem>();
@@ -1582,7 +1759,7 @@ public sealed class MainWindow : Window
 
     void MoveToFolder(List<PhotoItem> items)
     {
-        if (_busy || _plan == null || items.Count == 0) return;
+        if (_busy || _plan == null || items.Count == 0 || RefuseWhileCompressing()) return;
         if (AskFolder(items) is not { } folder) return;
         // Put there by hand: organizing by date leaves the folder alone from now on.
         _plan.KeepFolder(folder);
@@ -1595,7 +1772,7 @@ public sealed class MainWindow : Window
     /// </summary>
     void ArrangeShown()
     {
-        if (_busy || _plan == null) return;
+        if (_busy || _plan == null || RefuseWhileCompressing()) return;
         var items = _grid.ShownItems.ToList();
         if (items.Count == 0) return;
         var filter = _sidebar.Selected;
@@ -1755,7 +1932,7 @@ public sealed class MainWindow : Window
 
     void Revert(Stack<OrganizeResult> source, Stack<OrganizeResult> target)
     {
-        if (BusyWithFiles || source.Count == 0 || _plan == null) return;
+        if (BusyWithFiles || source.Count == 0 || _plan == null || RefuseWhileCompressing()) return;
         // A scan running meanwhile is stopped, as on the Mac, and done again once the files are back.
         bool rescan = _scanner != null;
         AbandonScan();
@@ -1809,85 +1986,516 @@ public sealed class MainWindow : Window
     static bool Compressible(PhotoItem item) => !item.CloudOnly && (item.Video || Compression.IsRaw(item));
 
     /// <summary>
-    /// "Сжать…": the window says what it would give; then the RAW photos (several at a time) and the videos (one after
-    /// another: the encoder is busy enough) are compressed, each replacing its original, which goes to the Recycle Bin.
-    /// Can be stopped between two files; the library is read again afterwards.
+    /// "Сжать…": the window says what it would give; then the files are compressed in the background — the library can
+    /// be looked through meanwhile, and "Сжать…" again adds to the queue. RAW photos several at a time, videos one after
+    /// another (the encoder is busy enough); each replaces its original, which goes to the Recycle Bin. The bottom bar
+    /// shows how far it is and stops it between two files; a click on it opens the details and the queue. The library is
+    /// read again once the queue is through.
     /// </summary>
     void Compress(List<PhotoItem> items)
     {
-        if (_plan == null || _busy) return;
+        if (_plan == null || BusyWithFiles) return;
         var dialog = new CompressDialog(this, items, _plan.Items);
         if (dialog.ShowDialog() != true) return;
-        var photos = dialog.Photos;
-        var videos = dialog.Videos;
         int megapixels = dialog.Megapixels;
-        if (photos.Count + videos.Count == 0 || !RecycleBinHolds(photos.Concat(videos.Select(v => v.Item)))) return;
-
-        _busy = true;
-        StopAnalysis();
-        CloseViewer();
-        var cancel = new CancellationTokenSource();
-        _copyCancel = cancel;
-        ShowProgress(L("Сжатие…"), cancellable: true);
-        _progressCancel.Content = L("Остановить");
-        UpdateUi();
-        int total = photos.Count + videos.Count, done = 0;
-        long freed = 0;
-        var outcomes = new System.Collections.Concurrent.ConcurrentBag<Compressor.Outcome>();
-        void Finished(Compressor.Outcome outcome)
+        List<CompressWork> works;
+        lock (_compressQueue)
         {
-            outcomes.Add(outcome);
-            Interlocked.Increment(ref done);
-            if (outcome.NewPath != null) Interlocked.Add(ref freed, outcome.Before - outcome.After);
+            // What is queued already is not queued twice.
+            works = dialog.Photos.Where(p => !_compressQueued.Contains(p)).Select(p => new CompressWork(p, megapixels, null, null))
+                .Concat(dialog.Videos.Where(v => !_compressQueued.Contains(v.Item)).Select(v => new CompressWork(v.Item, megapixels, v.Info, v.Job)))
+                .ToList();
         }
-        void Report(string? current, double fraction) => Dispatcher.BeginInvoke(() =>
+        if (works.Count == 0 || !RecycleBinHolds(works.Select(w => w.Item))) return;
+        Enqueue(works);
+    }
+
+    void Enqueue(List<CompressWork> works)
+    {
+        lock (_compressQueue)
         {
-            _progressText.Text = F("Сжатие: %@ из %@ · освобождено %@", Number(Volatile.Read(ref done)), Number(total), Strings.Size(Interlocked.Read(ref freed)))
-                                 + (current != null ? $"\n{current} — {fraction * 100:0} %" : "");
-            _progressBar.IsIndeterminate = false;
-            _progressBar.Maximum = total;
-            _progressBar.Value = Volatile.Read(ref done) + fraction;
-        });
-        Task.Run(() =>
+            foreach (var work in works)
+            {
+                _compressQueue.Enqueue(work);
+                _compressQueued.Add(work.Item);
+                _compressEntries.Add(new CompressEntry(work));
+            }
+        }
+        SaveCompressQueue();
+        if (_compressTask == null) StartCompressing();
+        UpdateCompressBar();
+    }
+
+    // --- The queue kept on the disk ---------------------------------------------------------------------------------
+
+    /// <summary>A file of the queue as it is kept: so that compressing closed halfway goes on at the next start.</summary>
+    sealed record SavedWork(string Path, int Megapixels, VideoInfo? Info, VideoJob? Job);
+
+    static string SavedQueuePath => AppData.File("compress-queue.json");
+    static readonly object SavedQueueLock = new();
+    bool _compressStoppedByHand, _resumeAsked;
+
+    /// <summary>What is still to do, written after every change; the file goes once nothing is left.</summary>
+    void SaveCompressQueue()
+    {
+        List<SavedWork> left;
+        lock (_compressQueue)
+        {
+            left = _compressEntries.Where(e => e.State is CompressState.Waiting or CompressState.Running)
+                                   .Select(e => new SavedWork(e.Work.Item.Path, e.Work.Megapixels, e.Work.Info, e.Work.Job)).ToList();
+        }
+        lock (SavedQueueLock)
         {
             try
             {
-                // Each photo takes a few hundred megabytes while it is made: a few at a time.
-                Parallel.ForEach(photos, new ParallelOptions { MaxDegreeOfParallelism = Math.Clamp(Environment.ProcessorCount / 4, 1, 4), CancellationToken = cancel.Token },
-                    item =>
-                    {
-                        Finished(Compressor.Photo(item, megapixels));
-                        Report(null, 0);
-                    });
-                foreach (var (item, info, job) in videos)
+                if (left.Count == 0) File.Delete(SavedQueuePath);
+                else AppData.WriteAtomically(SavedQueuePath, System.Text.Json.JsonSerializer.Serialize(left));
+            }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+            {
+            }
+        }
+    }
+
+    /// <summary>
+    /// Once a library is open: the half-written files a compressing closed halfway left (hidden next to their originals)
+    /// are removed, and when it left files to do in this library, whether to go on is asked. A file under way starts
+    /// again (a video half written cannot be finished), the rest goes on.
+    /// </summary>
+    void ResumeCompressing()
+    {
+        if (_plan == null || Compressing) return;
+        var roots = _roots.ToList();
+        Task.Run(() =>
+        {
+            foreach (string root in roots)
+            {
+                try
                 {
-                    if (cancel.IsCancellationRequested) break;
-                    var outcome = Compressor.Video(item, info, job, fraction => Report(item.Name, fraction), cancel.Token);
-                    // Stopped in the middle: that video stays as it was, and is not counted.
-                    if (cancel.IsCancellationRequested && outcome.NewPath == null) break;
-                    Finished(outcome);
-                    Report(null, 0);
+                    var options = new EnumerationOptions { RecurseSubdirectories = true, IgnoreInaccessible = true, AttributesToSkip = 0 };
+                    foreach (string leftover in Directory.EnumerateFiles(root, ".*.po-compressing*", options))
+                    {
+                        try { File.Delete(leftover); } catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
+                    }
+                }
+                catch (Exception e) when (e is IOException or UnauthorizedAccessException or DirectoryNotFoundException)
+                {
+                }
+            }
+        });
+        if (_resumeAsked) return;
+        _resumeAsked = true;
+        List<SavedWork>? saved = null;
+        try
+        {
+            if (File.Exists(SavedQueuePath)) saved = System.Text.Json.JsonSerializer.Deserialize<List<SavedWork>>(File.ReadAllText(SavedQueuePath));
+        }
+        catch (Exception e) when (e is IOException or System.Text.Json.JsonException or UnauthorizedAccessException)
+        {
+        }
+        if (saved is not { Count: > 0 }) return;
+        var byPath = _plan.Items.GroupBy(i => i.Path, StringComparer.OrdinalIgnoreCase).ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+        var works = saved.Where(w => byPath.ContainsKey(w.Path))
+                         .Select(w => new CompressWork(byPath[w.Path], w.Megapixels, w.Info, w.Job))
+                         .Where(w => File.Exists(w.Item.Path))
+                         .ToList();
+        // Of another library: kept for when that one is opened.
+        if (works.Count == 0) return;
+        string question = F("Сжатие было прервано: осталось %@ (%@). Продолжить с того места, где остановилось? Файл, который сжимался в тот момент, будет сжат заново.",
+                            FilesDetail(works.Count), Strings.Size(works.Sum(w => w.Item.FileSize)));
+        if (MessageBox.Show(this, question, L("Сжатие"), MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes
+            && RecycleBinHolds(works.Select(w => w.Item)))
+        {
+            Enqueue(works);
+        }
+        else
+        {
+            lock (SavedQueueLock) { try { File.Delete(SavedQueuePath); } catch (IOException) { } }
+        }
+    }
+
+    sealed record CompressWork(PhotoItem Item, int Megapixels, VideoInfo? Info, VideoJob? Job);
+
+    enum CompressState { Waiting, Running, Done, Kept, Failed }
+
+    /// <summary>One file of the queue, as the details show it.</summary>
+    sealed class CompressEntry(CompressWork work)
+    {
+        public CompressWork Work { get; } = work;
+        public CompressState State;
+        public double Fraction;
+        /// <summary>For the file under way: what it is turned into and how fast it goes.</summary>
+        public string? Detail;
+        public Compressor.Outcome? Outcome;
+        /// <summary>When the work on it began, and how long it took (see CompressLeft).</summary>
+        public DateTime Started;
+        public double Seconds;
+    }
+
+    readonly Queue<CompressWork> _compressQueue = new();
+    readonly HashSet<PhotoItem> _compressQueued = [];
+    readonly List<CompressEntry> _compressEntries = [];
+    Task? _compressTask;
+    CancellationTokenSource? _compressCancel;
+    DateTime _compressListShown;
+
+    /// <summary>While files are being compressed in the background: nothing else may move or remove files meanwhile.</summary>
+    bool Compressing => _compressTask != null;
+
+    /// <summary>Said when something that moves files is asked for while compressing.</summary>
+    bool RefuseWhileCompressing()
+    {
+        if (!Compressing) return false;
+        MessageBox.Show(this, L("Идёт сжатие: пока оно не закончится, файлы нельзя перемещать и удалять. Его можно остановить кнопкой внизу окна."),
+                        L("Сжатие"), MessageBoxButton.OK, MessageBoxImage.Information);
+        return true;
+    }
+
+    CompressEntry EntryOf(CompressWork work)
+    {
+        lock (_compressQueue) return _compressEntries.First(e => ReferenceEquals(e.Work, work));
+    }
+
+    void StartCompressing()
+    {
+        var cancel = new CancellationTokenSource();
+        _compressCancel = cancel;
+        _compressStop.IsEnabled = _popupStop.IsEnabled = true;
+        _compressPanel.Visibility = Visibility.Visible;
+        _compressTask = Task.Run(() =>
+        {
+            try
+            {
+                while (!cancel.IsCancellationRequested)
+                {
+                    // The photos waiting, all together (a few at a time); then the videos, several at once.
+                    List<CompressWork> photos;
+                    bool videosLeft;
+                    lock (_compressQueue)
+                    {
+                        photos = _compressQueue.Where(w => w.Info == null).ToList();
+                        if (photos.Count > 0)
+                        {
+                            var rest = _compressQueue.Where(w => w.Info != null).ToList();
+                            _compressQueue.Clear();
+                            foreach (var w in rest) _compressQueue.Enqueue(w);
+                        }
+                        videosLeft = _compressQueue.Count > 0;
+                    }
+                    if (photos.Count == 0 && !videosLeft) break;
+                    // Each photo takes a few hundred megabytes while it is made: a few at a time.
+                    Parallel.ForEach(photos, new ParallelOptions { MaxDegreeOfParallelism = PhotoWorkers, CancellationToken = cancel.Token },
+                        work =>
+                        {
+                            var entry = EntryOf(work);
+                            lock (_compressQueue)
+                            {
+                                entry.State = CompressState.Running;
+                                entry.Started = DateTime.UtcNow;
+                            }
+                            CompressFinished(entry, Compressor.Photo(work.Item, work.Megapixels));
+                            Dispatcher.BeginInvoke(UpdateCompressBar);
+                        });
+                    if (!videosLeft) continue;
+                    // Several videos at once, each worker taking the next one the moment it is free — so there are
+                    // always that many going, not a batch that dwindles to one before the next starts. The card's
+                    // encoder is busy all the time only with a few (one at a time left it waiting on reading and writing).
+                    bool stopped = false;
+                    var workers = new Task[VideoWorkers];
+                    for (int i = 0; i < workers.Length; i++)
+                    {
+                        workers[i] = Task.Run(() =>
+                        {
+                            while (!cancel.IsCancellationRequested)
+                            {
+                                CompressWork? video;
+                                lock (_compressQueue)
+                                {
+                                    // Photos added meanwhile go first: the loop around takes them.
+                                    if (_compressQueue.Count == 0 || _compressQueue.Peek().Info == null) return;
+                                    video = _compressQueue.Dequeue();
+                                }
+                                if (video is not { Info: { } info, Job: { } job }) continue;
+                                var current = EntryOf(video);
+                                lock (_compressQueue)
+                                {
+                                    current.State = CompressState.Running;
+                                    current.Started = DateTime.UtcNow;
+                                }
+                                // What it is turned into, and how fast it goes: "3840×2160 → 1080×1920 · 74 → 8 Мбит/с · HDR".
+                                string what = $"{info.Width}×{info.Height} → {job.Width}×{job.Height} · "
+                                              + F("%@ → %@ Мбит/с", Math.Round(Math.Max(info.VideoBitrate, 0) / 1e6), Math.Round(job.Bitrate / 1e6))
+                                              + (info.Hdr ? " · HDR" : "");
+                                var outcome = Compressor.Video(video.Item, info, job, p =>
+                                {
+                                    lock (_compressQueue)
+                                    {
+                                        current.Fraction = p.Fraction;
+                                        current.Detail = what + "\n" + F("%@× от реального времени · %@ кадр/с · %@ из ≈ %@ · %@",
+                                            p.Speed.ToString("0.0"), Math.Round(p.Fps), Strings.Size(p.Bytes), Strings.Size(job.EstimatedSize),
+                                            p.OnCard ? L("всё на видеокарте") : L("декодирование на процессоре"));
+                                    }
+                                    Dispatcher.BeginInvoke(UpdateCompressBar);
+                                }, cancel.Token);
+                                // Stopped in the middle: that video stays as it was, and is not counted.
+                                if (cancel.IsCancellationRequested && outcome.NewPath == null)
+                                {
+                                    lock (_compressQueue) current.State = CompressState.Waiting;
+                                    stopped = true;
+                                    return;
+                                }
+                                CompressFinished(current, outcome);
+                                Dispatcher.BeginInvoke(UpdateCompressBar);
+                            }
+                        });
+                    }
+                    Task.WaitAll(workers);
+                    if (stopped) break;
                 }
             }
             catch (OperationCanceledException)
             {
             }
-        }).ContinueWith(_ => CompressDone([.. outcomes], cancel.IsCancellationRequested), TaskScheduler.FromCurrentSynchronizationContext());
+        }).ContinueWith(_ => CompressDone(cancel.IsCancellationRequested), TaskScheduler.FromCurrentSynchronizationContext());
     }
 
-    void CompressDone(List<Compressor.Outcome> outcomes, bool stopped)
+    void CompressFinished(CompressEntry entry, Compressor.Outcome outcome)
     {
-        _busy = false;
-        _copyCancel = null;
+        lock (_compressQueue)
+        {
+            entry.Outcome = outcome;
+            entry.Fraction = 1;
+            entry.Detail = null;
+            entry.Seconds = (DateTime.UtcNow - entry.Started).TotalSeconds;
+            entry.State = outcome.Error != null ? CompressState.Failed : outcome.NewPath != null ? CompressState.Done : CompressState.Kept;
+        }
+        SaveCompressQueue();
+    }
+
+    /// <summary>
+    /// The bar at the bottom — the file being compressed ("1 из 12"), what is freed once something is (a file frees its
+    /// space only when it is done and its original gone), the time left (by the bytes still to go: the files are of very
+    /// different sizes) — and, when open, the details above it.
+    /// </summary>
+    void UpdateCompressBar()
+    {
+        if (!Compressing) return;
+        int done, total;
+        long freed, bytesDone = 0, bytesTotal = 0;
+        CompressEntry? running;
+        string left;
+        lock (_compressQueue)
+        {
+            left = CompressLeft();
+            total = _compressEntries.Count;
+            done = _compressEntries.Count(e => e.State is CompressState.Done or CompressState.Kept or CompressState.Failed);
+            freed = _compressEntries.Where(e => e.State == CompressState.Done).Sum(e => e.Outcome!.Before - e.Outcome.After);
+            foreach (var e in _compressEntries)
+            {
+                long size = Math.Max(e.Work.Item.FileSize, 1);
+                bytesTotal += size;
+                bytesDone += e.State == CompressState.Running ? (long)(size * e.Fraction) : e.State == CompressState.Waiting ? 0 : size;
+            }
+            running = _compressEntries.FirstOrDefault(e => e.State == CompressState.Running);
+        }
+        string summary = F("Сжатие: %@ из %@", Number(Math.Min(done + 1, total)), Number(total))
+                         + (freed > 0 ? " · " + F("освобождено %@", Strings.Size(freed)) : "")
+                         + (left.Length > 0 ? $" · {left}" : "");
+        string? now = running != null ? $"{running.Work.Item.Name} — {running.Fraction * 100:0} %" : null;
+        _compressText.Text = now != null ? $"{summary} · {now}" : summary;
+        _compressText.ToolTip = L("Щёлкните, чтобы увидеть подробности и очередь");
+        _compressProgress.Maximum = Math.Max(bytesTotal, 1);
+        _compressProgress.Value = bytesDone;
+        if (!_compressPopup.IsOpen) return;
+        _popupSummary.Text = summary;
+        _popupCurrent.Text = running != null ? $"{now}\n{running.Detail ?? ""}".TrimEnd() : L("Ждёт следующего файла…");
+        _popupFileProgress.Value = running?.Fraction ?? 0;
+        _popupTotalProgress.Maximum = Math.Max(bytesTotal, 1);
+        _popupTotalProgress.Value = bytesDone;
+        // The list is long (thousands of files): written anew at most twice a second.
+        if ((DateTime.Now - _compressListShown).TotalMilliseconds < 500) return;
+        _compressListShown = DateTime.Now;
+        List<string> lines;
+        lock (_compressQueue)
+        {
+            // The one under way, those waiting, then those done, the latest first.
+            lines = _compressEntries.Where(e => e.State == CompressState.Running).Select(QueueLine)
+                .Concat(_compressEntries.Where(e => e.State == CompressState.Waiting).Select(QueueLine))
+                .Concat(_compressEntries.Where(e => e.State is CompressState.Done or CompressState.Kept or CompressState.Failed).Reverse().Select(QueueLine))
+                .ToList();
+        }
+        _popupList.ItemsSource = lines;
+    }
+
+    /// <summary>
+    /// Videos compressed at a time: the card's encoder is the limit (an RTX 5070: 1 200 frames a second from two at
+    /// once on, the same with six); four keep it busy while one is being read or written. The processor encoding a
+    /// share as well made it slower (it starves the card of what it reads), so it does not.
+    /// </summary>
+    static int VideoWorkers => VideoCompressor.Encoder == "hevc_nvenc" ? 5 : 1;
+
+    /// <summary>Photos compressed at a time: each takes a few hundred megabytes while it is made.</summary>
+    static int PhotoWorkers => Math.Clamp(Environment.ProcessorCount / 4, 1, 4);
+
+    /// <summary>
+    /// The time left: the seconds of video still to compress at the pace of the whole run so far (seconds of video a
+    /// second of work), and the photos left at the time a photo has taken — steady, unlike a measure of the bytes, which
+    /// jumped with every short or long video. Empty until there is something to go by. Called under the queue's lock.
+    /// </summary>
+    string CompressLeft()
+    {
+        var now = DateTime.UtcNow;
+        double videoDone = 0, videoSpent = 0, videoLeft = 0, photoSpent = 0;
+        int photosDone = 0, photosLeft = 0;
+        foreach (var e in _compressEntries)
+        {
+            double duration = e.Work.Info?.Duration ?? 0;
+            bool video = e.Work.Info != null;
+            switch (e.State)
+            {
+                case CompressState.Done or CompressState.Kept:
+                    if (video)
+                    {
+                        videoDone += duration;
+                        videoSpent += e.Seconds;
+                    }
+                    else
+                    {
+                        photosDone++;
+                        photoSpent += e.Seconds;
+                    }
+                    break;
+                case CompressState.Running:
+                    if (!video)
+                    {
+                        photosLeft++;
+                        break;
+                    }
+                    videoDone += duration * e.Fraction;
+                    videoSpent += (now - e.Started).TotalSeconds;
+                    videoLeft += duration * (1 - e.Fraction);
+                    break;
+                case CompressState.Waiting:
+                    if (video) videoLeft += duration; else photosLeft++;
+                    break;
+            }
+        }
+        double seconds = 0;
+        if (videoLeft > 0)
+        {
+            // The pace: measured on this run once there is enough of it; until then the last run's, or a guess (the
+            // card does about eight seconds of video a second, the processor about one).
+            double pace = videoSpent >= 20 && videoDone > 0 ? videoDone / videoSpent
+                        : Settings.Shared.Get("compressVideoPace", VideoCompressor.Encoder == "hevc_nvenc" ? 8.0 : 1.0);
+            if (videoSpent >= 60 && videoDone > 0) Settings.Shared.Set("compressVideoPace", pace);
+            seconds += videoLeft / pace / VideoWorkers;   // the time of each, several at once
+        }
+        if (photosLeft > 0)
+        {
+            if (photosDone == 0) return "";
+            seconds += photosLeft * photoSpent / photosDone / PhotoWorkers;
+        }
+        return seconds > 0 ? F("осталось ≈ %@", Eta.Duration(seconds)) : "";
+    }
+
+    static string QueueLine(CompressEntry e) => e.State switch
+    {
+        CompressState.Running => $"▶  {e.Work.Item.Name} — {e.Fraction * 100:0} %",
+        CompressState.Done => $"✓  {e.Work.Item.Name} — {Compression.Saving(e.Outcome!.Before, e.Outcome.After)}",
+        CompressState.Kept => $"–  {e.Work.Item.Name} — " + L("не стало меньше, оставлен как был"),
+        CompressState.Failed => $"✗  {e.Work.Item.Name} — {e.Outcome?.Error}",
+        _ => $"     {e.Work.Item.Name} — {Strings.Size(e.Work.Item.FileSize)}"
+             + (e.Work.Job is { } job ? $" → ≈ {Strings.Size(job.EstimatedSize)}" : ""),
+    };
+
+    readonly System.Windows.Controls.Primitives.Popup _compressPopup = new()
+    {
+        Placement = PlacementMode.Top, StaysOpen = false, AllowsTransparency = true, VerticalOffset = -6,
+    };
+    readonly TextBlock _popupSummary = new() { FontWeight = FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap };
+    readonly TextBlock _popupCurrent = new() { TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 10, 0, 6) };
+    readonly ProgressBar _popupFileProgress = new() { Height = 6, Maximum = 1 };
+    readonly ProgressBar _popupTotalProgress = new() { Height = 6, Margin = new Thickness(0, 8, 0, 0) };
+    readonly ListBox _popupList = new() { MaxHeight = 320, BorderThickness = new Thickness(0), Margin = new Thickness(0, 4, 0, 10) };
+    Button _popupStop = null!;
+
+    /// <summary>The details above the bar, opened by a click on it: the totals, the file under way and the queue.</summary>
+    void BuildCompressPopup()
+    {
+        var content = new StackPanel { Width = 600 };
+        content.Children.Add(_popupSummary);
+        content.Children.Add(_popupTotalProgress);
+        content.Children.Add(_popupCurrent);
+        content.Children.Add(_popupFileProgress);
+        var queueLabel = Ui.Text(L("Очередь"), "Secondary");
+        queueLabel.Margin = new Thickness(0, 12, 0, 0);
+        content.Children.Add(queueLabel);
+        VirtualizingPanel.SetIsVirtualizing(_popupList, true);
+        _popupList.SetResourceReference(BackgroundProperty, "Window");
+        _popupList.SetResourceReference(ForegroundProperty, "Text");
+        content.Children.Add(_popupList);
+        _popupStop = Ui.TextButton(L("Остановить"), StopCompressing);
+        _popupStop.HorizontalAlignment = HorizontalAlignment.Right;
+        content.Children.Add(_popupStop);
+        var card = new Border { Padding = new Thickness(16), CornerRadius = new CornerRadius(10), BorderThickness = new Thickness(1), Child = content };
+        card.SetResourceReference(Border.BackgroundProperty, "Window");
+        card.SetResourceReference(Border.BorderBrushProperty, "Separator");
+        card.Effect = new System.Windows.Media.Effects.DropShadowEffect { BlurRadius = 16, ShadowDepth = 2, Opacity = 0.25 };
+        _compressPopup.Child = card;
+        _compressPopup.PlacementTarget = _compressPanel;
+        _compressPanel.Background = Brushes.Transparent;   // clickable all over
+        _compressPanel.Cursor = Cursors.Hand;
+        _compressPanel.MouseLeftButtonUp += (_, e) =>
+        {
+            if (e.OriginalSource is DependencyObject source && IsInside(source, _compressStop)) return;
+            _compressPopup.IsOpen = !_compressPopup.IsOpen;
+            _compressListShown = DateTime.MinValue;
+            UpdateCompressBar();
+        };
+    }
+
+    static bool IsInside(DependencyObject element, DependencyObject container)
+    {
+        for (var at = element; at != null; at = VisualTreeHelper.GetParent(at)) if (at == container) return true;
+        return false;
+    }
+
+    void StopCompressing()
+    {
+        _compressStoppedByHand = true;
+        _compressCancel?.Cancel();
+        _compressStop.IsEnabled = _popupStop.IsEnabled = false;
+        _compressText.Text = _popupSummary.Text = L("Остановка после текущего файла…");
+    }
+
+    void CompressDone(bool stopped)
+    {
+        // Closed halfway: the queue stays on the disk, to go on at the next start.
+        if (_closing) return;
+        // Stopped by hand: nothing is left to do later.
+        if (_compressStoppedByHand) lock (SavedQueueLock) { try { File.Delete(SavedQueuePath); } catch (IOException) { } }
+        _compressStoppedByHand = false;
+        List<Compressor.Outcome> outcomes;
+        lock (_compressQueue)
+        {
+            outcomes = _compressEntries.Where(e => e.Outcome != null).Select(e => e.Outcome!).ToList();
+            _compressEntries.Clear();
+            _compressQueue.Clear();
+            _compressQueued.Clear();
+        }
+        _compressTask = null;
+        _compressCancel = null;
+        _compressPopup.IsOpen = false;
+        _compressPanel.Visibility = Visibility.Collapsed;
         var errors = outcomes.Where(o => o.Error != null).Select(o => $"{o.Item.RelativePath.Replace('/', '\\')}: {o.Error}").ToList();
         int withoutHdr = outcomes.Count(o => o.NewPath != null && !o.Item.Video && !o.Hdr);
         _lastMessage = (stopped ? L("Сжатие остановлено.") + " " : "") + Compressor.Summary(outcomes)
                        + (withoutHdr > 0 ? ". " + F("Без HDR (в RAW его не было): %@", Number(withoutHdr)) : "")
                        + ". " + L("Оригиналы — в Корзине.");
-        _pages.Content = _library;
+        UpdateUi();
         ShowErrors(errors, L("Не все файлы удалось сжать"));
         // The files changed under their names (and RAW became JPEG): the library is read again.
-        Rescan();
+        if (outcomes.Any(o => o.NewPath != null)) Rescan();
     }
 
     // --- Recycle Bin --------------------------------------------------------------------------------------------
@@ -1915,7 +2523,7 @@ public sealed class MainWindow : Window
     /// </summary>
     void Trash(List<PhotoItem> items, List<string>? folders = null)
     {
-        if (_plan == null || items.Count == 0 || !RecycleBinHolds(items)) return;
+        if (_plan == null || items.Count == 0 || RefuseWhileCompressing() || !RecycleBinHolds(items)) return;
         // Folders that go whole take the files inside them along.
         folders ??= [];
         var paths = folders.Concat(items.Select(i => i.Path)
@@ -2058,7 +2666,18 @@ public sealed class MainWindow : Window
             if (keeper != null && doomed.Contains(keeper)) keeper = keeper.BetterCopy is { } best && !doomed.Contains(best) ? best : null;
             return keeper != null && StillThere(keeper);
         }).ToList();
-        if (victims.Count == 0) return;
+        if (victims.Count == 0)
+        {
+            // Said, rather than nothing happening.
+            string why = doomed.Count > 0
+                ? L("Оригиналы этих копий изменились на диске после сканирования — пересканируйте папку (F5), тогда их можно будет удалить.")
+                : _findingCopies
+                    ? L("Похожие копии (RAW и JPEG одного кадра, уменьшенные и пережатые версии) ещё ищутся — попробуйте через минуту.")
+                    : tinyView ? L("Миниатюр, у которых есть оригинал большего размера, нет.")
+                    : L("Удалять нечего: копий, у которых остаётся оригинал, нет.");
+            MessageBox.Show(this, why, L("Удалить дубликаты…").TrimEnd('…'), MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
         string freed = Strings.Size(victims.Sum(i => i.FileSize));
         string title = tinyView
             ? F("Переместить %@ в Корзину?", Count(victims.Count, L("миниатюра"), L("миниатюры"), L("миниатюр")))

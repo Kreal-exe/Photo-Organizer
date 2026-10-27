@@ -1,5 +1,6 @@
 #import "POViewerViewController.h"
 #import "POStrings.h"
+#import "POCompression.h"
 #import <AVKit/AVKit.h>
 #import <ImageIO/ImageIO.h>
 
@@ -89,6 +90,49 @@ enum { POKeyLeft = 123, POKeyRight = 124, POKeyEscape = 53, POKeySpace = 49 };
 }
 
 static void *POPlayerItemStatusContext = &POPlayerItemStatusContext;
+
+/// Whether a picture carries HDR: a JPEG or HEIC with a gain map (Apple's, or the ISO 21496-1 one of Ultra HDR), or a
+/// PNG or AVIF that says its colours are PQ or HLG. Found by the marks those write near the start of the file. As on
+/// Windows.
+static BOOL POImageIsHdr(NSURL *url) {
+    NSFileHandle *file = [NSFileHandle fileHandleForReadingFromURL:url error:NULL];
+    if (!file) return NO;
+    NSData *data = [file readDataOfLength:4 << 20];
+    [file closeFile];
+    if (data.length < 12) return NO;
+    const uint8_t *bytes = data.bytes;
+    NSRange all = NSMakeRange(0, data.length);
+    BOOL (^has)(const char *) = ^BOOL(const char *mark) {
+        return [data rangeOfData:[NSData dataWithBytes:mark length:strlen(mark)] options:0 range:all].location != NSNotFound;
+    };
+    if (bytes[0] == 0xFF && bytes[1] == 0xD8) return has("hdrgm:Version") || has("urn:iso:std:iso:ts:21496") || has("HDRGainMap");
+    if (memcmp(bytes + 4, "ftyp", 4) == 0) {
+        if (has("urn:com:apple:photo:2020:aux:hdrgainmap") || has("urn:iso:std:iso:ts:21496")) return YES;
+        NSUInteger colr = [data rangeOfData:[NSData dataWithBytes:"colrnclx" length:8] options:0 range:all].location;
+        return colr != NSNotFound && colr + 12 <= data.length && (bytes[colr + 11] == 16 || bytes[colr + 11] == 18);
+    }
+    if (bytes[1] == 'P' && bytes[2] == 'N' && bytes[3] == 'G') {
+        NSUInteger cicp = [data rangeOfData:[NSData dataWithBytes:"cICP" length:4] options:0 range:all].location;
+        return cicp != NSNotFound && cicp + 6 <= data.length && (bytes[cicp + 5] == 16 || bytes[cicp + 5] == 18);
+    }
+    return NO;
+}
+
+/// A video's frame rate and HDR ("60 кадр/с", "Dolby Vision"); a picture's HDR. As on Windows.
+static NSArray<NSString *> *PODetailsOfItem(POPhotoItem *item) {
+    NSMutableArray<NSString *> *details = [NSMutableArray array];
+    if (item.isVideo) {
+        POVideoInfo *video = POProbeVideo(item.url);
+        if (!video) return details;
+        if (video.fps > 0) [details addObject:[NSString stringWithFormat:POL(@"%@ кадр/с"), PONumber((NSInteger)lround(video.fps))]];
+        NSString *hdr = [video.dynamicHdr isEqualToString:@"dolby vision"] ? @"Dolby Vision" : [video.dynamicHdr isEqualToString:@"vivid"] ? @"HDR Vivid"
+                      : [video.dynamicHdr isEqualToString:@"hdr10+"] ? @"HDR10+" : video.hdr ? @"HDR" : nil;
+        if (hdr) [details addObject:hdr];
+    } else if (POImageIsHdr(item.url)) {
+        [details addObject:@"HDR"];
+    }
+    return details;
+}
 
 static NSButton *POBarButton(NSString *symbol, NSString *toolTip, id target, SEL action) {
     NSButton *button = [NSButton buttonWithImage:[NSImage imageWithSystemSymbolName:symbol accessibilityDescription:toolTip] target:target action:action];
@@ -298,6 +342,18 @@ static NSButton *POBarButton(NSString *symbol, NSString *toolTip, id target, SEL
     if (item.destinationFolder) [info addObject:item.needsMove ? [@"→ " stringByAppendingString:item.destinationFolder] : POL(@"уже на месте")];
     _nameLabel.stringValue = item.relativePath;
     _infoLabel.stringValue = [info componentsJoinedByString:@" · "];
+    // The frame rate and HDR, read from the file after it is shown (a few hundredths of a second), after the size.
+    NSUInteger detailGeneration = _loadGeneration;
+    NSUInteger at = MIN(info.count, item.pixelWidth > 0 ? 2 : 1);
+    dispatch_async(_decodeQueue, ^{
+        NSArray<NSString *> *details = PODetailsOfItem(item);
+        if (!details.count) return;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (detailGeneration != self->_loadGeneration) return;
+            [info insertObjects:details atIndexes:[NSIndexSet indexSetWithIndexesInRange:NSMakeRange(at, details.count)]];
+            self->_infoLabel.stringValue = [info componentsJoinedByString:@" · "];
+        });
+    });
     _counterLabel.stringValue = [NSString stringWithFormat:POL(@"%@ из %@"), PONumber(_index + 1), PONumber(_items.count)];
     _previousButton.enabled = _index > 0;
     _nextButton.enabled = _index + 1 < _items.count;

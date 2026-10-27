@@ -8,6 +8,10 @@
 #import "POOrganizer.h"
 #import "POSimilarCopies.h"
 #import "POVKAlbum.h"
+#import "POVKBrowserCookies.h"
+#import <CommonCrypto/CommonCryptor.h>
+#import <CommonCrypto/CommonKeyDerivation.h>
+#import <sqlite3.h>
 #import "POManualDates.h"
 #import "PODateSuggestions.h"
 #import "POPictureText.h"
@@ -950,11 +954,22 @@ int main(void) {
             CHECK([folderOf(@"IMG_0001.JPG") isEqualToString:@"Мама/2023"] && [folderOf(@"PANO_0001.jpg") isEqualToString:@"2023"], @"%@ %@", folderOf(@"IMG_0001.JPG"), folderOf(@"PANO_0001.jpg"));
             plan.arrangement = POArrangementDate;
             plan.separateScreenshots = YES;
+            plan.screenshotsInEachDate = NO;
             [plan rebuild];
             CHECK([folderOf(@"Screenshot 2024-05-01 at 10.00.00.png") isEqualToString:[POPlan.defaultScreenshotsFolderName stringByAppendingString:@"/2024"]]);
             plan.screenshotsInEachDate = YES;
             [plan rebuild];
             CHECK([folderOf(@"Screenshot 2024-05-01 at 10.00.00.png") isEqualToString:[@"2024/" stringByAppendingString:POPlan.defaultScreenshotsFolderName]], @"%@", folderOf(@"Screenshot 2024-05-01 at 10.00.00.png"));
+            // Any kind in a folder of its own, inside its year or at the top; unticked, it lies with the rest.
+            plan.separatePhotos = YES;
+            [plan rebuild];
+            CHECK([folderOf(@"IMG_0001.JPG") isEqualToString:[@"2023/" stringByAppendingString:POL(@"Фото")]], @"%@", folderOf(@"IMG_0001.JPG"));
+            plan.screenshotsInEachDate = NO;
+            [plan rebuild];
+            CHECK([folderOf(@"IMG_0001.JPG") isEqualToString:[POL(@"Фото") stringByAppendingString:@"/2023"]], @"%@", folderOf(@"IMG_0001.JPG"));
+            plan.separatePhotos = plan.separateScreenshots = NO;
+            [plan rebuild];
+            CHECK([folderOf(@"IMG_0001.JPG") isEqualToString:@"2023"], @"%@", folderOf(@"IMG_0001.JPG"));
             [fm removeItemAtURL:kinds error:NULL];
         }
 
@@ -1031,6 +1046,54 @@ int main(void) {
             CHECK(again.records.count == 0 && again.alreadyCopied == 3 && again.errors.count == 0,
                   @"%lu copied, %lu already there, %@", again.records.count, again.alreadyCopied, again.errors);
             CHECK([Tree(drive) isEqualToArray:wanted], @"%@", Tree(drive));
+        }
+
+        // The VK sign-in of a browser: only VK's own hosts, decrypted, expired ones left out
+        {
+            NSURL *file = [root URLByAppendingPathComponent:@"Cookies"];
+            NSData *password = [@"secret" dataUsingEncoding:NSUTF8StringEncoding];
+            uint8_t key[kCCKeySizeAES128], iv[kCCBlockSizeAES128];
+            CCKeyDerivationPBKDF(kCCPBKDF2, password.bytes, password.length, (const uint8_t *)"saltysalt", 9, kCCPRFHmacAlgSHA1, 1003, key, sizeof key);
+            memset(iv, ' ', sizeof iv);
+            NSMutableData *plain = [NSMutableData dataWithLength:32];   // database version 24: the host's hash comes first
+            [plain appendData:[@"session-value" dataUsingEncoding:NSUTF8StringEncoding]];
+            NSMutableData *encrypted = [NSMutableData dataWithLength:plain.length + kCCBlockSizeAES128];
+            size_t written = 0;
+            CCCrypt(kCCEncrypt, kCCAlgorithmAES, kCCOptionPKCS7Padding, key, sizeof key, iv, plain.bytes, plain.length, encrypted.mutableBytes, encrypted.length, &written);
+            encrypted.length = written;
+            NSMutableData *blob = [NSMutableData dataWithData:[@"v10" dataUsingEncoding:NSUTF8StringEncoding]];
+            [blob appendData:encrypted];
+
+            sqlite3 *database = NULL;
+            CHECK(sqlite3_open(file.path.UTF8String, &database) == SQLITE_OK);
+            sqlite3_exec(database, "CREATE TABLE meta (key TEXT, value TEXT); INSERT INTO meta VALUES ('version', '24');"
+                                   "CREATE TABLE cookies (host_key TEXT, name TEXT, path TEXT, value TEXT, encrypted_value BLOB, expires_utc INTEGER,"
+                                   " is_secure INTEGER, is_httponly INTEGER, samesite INTEGER, last_access_utc INTEGER);", NULL, NULL, NULL);
+            int64_t future = ((int64_t)NSDate.date.timeIntervalSince1970 + 11644473600 + 86400) * 1000000;
+            NSArray *rows = @[@[@".vk.ru", @"remixsid", @(future)], @[@"login.vk.ru", @"subhost", @(future)], @[@"vk.com", @"session", @0],
+                              @[@".vk.ru", @"expired", @1000000], @[@".xvk.ru", @"other", @(future)], @[@".example.com", @"other", @(future)]];
+            for (NSArray *row in rows) {
+                sqlite3_stmt *insert = NULL;
+                sqlite3_prepare_v2(database, "INSERT INTO cookies VALUES (?, ?, '/', '', ?, ?, 1, 1, 1, 1)", -1, &insert, NULL);
+                sqlite3_bind_text(insert, 1, [row[0] UTF8String], -1, SQLITE_TRANSIENT);
+                sqlite3_bind_text(insert, 2, [row[1] UTF8String], -1, SQLITE_TRANSIENT);
+                sqlite3_bind_blob(insert, 3, blob.bytes, (int)blob.length, SQLITE_TRANSIENT);
+                sqlite3_bind_int64(insert, 4, [row[2] longLongValue]);
+                sqlite3_step(insert);
+                sqlite3_finalize(insert);
+            }
+            sqlite3_close(database);
+
+            NSArray<NSHTTPCookie *> *cookies = [POVKBrowserCookies cookiesInFile:file password:password];
+            NSArray *names = [[cookies valueForKey:@"name"] sortedArrayUsingSelector:@selector(compare:)];
+            CHECK([names isEqualToArray:(@[@"remixsid", @"session", @"subhost"])], @"%@", names);
+            for (NSHTTPCookie *cookie in cookies) {
+                CHECK([cookie.value isEqualToString:@"session-value"], @"%@", cookie.name);
+                CHECK(cookie.isSecure && cookie.isHTTPOnly, @"%@", cookie.name);
+            }
+            CHECK(![POVKBrowserCookies cookiesInFile:[root URLByAppendingPathComponent:@"no such file"] password:password].count);
+            NSArray<NSHTTPCookie *> *wrongKey = [POVKBrowserCookies cookiesInFile:file password:[@"wrong" dataUsingEncoding:NSUTF8StringEncoding]];
+            CHECK(![[wrongKey valueForKey:@"value"] containsObject:@"session-value"]);
         }
 
         [fm removeItemAtURL:root error:NULL];

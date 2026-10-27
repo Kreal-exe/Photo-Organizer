@@ -199,7 +199,10 @@ static NSTextField *POCaptionLabel(NSFont *font, NSColor *color) {
                          : item.isCloudOnly ? POL(@"в облаке") : POL(@"не читается");
     // Copies often share a file name, so the duplicates view shows where each one lives.
     _nameLabel.stringValue = showsOriginalBadge ? item.relativePath : item.url.lastPathComponent;
-    _detailLabel.stringValue = [NSString stringWithFormat:@"%@ · %@", date, dimensions];
+    // Among copies the weight matters as much as the frame: it is shown. As on Windows.
+    _detailLabel.stringValue = showsOriginalBadge
+        ? [NSString stringWithFormat:@"%@ · %@ · %@", date, dimensions, [NSByteCountFormatter stringFromByteCount:(long long)item.fileSize countStyle:NSByteCountFormatterCountStyleFile]]
+        : [NSString stringWithFormat:@"%@ · %@", date, dimensions];
 
     NSNumber *nudityScore = showsNudityScore ? item.nudityScore : nil;
     if (nudityScore) {
@@ -209,9 +212,10 @@ static NSTextField *POCaptionLabel(NSFont *font, NSColor *color) {
     } else if (item.isTiny) {
         [_badge setText:POL(@"Миниатюра") color:NSColor.systemPurpleColor];
     } else if (showsOriginalBadge && item.betterCopy) {
-        [_badge setText:POL(@"Хуже качеством") color:NSColor.systemOrangeColor];
+        // A copy's badge says why it lost ("Перекодирован", "Меньше пикселей", "Легче на 30 %"), the best one's why it won.
+        [_badge setText:item.rankNote ?: POL(item.sameAsBest ? @"Дубликат" : @"Хуже качеством") color:NSColor.systemOrangeColor];
     } else if (showsOriginalBadge && item.bestOfCopies) {
-        [_badge setText:POL(@"Лучшее качество") color:NSColor.systemGreenColor];
+        [_badge setText:item.rankNote ?: POL(item.sameAsBest ? @"Оригинал" : @"Лучшее качество") color:NSColor.systemGreenColor];
     } else if (showsOriginalBadge && item.duplicates.count) {
         [_badge setText:POL(@"Оригинал") color:NSColor.systemGreenColor];
     }

@@ -5,7 +5,8 @@ NS_ASSUME_NONNULL_BEGIN
 /// A small browser window in which the user signs in to vk.ru themselves. Once signed in, the app asks VK's
 /// web site — inside that same signed-in page — for the access token the site itself uses to read the user's
 /// data, and keeps it in the keychain. The app never sees the password; the sign-in is remembered by the
-/// browser storage of this window, like in Safari.
+/// browser storage of this window, like in Safari. VK may refuse a password here, so when a browser on this Mac
+/// is already signed in, one button takes that sign-in over instead (see POVKBrowserCookies).
 @interface POVKLoginWindowController : NSWindowController
 
 @property (class, nonatomic, readonly) POVKLoginWindowController *sharedController;
