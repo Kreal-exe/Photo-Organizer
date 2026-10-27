@@ -30,6 +30,14 @@ NS_ASSUME_NONNULL_BEGIN
 /// Gives every copy in `sets` that has no date of its own the date of a copy in the same set that has one
 /// (from metadata, the file name or Google Takeout). Returns how many files got a date.
 + (NSUInteger)shareDatesInSets:(NSArray<NSArray<POPhotoItem *> *> *)sets;
+/// Which of a RAW photo and a JPEG (or HEIC) of the same shot is kept as the original: 0 the better quality (the RAW,
+/// most pixels), 1 the RAW, 2 the JPEG — a library that already has the JPEGs can let the RAW files go. Remembered.
+@property (class, nonatomic) NSInteger rawPreference;
+/// Which copy is kept: 0 the better quality, 1 the compressed one — of a RAW and a JPEG of one shot the JPEG, of
+/// copies of a video HEVC, then the lightest. Among ordinary photos the larger still wins. As on Windows.
+@property (class, nonatomic) NSInteger compressedPreference;
+/// `sets` put in order again after rawPreference changed, and marked anew on the files.
++ (NSArray<NSArray<POPhotoItem *> *> *)reorderedSets:(NSArray<NSArray<POPhotoItem *> *> *)sets;
 
 @end
 

@@ -47,6 +47,9 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)showResults;
 
 - (void)setStatusText:(NSString *)text canOrganize:(BOOL)canOrganize;
+/// Compressing in the background, at the left of the bottom bar: the text, how far (0…1, < 0 indeterminate) and a
+/// button that sends stopCompressing:. nil hides it.
+- (void)setCompressionStatus:(nullable NSString *)text fraction:(double)fraction;
 /// The count of each POMediaKind in what the sidebar shows, which kinds are ticked, and what is shown. A kind with
 /// nothing in it is hidden, unless it is shown or unticked.
 - (void)setKindCounts:(NSArray<NSNumber *> *)counts included:(NSArray<NSNumber *> *)included selected:(POQuickFilter)selected;
@@ -62,6 +65,15 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)setCleanupButtonTitle:(nullable NSString *)title toolTip:(nullable NSString *)toolTip;
 /// "Дубликаты по папкам…" after the clean-up button (in the duplicates view, when there are exact copies).
 - (void)setShowsDuplicatesByFolder:(BOOL)shows;
+/// In the duplicates view, where a shot is there both as a RAW and as a JPEG: which one is kept (0 the better quality,
+/// 1 the RAW, 2 the JPEG); it sends chooseRawPreference: with the index as the sender's tag. Hidden with `shows` NO.
+- (void)setShowsRawPreference:(BOOL)shows selected:(NSInteger)selected;
+/// The choice of which copy is kept (0 the better quality, 1 the compressed one); it sends
+/// chooseCompressedPreference: with the index as the sender's tag. Hidden with `shows` NO.
+- (void)setShowsCompressedPreference:(BOOL)shows selected:(NSInteger)selected;
+/// Where only videos are shown: all of them or one resolution, with how many there are of each (`counts`: all, then
+/// each of POVideoResolutionNames); it sends chooseVideoResolution: with the index as the sender's selected tag. nil hides it.
+- (void)setVideoResolutionCounts:(nullable NSArray<NSNumber *> *)counts selected:(NSInteger)selected;
 /// The "only this person" checkbox shown while a person is selected; it sends toggleSoloPerson:.
 - (void)setSoloCheckboxVisible:(BOOL)visible on:(BOOL)on;
 /// Short note right of the filter strip ("Распознавание: 120 из 5 000"); empty hides it.

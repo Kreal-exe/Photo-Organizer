@@ -123,7 +123,7 @@ public static class Strings
         ["Точные копии и уменьшенные или пережатые версии снимка при переносе уходят в Корзину (при копировании — не копируются): раскладывается только оригинал или лучшая версия. Копия удаляется, только если её оригинал остаётся."] = "Exact copies and smaller or recompressed versions of a picture go to the Recycle Bin when the files are moved (when copied, they are not copied): only the original or the best version is organized. A copy is removed only while its original stays.",
         [" Дубликаты в Корзину: %@."] = " Duplicates to the Recycle Bin: %@.",
         ["Медиа"] = "Media",
-        ["Отмечено — в медиатеке и раскладывается; без галочки — скрыто и остаётся на месте"] = "Ticked: in the library and organized; unticked: hidden and left where it is",
+        ["Отмечено — показано в медиатеке; без галочки — скрыто. Что раскладывать по папкам, выбирается в окне «Разложить по папкам»"] = "Ticked: shown in the library; unticked: hidden. What is organized into folders is chosen in the Organize into Folders window",
         ["Год из названия папки"] = "Year from the folder name",
         ["Коллажи"] = "Collages",
         ["Открытки, мемы, рисунки, документы — то, что не фотография. Без галочки остаются на месте."] = "Postcards, memes, drawings, documents — whatever is not a photograph. Unticked, they stay where they are.",

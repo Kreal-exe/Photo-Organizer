@@ -950,11 +950,22 @@ int main(void) {
             CHECK([folderOf(@"IMG_0001.JPG") isEqualToString:@"Мама/2023"] && [folderOf(@"PANO_0001.jpg") isEqualToString:@"2023"], @"%@ %@", folderOf(@"IMG_0001.JPG"), folderOf(@"PANO_0001.jpg"));
             plan.arrangement = POArrangementDate;
             plan.separateScreenshots = YES;
+            plan.screenshotsInEachDate = NO;
             [plan rebuild];
             CHECK([folderOf(@"Screenshot 2024-05-01 at 10.00.00.png") isEqualToString:[POPlan.defaultScreenshotsFolderName stringByAppendingString:@"/2024"]]);
             plan.screenshotsInEachDate = YES;
             [plan rebuild];
             CHECK([folderOf(@"Screenshot 2024-05-01 at 10.00.00.png") isEqualToString:[@"2024/" stringByAppendingString:POPlan.defaultScreenshotsFolderName]], @"%@", folderOf(@"Screenshot 2024-05-01 at 10.00.00.png"));
+            // Any kind in a folder of its own, inside its year or at the top; unticked, it lies with the rest.
+            plan.separatePhotos = YES;
+            [plan rebuild];
+            CHECK([folderOf(@"IMG_0001.JPG") isEqualToString:[@"2023/" stringByAppendingString:POL(@"Фото")]], @"%@", folderOf(@"IMG_0001.JPG"));
+            plan.screenshotsInEachDate = NO;
+            [plan rebuild];
+            CHECK([folderOf(@"IMG_0001.JPG") isEqualToString:[POL(@"Фото") stringByAppendingString:@"/2023"]], @"%@", folderOf(@"IMG_0001.JPG"));
+            plan.separatePhotos = plan.separateScreenshots = NO;
+            [plan rebuild];
+            CHECK([folderOf(@"IMG_0001.JPG") isEqualToString:@"2023"], @"%@", folderOf(@"IMG_0001.JPG"));
             [fm removeItemAtURL:kinds error:NULL];
         }
 

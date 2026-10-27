@@ -27,6 +27,16 @@ NS_ASSUME_NONNULL_BEGIN
 - (IBAction)trashSelection:(nullable id)sender;
 /// "Сжать…": the selected RAW photos and videos (or everything shown when nothing is selected).
 - (IBAction)compressSelection:(nullable id)sender;
+/// Stops compressing after the file under way.
+- (IBAction)stopCompressing:(nullable id)sender;
+/// Opens (or closes) the details of the compressing above the bar at the bottom; the sender is the bar.
+- (IBAction)toggleCompressionDetails:(nullable id)sender;
+/// Where only videos are shown: all of them, or one resolution (the sender's selected tag: 0 all, then 4K, 1440p…).
+- (IBAction)chooseVideoResolution:(nullable id)sender;
+/// Of a RAW and a JPEG of one shot, which is kept (the sender's selected tag: 0 quality, 1 RAW, 2 JPEG).
+- (IBAction)chooseRawPreference:(nullable id)sender;
+/// Which copy is kept: the better quality (0) or the compressed one (1); the index is the sender's tag.
+- (IBAction)chooseCompressedPreference:(nullable id)sender;
 /// Moves everything the grid shows (a search result, a person, the flagged files…) into one folder.
 - (IBAction)moveShownToFolder:(nullable id)sender;
 - (IBAction)showPhotoSearch:(nullable id)sender;

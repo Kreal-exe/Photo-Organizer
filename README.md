@@ -7,10 +7,12 @@ Photo Organizer is a small native app for macOS (Objective-C / AppKit) and Windo
 has: a phone backup, a Google Takeout export, years of “Camera Uploads”. It finds out when every photo and video was
 really taken, shows the library the way Apple Photos does, finds duplicates and thumbnails, recognises objects and
 people, and — when you ask — moves or copies the files into `2016/`, `2016/07 July/` or `2016-07-14/` folders. Files
-are **never renamed or re-encoded** unless you ask for it (*Compress…*), nothing is ever overwritten, and every move or
+are **never renamed** (apart from `name (2)` when a copy meets a file with the same name) **or re-encoded** unless you ask
+for it (*Compress…*), nothing is ever overwritten, and every move or
 copy can be undone.
 
-Both versions have the same window, the same date rules, the same folders and the same models. Everything runs
+Both versions have the same window, the same date rules, the same folders and the same models where models are involved
+(Core ML on a Mac, ONNX on Windows; see [WindowsApp/README.md](WindowsApp/README.md)). Everything runs
 locally. No cloud, no account, no subscription.
 
 [Русская версия ↓](#русский)
@@ -87,7 +89,7 @@ models are downloaded the same way, nothing else is needed.
   - *Pictures* are what was made on a computer rather than taken by a camera — postcards, memes, icons, quote cards:
     what WhatsApp and Viber chats fill a phone with. Messenger photos keep no camera metadata at all, so the image
     itself has to tell, and what is in it says nothing: a photo of a notebook page is a document, a postcard has
-    people on it. On a Mac, MobileCLIP (Apple's, 23 MB, downloaded on its own at the first launch) is asked how the image
+    people on it. On a Mac, MobileCLIP (Apple's, Core ML build, 23 MB, downloaded on its own at the first launch) is asked how the image
     was made, comparing it with descriptions such as "a photo of a child", "a photo of a handwritten notebook page",
     "a greeting card with text", "a meme" (`Tools/make_clip_kinds.py`), looking both at the centre of the image and at
     the whole of it (a priest holding an icon is an icon in the centre). A file is a picture when CLIP is sure, or
@@ -203,20 +205,20 @@ On Windows, Ctrl stands for ⌘, Shift for ⇧ and Alt for ⌥, except where the
 **macOS** — only the Xcode Command Line Tools are needed (`xcode-select --install`):
 
 ```bash
-./build.sh          # → /Applications/PhotoOrganizer.app (universal, ad-hoc signed; a running copy is restarted)
+./build.sh          # → /Applications/PhotoOrganizer.app, opened right away (universal, ad-hoc signed)
 ./build.sh --test   # run the core tests first: dates, plan, duplicates, moves, undo
 ./build.sh --zip    # also write dist/PhotoOrganizer-macOS-v<version>.zip
 INSTALL_DIR=~/Applications ./build.sh   # install somewhere else
 ```
 
-The script is a few plain `clang` calls. It builds in a temporary folder and installs straight into Applications,
+The script is a few plain `clang` calls. It builds in a temporary folder and installs the app into /Applications,
 leaving nothing inside the project: in iCloud Drive an app bundle turns into a pile of folders, and the attributes
 iCloud adds keep `codesign` from signing it.
 
 **Windows** — PowerShell in the repository root, with the [.NET 10 SDK](https://dot.net):
 
 ```powershell
-.\build.ps1         # → %LOCALAPPDATA%\Programs\PhotoOrganizer\PhotoOrganizer.exe (one self-contained file)
+.\build.ps1         # → PhotoOrganizer.exe on the Desktop and opens it (one self-contained file)
 .\build.ps1 -Zip    # also write dist\PhotoOrganizer-Windows-v<version>.zip
 ```
 
@@ -252,7 +254,7 @@ Windows — WPF UI (C#), WindowsApp/PhotoOrganizer/
 | `~/Library/Application Support/Photo Organizer` (macOS), `%APPDATA%\Photo Organizer` (Windows) | what scans read, recognition results, object index, the corrections of pictures and photos, dates set by hand, people’s names, the move journal, the VK sign-in token (readable only by you) |
 | `~/.cache/huggingface/hub` | downloaded models (the standard Hugging Face cache, shared with other apps) |
 
-The photos and videos themselves are never modified — only moved, when you ask.
+The photos and videos themselves are never modified — only moved or copied when you ask, or re-encoded by *Compress…*.
 
 ## License
 
@@ -271,10 +273,12 @@ Photo Organizer — небольшое нативное приложение д�
 которая есть у всех: бэкап телефона, выгрузка Google Takeout, годы «Camera Uploads». Оно выясняет, когда на самом
 деле снят каждый файл, показывает медиатеку как «Фото» от Apple, находит дубликаты и миниатюры, распознаёт объекты и
 людей и — когда вы попросите — перемещает или копирует файлы в папки `2016/`, `2016/07 Июль/` или `2016-07-14/`.
-Файлы **не переименовываются и не пережимаются**, пока вы сами не попросите (*«Сжать…»*), ничего не перезаписывается,
+Файлы **не переименовываются** (кроме `имя (2)`, когда при копировании встречается файл с таким же именем) **и не
+пережимаются**, пока вы сами не попросите (*«Сжать…»*), ничего не перезаписывается,
 любое перемещение или копирование можно отменить.
 
-У обеих версий одно и то же окно, те же правила дат, те же папки и те же модели. Всё работает локально: без облака,
+У обеих версий одно и то же окно, те же правила дат, те же папки и те же модели там, где модели нужны (Core ML на Mac,
+ONNX в Windows; см. [WindowsApp/README.md](WindowsApp/README.md)). Всё работает локально: без облака,
 аккаунтов и подписок.
 
 <p align="center">
@@ -350,7 +354,7 @@ open /Applications/PhotoOrganizer.app
   - *«Картинки»* — то, что сделано на компьютере, а не снято камерой: открытки, мемы, иконы, цитаты — то, чем чаты
     WhatsApp и Viber забивают телефон. У присланных через мессенджер фото нет никаких данных камеры, поэтому решает
     само изображение, причём не то, что на нём: фото тетради — это документ, а на открытке бывают люди. На Mac модель
-    MobileCLIP от Apple (23 МБ, загружается сама при первом запуске) сравнивает изображение с описаниями вроде
+    MobileCLIP от Apple (сборка Core ML, 23 МБ, загружается сама при первом запуске) сравнивает изображение с описаниями вроде
     «фото ребёнка», «фото страницы тетради», «открытка с текстом», «мем» (`Tools/make_clip_kinds.py`), глядя и на середину
     изображения, и на него целиком (священник с иконой в руках посередине — это икона). Картинка — когда CLIP уверен или
     считает это вероятным и на изображении есть надпись — пожелания открытки или подпись (несколько разных целых
@@ -462,20 +466,20 @@ open /Applications/PhotoOrganizer.app
 **macOS** — нужны только Command Line Tools (`xcode-select --install`), Xcode не обязателен:
 
 ```bash
-./build.sh          # → /Applications/PhotoOrganizer.app (универсальная; запущенная копия перезапускается)
+./build.sh          # → /Applications/PhotoOrganizer.app и сразу открывает (универсальная)
 ./build.sh --test   # сначала тесты ядра: даты, план, дубликаты, перемещения, отмена
 ./build.sh --zip    # ещё и dist/PhotoOrganizer-macOS-v<версия>.zip
 INSTALL_DIR=~/Applications ./build.sh   # поставить в другое место
 ```
 
-Скрипт — несколько обычных вызовов `clang`. Сборка идёт во временной папке и ставится сразу в «Программы», в папке
+Скрипт — несколько обычных вызовов `clang`. Сборка идёт во временной папке и кладётся сразу на Рабочий стол, в папке
 проекта ничего не остаётся: в iCloud Drive приложение превращается в кучу папок, а атрибуты iCloud не дают `codesign`
 его подписать.
 
 **Windows** — PowerShell в корне репозитория, нужен [.NET 10 SDK](https://dot.net):
 
 ```powershell
-.\build.ps1         # → %LOCALAPPDATA%\Programs\PhotoOrganizer\PhotoOrganizer.exe (один самодостаточный файл)
+.\build.ps1         # → PhotoOrganizer.exe на Рабочем столе (один самодостаточный файл)
 .\build.ps1 -Zip    # ещё и dist\PhotoOrganizer-Windows-v<версия>.zip
 ```
 
@@ -490,7 +494,7 @@ INSTALL_DIR=~/Applications ./build.sh   # поставить в другое м�
 `~/Library/Application Support/Photo Organizer` на Mac и `%APPDATA%\Photo Organizer` в Windows — прочитанное при
 сканировании, результаты распознавания, индекс предметов, поправки картинок и фото, заданные вручную даты, имена людей, журнал перемещений и
 токен входа ВК (доступен только вам). Скачанные модели — в общем кеше Hugging Face `~/.cache/huggingface/hub`. Сами
-фото и видео приложение не изменяет — только перемещает, когда вы об этом просите.
+фото и видео приложение не изменяет — только перемещает или копирует, когда вы об этом просите, и пережимает по команде «Сжать…».
 
 ## Лицензия
 

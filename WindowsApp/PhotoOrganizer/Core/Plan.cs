@@ -162,7 +162,7 @@ public sealed partial class Plan
     /// (what Google Photos made, see MediaTypes.IsGooglePhotosCreation). The kinds turned off stay where they are — e.g.
     /// only the real photos go into the year folders, with or without the videos, or only the videos.
     /// </summary>
-    public bool OrganizesPhotos = true, OrganizesVideos = true, OrganizesPictures = true, OrganizesCollages = true;
+    public bool OrganizesPhotos = true, OrganizesVideos = true, OrganizesPictures = true, OrganizesCollages = true, OrganizesScreenshots = true;
     public bool SeparateTiny = true;
     /// <summary>Thumbnails go to the Recycle Bin with the duplicates (see DuplicatesToRemove) — only those whose larger version stays.</summary>
     public bool RemovesTiny;
@@ -173,13 +173,16 @@ public sealed partial class Plan
     public bool RemovesUnorganized;
     /// <summary>What Rebuild found to go to the Recycle Bin with RemovesUnorganized (empty when the files are copied).</summary>
     public List<PhotoItem> UnorganizedToRemove { get; private set; } = [];
-    /// <summary>Screenshots to a folder of their own (with date folders inside), whatever the rest is organized by.</summary>
-    public bool SeparateScreenshots;
     /// <summary>
-    /// Where that folder is: false — one folder at the top with the date folders inside (Скриншоты/2024/…); true — one
-    /// inside every date folder, next to the photos of that date (2024/Скриншоты/…).
+    /// The kinds that go to folders of their own (Фото, Видео, Скриншоты, Картинки, Коллажи) rather than lie together in
+    /// the date folders; none by default. The same kinds as Organizes.
     /// </summary>
-    public bool ScreenshotsInEachDate;
+    public bool SeparatePhotos, SeparateVideos, SeparatePictures, SeparateCollages, SeparateScreenshots;
+    /// <summary>
+    /// Where those folders are: true — inside every date folder (2024/Видео/…); false — at the top, with the date
+    /// folders inside (Видео/2024/…).
+    /// </summary>
+    public bool ScreenshotsInEachDate = true;
     public Arrangement Arrangement = Arrangement.Date;
     /// <summary>Copies the files into the folders instead of moving them; the originals stay where they are.</summary>
     public bool CopiesFiles;
@@ -289,17 +292,23 @@ public sealed partial class Plan
         Nested = s.Get("nested", true);
         SeparateDuplicates = s.Get("separateDuplicates", true);
         RemovesDuplicates = s.Get("removesDuplicates", true);
-        OrganizesPhotos = s.Get("organizesPhotos", true);
-        OrganizesVideos = s.Get("organizesVideos", true);
-        // "Без картинок — не трогать" of the earlier pictures choice is pictures left alone.
-        OrganizesPictures = s.Get("organizesPictures", s.Get("picturesMode", 0) != 2);
-        OrganizesCollages = s.Get("organizesCollages", OrganizesPictures);
+        // What is organized is chosen in the organize window alone (every kind unless unticked there): the kinds
+        // ticked above the grid (organizesPhotos…, the earlier keys) only show and hide.
+        OrganizesPhotos = s.Get("organizeKindPhotos", true);
+        OrganizesVideos = s.Get("organizeKindVideos", true);
+        OrganizesPictures = s.Get("organizeKindPictures", true);
+        OrganizesCollages = s.Get("organizeKindCollages", true);
+        OrganizesScreenshots = s.Get("organizeKindScreenshots", true);
         SeparateTiny = s.Get("separateTiny", true);
         RemovesTiny = s.Get("removesTiny", false);
         RemovesUnorganized = s.Get("removesUnorganized", false);
         Arrangement = Clamp<Arrangement>(s.Get("arrangement", 0));
+        SeparatePhotos = s.Get("separatePhotos", false);
+        SeparateVideos = s.Get("separateVideos", false);
+        SeparatePictures = s.Get("separatePictures", false);
+        SeparateCollages = s.Get("separateCollages", false);
         SeparateScreenshots = s.Get("separateScreenshots", false);
-        ScreenshotsInEachDate = s.Get("screenshotsInEachDate", false);
+        ScreenshotsInEachDate = s.Get("ownFoldersInEachDate", true);
         string? screenshots = s.GetString("screenshotsFolderName");
         ScreenshotsFolderName = screenshots is "Скриншоты" or "Screenshots" ? "" : screenshots ?? "";
         DatesInside = s.Get("datesInside", true);
@@ -320,16 +329,21 @@ public sealed partial class Plan
         s.Set("nested", Nested);
         s.Set("separateDuplicates", SeparateDuplicates);
         s.Set("removesDuplicates", RemovesDuplicates);
-        s.Set("organizesPhotos", OrganizesPhotos);
-        s.Set("organizesVideos", OrganizesVideos);
-        s.Set("organizesPictures", OrganizesPictures);
-        s.Set("organizesCollages", OrganizesCollages);
+        s.Set("organizeKindPhotos", OrganizesPhotos);
+        s.Set("organizeKindVideos", OrganizesVideos);
+        s.Set("organizeKindPictures", OrganizesPictures);
+        s.Set("organizeKindCollages", OrganizesCollages);
+        s.Set("organizeKindScreenshots", OrganizesScreenshots);
         s.Set("separateTiny", SeparateTiny);
         s.Set("removesTiny", RemovesTiny);
         s.Set("removesUnorganized", RemovesUnorganized);
         s.Set("arrangement", (int)Arrangement);
+        s.Set("separatePhotos", SeparatePhotos);
+        s.Set("separateVideos", SeparateVideos);
+        s.Set("separatePictures", SeparatePictures);
+        s.Set("separateCollages", SeparateCollages);
         s.Set("separateScreenshots", SeparateScreenshots);
-        s.Set("screenshotsInEachDate", ScreenshotsInEachDate);
+        s.Set("ownFoldersInEachDate", ScreenshotsInEachDate);
         s.Set("screenshotsFolderName", ScreenshotsFolderName);
         s.Set("datesInside", DatesInside);
         s.Set("organizeCopiesFiles", CopiesFiles);
@@ -424,7 +438,7 @@ public sealed partial class Plan
     public void SortItemsByDate() => Items.Sort(PhotoItem.ByDate);
 
     /// <summary>The first-level folder of a file when the library is not organized by date; null for the date folders.</summary>
-    string? SectionOf(PhotoItem item) => SeparateScreenshots && Screenshots.IsScreenshot(item) ? ScreenshotsFolderName : Arrangement switch
+    string? SectionOf(PhotoItem item) => OwnFolderOf(item) ?? Arrangement switch
     {
         Arrangement.Type => MediaTypes.TypeFolder(item),
         Arrangement.Format => MediaTypes.FormatFolder(item),
@@ -432,9 +446,20 @@ public sealed partial class Plan
         _ => null,
     };
 
-    /// <summary>Whether the kind of `item` is organized at all (photos, videos, pictures, collages).</summary>
+    /// <summary>The folder of its own the kind of `item` goes to (see SeparatePhotos…); null when it lies with the rest.</summary>
+    string? OwnFolderOf(PhotoItem item)
+    {
+        if (MediaTypes.IsGooglePhotosCreation(item)) return SeparateCollages ? L("Коллажи") : null;
+        if (Screenshots.IsScreenshot(item)) return SeparateScreenshots ? ScreenshotsFolderName : null;
+        if (item.IsPicture) return SeparatePictures ? L("Картинки") : null;
+        if (item.Video) return SeparateVideos ? L("Видео") : null;
+        return SeparatePhotos ? L("Фото") : null;
+    }
+
+    /// <summary>Whether the kind of `item` is organized at all (photos, videos, screenshots, pictures, collages) — as on the Mac.</summary>
     bool Organizes(PhotoItem item) =>
         MediaTypes.IsGooglePhotosCreation(item) ? OrganizesCollages
+        : Screenshots.IsScreenshot(item) ? OrganizesScreenshots
         : item.IsPicture ? OrganizesPictures
         : item.Video ? OrganizesVideos : OrganizesPhotos;
 
@@ -491,10 +516,10 @@ public sealed partial class Plan
             // Thumbnails first: an exact copy of a thumbnail is still a thumbnail.
             if (SeparateTiny && item.Tiny) group = tiny;
             else if (SeparateDuplicates && copy) group = duplicates;
-            else if (SeparateScreenshots && ScreenshotsInEachDate && Screenshots.IsScreenshot(item))
+            else if (ScreenshotsInEachDate && OwnFolderOf(item) is { } own)
             {
-                // A screenshots folder inside the folder of its date (or of the undated files).
-                string generated = $"{(item.Undated ? undatedName : DateFolder(item))}/{ScreenshotsFolderName}";
+                // The folder of its kind inside the folder of its date (or of the undated files).
+                string generated = $"{(item.Undated ? undatedName : DateFolder(item))}/{own}";
                 string folder = _customNames.GetValueOrDefault(generated, generated);
                 if (!byFolder.TryGetValue(folder, out group!))
                 {
