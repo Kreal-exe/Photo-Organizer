@@ -74,7 +74,7 @@ public static class HdrCarry
             var extra = sourceBoxes.Where(b => DescriptionBoxes.Contains(b.Type) && targetBoxes.All(t => t.Type != b.Type)).ToList();
             targetBoxes.AddRange(extra);
 
-            target.Write(encoded, output, targetVideo, newSamples);
+            target.Write(output, targetVideo, newSamples);
             return (matched, null);
         }
         catch (Exception e) when (e is IOException or InvalidDataException or ArgumentException or EndOfStreamException or IndexOutOfRangeException)
@@ -82,6 +82,64 @@ public static class HdrCarry
             return (0, e.Message);
         }
     }
+
+    /// <summary>
+    /// Writes `output`: the original with its picture taken from `encoded` — the compressed video track in place of the
+    /// original's, everything else the original's own, byte for byte: the sound (with the AAC priming frames its edit list
+    /// hides, which FFmpeg drops), Apple's timed metadata tracks (mebx: FFmpeg cannot write them and leaves stubs), the
+    /// date, the place, the camera. Returns null when it worked, why not otherwise; `output` is only valid without error.
+    /// </summary>
+    public static string? Transplant(string original, string encoded, string output)
+    {
+        try
+        {
+            var source = Movie.Read(original);
+            var target = Movie.Read(encoded);
+            if (source.Tracks.Count(t => t.Video) != 1) return "the original has more than one video track";
+            var oldVideo = source.VideoTrack()!;
+            var newVideo = target.VideoTrack() ?? throw new InvalidDataException("no video track in the compressed file");
+            // A fragmented file keeps its samples outside the index, which this does not read.
+            if (source.Tracks.Any(t => t.Samples.Count == 0)) return "a track of the original keeps its samples elsewhere (a fragmented file)";
+            // The compressed track under the original's number (the metadata tracks point at the video by it), its times
+            // in the original's movie time scale.
+            var oldTkhd = oldVideo.Trak.Child("tkhd")!.Data;
+            var newTkhd = newVideo.Trak.Child("tkhd")!.Data;
+            uint id = BinaryPrimitives.ReadUInt32BigEndian(oldTkhd.AsSpan(oldTkhd[0] == 1 ? 20 : 12));
+            BinaryPrimitives.WriteUInt32BigEndian(newTkhd.AsSpan(newTkhd[0] == 1 ? 20 : 12), id);
+            long from = MovieTimescale(target.Moov), to = MovieTimescale(source.Moov);
+            if (from != to)
+            {
+                if (newTkhd[0] == 1) BinaryPrimitives.WriteUInt64BigEndian(newTkhd.AsSpan(28), (ulong)Rescale((long)BinaryPrimitives.ReadUInt64BigEndian(newTkhd.AsSpan(28)), from, to));
+                else BinaryPrimitives.WriteUInt32BigEndian(newTkhd.AsSpan(20), (uint)Rescale(BinaryPrimitives.ReadUInt32BigEndian(newTkhd.AsSpan(20)), from, to));
+                if (newVideo.Trak.Child("edts")?.Child("elst") is { } elst)
+                {
+                    var d = elst.Data;
+                    int version = d[0], count = (int)BinaryPrimitives.ReadUInt32BigEndian(d.AsSpan(4)), at = 8;
+                    for (int i = 0; i < count; i++, at += version == 1 ? 20 : 12)
+                    {
+                        if (version == 1) BinaryPrimitives.WriteUInt64BigEndian(d.AsSpan(at), (ulong)Rescale((long)BinaryPrimitives.ReadUInt64BigEndian(d.AsSpan(at)), from, to));
+                        else BinaryPrimitives.WriteUInt32BigEndian(d.AsSpan(at), (uint)Rescale(BinaryPrimitives.ReadUInt32BigEndian(d.AsSpan(at)), from, to));
+                    }
+                }
+            }
+            source.Moov.Children![source.Moov.Children.IndexOf(oldVideo.Trak)] = newVideo.Trak;
+            source.Tracks[source.Tracks.IndexOf(oldVideo)] = newVideo;
+            source.Write(output);
+            return null;
+        }
+        catch (Exception e) when (e is IOException or InvalidDataException or ArgumentException or EndOfStreamException or IndexOutOfRangeException or InvalidOperationException or NullReferenceException)
+        {
+            return e.Message;
+        }
+    }
+
+    static long MovieTimescale(Box moov)
+    {
+        var mvhd = moov.Child("mvhd")?.Data ?? throw new InvalidDataException("the movie has no header");
+        return BinaryPrimitives.ReadUInt32BigEndian(mvhd.AsSpan(mvhd[0] == 1 ? 20 : 12));
+    }
+
+    static long Rescale(long value, long from, long to) => (long)Math.Round(value * (double)to / from);
 
     /// <summary>A message (SEI) of ITU-T T.35 user data — HDR Vivid, HDR10+ — or of the ambient light, or a Dolby Vision layer (NAL type 62).</summary>
     static bool IsCarried(byte[] nal)
@@ -230,6 +288,8 @@ public static class HdrCarry
     sealed class Track
     {
         public Box Trak = null!, Stbl = null!, SampleEntry = null!;
+        /// <summary>The file the track's samples are in.</summary>
+        public string Path = "";
         public long Timescale, MediaStart;
         /// <summary>
         /// The moment the first frame is shown, in the track's time: the edit's start, or — when the frames are shown
@@ -277,7 +337,12 @@ public static class HdrCarry
                 position += size;
             }
             if (movie.Moov == null || movie.Ftyp == null) throw new InvalidDataException("not an MP4 or MOV");
-            foreach (var trak in movie.Moov.Children!.Where(b => b.Type == "trak")) movie.Tracks.Add(ReadTrack(trak));
+            foreach (var trak in movie.Moov.Children!.Where(b => b.Type == "trak"))
+            {
+                var track = ReadTrack(trak);
+                track.Path = path;
+                movie.Tracks.Add(track);
+            }
             return movie;
         }
 
@@ -372,24 +437,35 @@ public static class HdrCarry
         }
 
         /// <summary>
-        /// Writes the movie to `output`: index first, then the data — every track's chunks in the order they were,
-        /// those of `changed` with its new samples — and the index pointing at where everything now is.
+        /// Writes the movie to `output`: index first, then the data — every track's chunks (from the file each track is
+        /// in), those of `changed` with its new samples — and the index pointing at where everything now is.
         /// </summary>
-        public void Write(string input, string output, Track changed, byte[][] newSamples)
+        public void Write(string output, Track? changed = null, byte[][]? newSamples = null)
         {
-            // The changed track's sample sizes.
-            var stsz = changed.Stbl.Child("stsz")!;
-            var sizes = new byte[12 + 4 * newSamples.Length];
-            Array.Copy(stsz.Data, sizes, 8);
-            BinaryPrimitives.WriteUInt32BigEndian(sizes.AsSpan(4), 0);
-            BinaryPrimitives.WriteUInt32BigEndian(sizes.AsSpan(8), (uint)newSamples.Length);
-            for (int i = 0; i < newSamples.Length; i++) BinaryPrimitives.WriteUInt32BigEndian(sizes.AsSpan(12 + 4 * i), (uint)newSamples[i].Length);
-            stsz.Data = sizes;
+            if (changed != null && newSamples != null)
+            {
+                // The changed track's sample sizes.
+                var stsz = changed.Stbl.Child("stsz")!;
+                var sizes = new byte[12 + 4 * newSamples.Length];
+                Array.Copy(stsz.Data, sizes, 8);
+                BinaryPrimitives.WriteUInt32BigEndian(sizes.AsSpan(4), 0);
+                BinaryPrimitives.WriteUInt32BigEndian(sizes.AsSpan(8), (uint)newSamples.Length);
+                for (int i = 0; i < newSamples.Length; i++) BinaryPrimitives.WriteUInt32BigEndian(sizes.AsSpan(12 + 4 * i), (uint)newSamples[i].Length);
+                stsz.Data = sizes;
+            }
+            else
+            {
+                changed = null;
+            }
 
-            // Every chunk of every track, in the order of the file.
-            var chunks = Tracks.SelectMany(t => t.Chunks.Select((c, index) => (Track: t, Index: index, c.Offset, c.First, c.Count))).OrderBy(c => c.Offset).ToList();
+            // Every chunk of every track: in the order of the file when they are all from one, otherwise interleaved by
+            // the moment each starts (sound next to its picture, for a player reading the file as it comes).
+            var all = Tracks.SelectMany(t => t.Chunks.Select((c, index) => (Track: t, Index: index, c.Offset, c.First, c.Count)));
+            var chunks = (Tracks.Select(t => t.Path).Distinct(StringComparer.OrdinalIgnoreCase).Count() == 1
+                ? all.OrderBy(c => c.Offset)
+                : all.OrderBy(c => c.Count > 0 ? c.Track.Samples[c.First].Decoded / (double)c.Track.Timescale : 0).ThenBy(c => c.Track.Video ? 0 : 1)).ToList();
             long dataSize = chunks.Sum(c => c.Track == changed
-                ? Enumerable.Range(c.First, c.Count).Sum(i => (long)newSamples[i].Length)
+                ? Enumerable.Range(c.First, c.Count).Sum(i => (long)newSamples![i].Length)
                 : Enumerable.Range(c.First, c.Count).Sum(i => (long)c.Track.Samples[i].Size));
             // The chunk offsets, 64-bit wherever the data goes beyond 4 GB.
             foreach (var track in Tracks) SetOffsets(track, new long[track.Chunks.Count], dataSize > uint.MaxValue - (1L << 24));
@@ -401,12 +477,26 @@ public static class HdrCarry
             {
                 newOffsets[c.Track][c.Index] = position;
                 position += c.Track == changed
-                    ? Enumerable.Range(c.First, c.Count).Sum(i => (long)newSamples[i].Length)
+                    ? Enumerable.Range(c.First, c.Count).Sum(i => (long)newSamples![i].Length)
                     : Enumerable.Range(c.First, c.Count).Sum(i => (long)c.Track.Samples[i].Size);
             }
             foreach (var track in Tracks) SetOffsets(track, newOffsets[track], dataSize > uint.MaxValue - (1L << 24));
 
-            using var source = File.OpenRead(input);
+            var sources = Tracks.Select(t => t.Path).Distinct(StringComparer.OrdinalIgnoreCase)
+                                .ToDictionary(p => p, p => File.OpenRead(p), StringComparer.OrdinalIgnoreCase);
+            try
+            {
+                WriteData(output, chunks, changed, newSamples, sources, start, dataSize, mdatHeader);
+            }
+            finally
+            {
+                foreach (var stream in sources.Values) stream.Dispose();
+            }
+        }
+
+        void WriteData(string output, List<(Track Track, int Index, long Offset, int First, int Count)> chunks, Track? changed, byte[][]? newSamples,
+                       Dictionary<string, FileStream> sources, long start, long dataSize, long mdatHeader)
+        {
             using var file = new FileStream(output, FileMode.Create, FileAccess.Write, FileShare.None, 1 << 20);
             Ftyp.WriteTo(file);
             Moov.WriteTo(file);
@@ -429,10 +519,11 @@ public static class HdrCarry
             {
                 if (c.Track == changed)
                 {
-                    for (int i = c.First; i < c.First + c.Count; i++) file.Write(newSamples[i]);
+                    for (int i = c.First; i < c.First + c.Count; i++) file.Write(newSamples![i]);
                     continue;
                 }
                 long remaining = Enumerable.Range(c.First, c.Count).Sum(i => (long)c.Track.Samples[i].Size);
+                var source = sources[c.Track.Path];
                 source.Position = c.Offset;
                 while (remaining > 0)
                 {

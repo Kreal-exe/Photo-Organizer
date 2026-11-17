@@ -895,9 +895,16 @@ public sealed class MainWindow : Window
     {
         StopAnalysis();
         if (_plan == null) return;
+        // Every model the analysis uses is fetched first, by itself — not left for "Настройки" with a note at the top.
+        if (!_modelsFailed && MissingModels().Count > 0)
+        {
+            DownloadModels();
+            return;
+        }
+        // Not fetched (offline): the rest is recognised, and the models are tried again on the next launch.
         if (Analyzer.AnalyzesObjects && !Recognizer.Model.Ready)
         {
-            DownloadObjectModel();
+            StartAnalysisWithoutObjects();
             return;
         }
         bool withFaces = SettingsDialog.GroupsFaces && FaceEngine.ModelsReady;
@@ -924,32 +931,57 @@ public sealed class MainWindow : Window
         if (withFaces) _regroupTimer.Start();
     }
 
+    /// <summary>A download of the models failed this launch: the analysis goes on with what there is.</summary>
+    bool _modelsFailed;
+
     /// <summary>
-    /// What is in the pictures is recognised by MobileCLIP (45 MB), fetched from Hugging Face the first time a folder is
-    /// opened — on the Mac the same comes with the system. The analysis starts when it has arrived.
+    /// The models the analysis uses and has not got: MobileCLIP for what is in the pictures (45 MB; on the Mac it comes
+    /// with the system), the two of faces, the nudity model chosen in "Настройки".
     /// </summary>
-    async void DownloadObjectModel()
+    static List<Model> MissingModels()
+    {
+        var models = new List<Model>();
+        if (Analyzer.AnalyzesObjects) models.Add(Recognizer.Model);
+        if (SettingsDialog.GroupsFaces) models.AddRange(FaceEngine.Models);
+        if (NudityClassifier.Enabled) models.Add(NudityClassifier.Selected.Model);
+        return models.Where(m => !m.Ready).Distinct().ToList();
+    }
+
+    /// <summary>
+    /// Fetches every model missing from Hugging Face, one after another, the progress at the top; the analysis starts
+    /// when they have arrived. One that cannot be fetched is left for the next launch, saying nothing: the rest works.
+    /// </summary>
+    async void DownloadModels()
     {
         if (_clipDownload != null) return;
         _clipDownload = new CancellationTokenSource();
-        _analysis.Text = L("Загрузка модели распознавания…");
-        var progress = new Progress<(long Received, long Total)>(p =>
-            _analysis.Text = $"{L("Загрузка модели распознавания…")} {Strings.Size(p.Received)} / {Strings.Size(p.Total)}");
+        var models = MissingModels();
+        long total = models.Sum(m => m.ByteSize), before = 0;
+        _analysis.Text = L("Загрузка моделей распознавания…");
         try
         {
-            await HuggingFace.DownloadAsync(Recognizer.Model, progress, _clipDownload.Token);
-            _clipDownload = null;
-            Recognizer.Reset();
-            StartAnalysis();
+            foreach (var model in models)
+            {
+                long start = before;
+                var progress = new Progress<(long Received, long Total)>(p =>
+                    _analysis.Text = $"{L("Загрузка моделей распознавания…")} {Strings.Size(start + p.Received)} / {Strings.Size(Math.Max(total, start + p.Total))}");
+                await HuggingFace.DownloadAsync(model, progress, _clipDownload.Token);
+                before += model.ByteSize;
+            }
         }
         catch (Exception e)
         {
-            _clipDownload = null;
-            _analysis.Text = e is OperationCanceledException ? "" : L("Модель распознавания объектов не загружена — «Настройки».");
-            // Faces and the rest still work.
-            Analyzer.AnalyzesObjects = Analyzer.AnalyzesObjects;
-            if (_plan != null && e is not OperationCanceledException) StartAnalysisWithoutObjects();
+            _analysis.Text = "";
+            if (e is OperationCanceledException)
+            {
+                _clipDownload = null;
+                return;
+            }
+            _modelsFailed = true;
         }
+        _clipDownload = null;
+        Recognizer.Reset();
+        if (_plan != null) StartAnalysis();
     }
 
     void StartAnalysisWithoutObjects()
@@ -968,9 +1000,8 @@ public sealed class MainWindow : Window
         Settings.Shared.Set("unfinishedFolders", null);
         Settings.Shared.Set("unfinishedFolder", null);
         _objectFilterCounts.Clear();   // the labels are complete now
-        _analysis.Text = SettingsDialog.GroupsFaces && !FaceEngine.ModelsReady ? L("Модель лиц не загружена — «Настройки»")
-            : NudityClassifier.Enabled && !NudityClassifier.Selected.Model.Ready ? L("Модель наготы не загружена — «Настройки»")
-            : analyzer.Error ?? "";
+        // Done: nothing at the top but what went wrong (the models are fetched by themselves, see DownloadModels).
+        _analysis.Text = analyzer.Error ?? "";
         if (_plan == null) return;
         ReloadSidebar();
         UpdateGrid();
@@ -2006,8 +2037,33 @@ public sealed class MainWindow : Window
                 .Concat(dialog.Videos.Where(v => !_compressQueued.Contains(v.Item)).Select(v => new CompressWork(v.Item, megapixels, v.Info, v.Job)))
                 .ToList();
         }
-        if (works.Count == 0 || !RecycleBinHolds(works.Select(w => w.Item))) return;
+        if (works.Count == 0) return;
+        string? folder = dialog.OriginalsFolder;
+        if (folder == null && !OriginalsPlaceChosen(works.Select(w => w.Item).ToList(), out folder)) return;
+        Compressor.OriginalsFolder = folder;
         Enqueue(works);
+    }
+
+    /// <summary>
+    /// The originals go to the Recycle Bin when it holds them. When it does not, Windows would delete the rest for good
+    /// without asking (the Bin of a 1.8 TB disk holds 95 GB): the user chooses a folder for them instead, the Bin anyway,
+    /// or nothing. False: nothing.
+    /// </summary>
+    bool OriginalsPlaceChosen(List<PhotoItem> items, out string? folder)
+    {
+        folder = null;
+        foreach (var disk in items.GroupBy(i => Path.GetPathRoot(i.Path) ?? "", StringComparer.OrdinalIgnoreCase))
+        {
+            long size = disk.Sum(i => i.FileSize);
+            if (Organizer.RecycleBinRoom(disk.Key) is not { } room || size <= room) continue;
+            var ask = new BinFullDialog(this, disk.Key.TrimEnd('\\'), room, size);
+            if (ask.ShowDialog() != true) return false;
+            if (ask.Answer == BinFullDialog.Choice.Bin) return true;
+            var roots = (_plan?.Items ?? []).Select(i => i.Root).Where(r => r.Length > 0).Distinct(StringComparer.OrdinalIgnoreCase);
+            folder = CompressDialog.ChooseOriginalsFolder(this, roots, CompressDialog.SuggestedOriginalsFolder(items));
+            return folder != null;
+        }
+        return true;
     }
 
     void Enqueue(List<CompressWork> works)
@@ -2328,9 +2384,10 @@ public sealed class MainWindow : Window
     }
 
     /// <summary>
-    /// Videos compressed at a time: the card's encoder is the limit (an RTX 5070: 1 200 frames a second from two at
-    /// once on, the same with six); four keep it busy while one is being read or written. The processor encoding a
-    /// share as well made it slower (it starves the card of what it reads), so it does not.
+    /// Videos compressed at a time: the card's encoder is the limit (an RTX 5070 at p5 and quality 25: 400 frames of
+    /// 1080p a second for one, 455 from two at once on, the same with eight); five keep it busy while one is being read,
+    /// written or checked. The processor encoding a share as well made it slower (it starves the card of what it reads),
+    /// so it does not.
     /// </summary>
     static int VideoWorkers => VideoCompressor.Encoder == "hevc_nvenc" ? 5 : 1;
 
@@ -2338,8 +2395,8 @@ public sealed class MainWindow : Window
     static int PhotoWorkers => Math.Clamp(Environment.ProcessorCount / 4, 1, 4);
 
     /// <summary>
-    /// The time left: the seconds of video still to compress at the pace of the whole run so far (seconds of video a
-    /// second of work), and the photos left at the time a photo has taken — steady, unlike a measure of the bytes, which
+    /// The time left: the frames of video still to compress at the pace of the whole run so far (frames a second of
+    /// work), and the photos left at the time a photo has taken — steady, unlike a measure of the bytes, which
     /// jumped with every short or long video. Empty until there is something to go by. Called under the queue's lock.
     /// </summary>
     string CompressLeft()
@@ -2349,7 +2406,9 @@ public sealed class MainWindow : Window
         int photosDone = 0, photosLeft = 0;
         foreach (var e in _compressEntries)
         {
-            double duration = e.Work.Info?.Duration ?? 0;
+            // Counted in frames, not seconds: the card does a number of frames a second, and a second of 60 fps takes
+            // twice one of 30 — counted in seconds, a queue begun with short 720p30 videos said 3 hours for 10.
+            double duration = (e.Work.Info?.Duration ?? 0) * Math.Clamp(e.Work.Info?.Fps is > 0 and var fps ? fps : 30, 1, 240);
             bool video = e.Work.Info != null;
             switch (e.State)
             {
@@ -2383,11 +2442,12 @@ public sealed class MainWindow : Window
         double seconds = 0;
         if (videoLeft > 0)
         {
-            // The pace: measured on this run once there is enough of it; until then the last run's, or a guess (the
-            // card does about eight seconds of video a second, the processor about one).
+            // The pace of each video, in frames a second: measured on this run once there is enough of it; until then the
+            // last run's, or a guess (an RTX 5070 does 475 frames of 1080p a second in all, 95 for each of five; the
+            // processor about 30). "3": frames, not seconds of video as before.
             double pace = videoSpent >= 20 && videoDone > 0 ? videoDone / videoSpent
-                        : Settings.Shared.Get("compressVideoPace", VideoCompressor.Encoder == "hevc_nvenc" ? 8.0 : 1.0);
-            if (videoSpent >= 60 && videoDone > 0) Settings.Shared.Set("compressVideoPace", pace);
+                        : Settings.Shared.Get("compressVideoPace3", VideoCompressor.Encoder == "hevc_nvenc" ? 95.0 : 30.0);
+            if (videoSpent >= 60 && videoDone > 0) Settings.Shared.Set("compressVideoPace3", pace);
             seconds += videoLeft / pace / VideoWorkers;   // the time of each, several at once
         }
         if (photosLeft > 0)
@@ -2491,7 +2551,7 @@ public sealed class MainWindow : Window
         int withoutHdr = outcomes.Count(o => o.NewPath != null && !o.Item.Video && !o.Hdr);
         _lastMessage = (stopped ? L("Сжатие остановлено.") + " " : "") + Compressor.Summary(outcomes)
                        + (withoutHdr > 0 ? ". " + F("Без HDR (в RAW его не было): %@", Number(withoutHdr)) : "")
-                       + ". " + L("Оригиналы — в Корзине.");
+                       + ". " + (Compressor.OriginalsFolder is { } kept ? F("Оригиналы — в «%@».", kept) : L("Оригиналы — в Корзине."));
         UpdateUi();
         ShowErrors(errors, L("Не все файлы удалось сжать"));
         // The files changed under their names (and RAW became JPEG): the library is read again.

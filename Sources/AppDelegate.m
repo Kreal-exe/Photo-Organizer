@@ -6,6 +6,7 @@
 #import "POModel.h"
 #import "POHuggingFace.h"
 #import "POSettings.h"
+#import "POMLXRuntime.h"
 
 @interface AppDelegate () <NSMenuDelegate>
 @end
@@ -13,7 +14,8 @@
 @implementation AppDelegate {
     MainWindowController *_windowController;
     NSArray<NSURL *> *_pendingURLs;   // folders passed at launch, before the window exists
-    POHuggingFaceDownload *_pictureModelDownload;   // non-nil while MobileCLIP is being fetched
+    BOOL _downloadingModels;                  // the models are being fetched (see -downloadModelsIfNeeded)
+    POHuggingFaceDownload *_modelDownload;    // the one being fetched now
 }
 
 - (void)applicationWillFinishLaunching:(NSNotification *)notification {
@@ -51,24 +53,57 @@
     return YES;
 }
 
-/// MobileCLIP, which tells pictures and collages from photos, is small (23 MB) and needed by everyone: it is fetched on
-/// its own at launch, and the open folder is recognised again once it is there (the settings change). Tried again at
-/// the next launch when the download fails, offline say.
-- (void)downloadPictureModelIfNeeded {
-    POModel *model = POModel.pictureModel;
-    if (model.snapshotURL || _pictureModelDownload) return;
+/// Every model the recognition uses is fetched on its own at launch, one after another — MobileCLIP, which tells pictures
+/// and collages from photos (23 MB); the faces' one when people are grouped; the nudity one chosen when nudity is looked
+/// for, with the MLX environment it runs in on Apple Silicon — rather than left for "Настройки" with a note at the top.
+/// The open folder is recognised again once they are there (the settings change). One that cannot be fetched (offline)
+/// is tried again at the next launch; the rest still are. As on Windows.
+- (void)downloadModelsIfNeeded {
+    if (_downloadingModels) return;
+    _downloadingModels = YES;
+    NSMutableArray<POModel *> *models = [NSMutableArray arrayWithObject:POModel.pictureModel];
+    if (POSettings.groupsFaces) [models addObject:POModel.faceModel];
+    if (POSettings.detectsNudity && POModel.selectedModel.isSupported) [models addObject:POModel.selectedModel];
+    [self downloadModels:models changed:NO];
+}
+
+- (void)downloadModels:(NSArray<POModel *> *)models changed:(BOOL)changed {
+    POModel *model = models.firstObject;
+    if (!model) {
+        _downloadingModels = NO;
+        _modelDownload = nil;
+        if (changed) [POSettings didChange];
+        return;
+    }
+    NSArray<POModel *> *rest = [models subarrayWithRange:NSMakeRange(1, models.count - 1)];
+    if (model.snapshotURL) {
+        [self installRuntimeForModel:model then:^(BOOL installed) { [self downloadModels:rest changed:changed || installed]; }];
+        return;
+    }
     POHuggingFaceDownload *download = [[POHuggingFaceDownload alloc] initWithRepo:model.identifier files:model.files];
-    _pictureModelDownload = download;
+    _modelDownload = download;
     [download startWithProgress:nil completion:^(NSURL *snapshot, NSError *error) {
-        self->_pictureModelDownload = nil;
-        if (snapshot) [POSettings didChange];
+        if (!snapshot) {
+            [self downloadModels:rest changed:changed];
+            return;
+        }
+        [self installRuntimeForModel:model then:^(BOOL installed) { [self downloadModels:rest changed:YES]; }];
     }];
+}
+
+/// The MLX environment an MLX model runs in (Apple Silicon only), installed once; `then` says whether it was just now.
+- (void)installRuntimeForModel:(POModel *)model then:(void (^)(BOOL installed))then {
+    if (model.backend != POModelBackendMLX || !POMLXRuntime.isSupported || POMLXRuntime.isInstalled) {
+        then(NO);
+        return;
+    }
+    [POMLXRuntime installWithLog:nil completion:^(NSError *error) { then(error == nil); }];
 }
 
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
     _windowController = [MainWindowController new];
     [_windowController showWindow:nil];
-    [self downloadPictureModelIfNeeded];
+    [self downloadModelsIfNeeded];
     if (_pendingURLs.count) {
         [_windowController loadFolders:_pendingURLs];
         _pendingURLs = nil;

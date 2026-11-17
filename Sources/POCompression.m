@@ -102,10 +102,13 @@ static CGSize POVideoSize(NSInteger width, NSInteger height, NSInteger maxHeight
 }
 
 long long POVideoBitrate(NSInteger width, NSInteger height, double fps, NSInteger quality) {
-    static const double factors[] = {1.6, 1.0, 0.6};
+    // The levels of Windows ("Максимальное качество" … "Максимальное сжатие"), measured there with VMAF on NVIDIA's
+    // encoder; the media engine works to a bitrate and needs about a fifth more for the same picture. Raised with them
+    // when the hardest videos (4K of leaves brought to 1080p) were measured: what had been called invisible came to 85–93.
+    static const double factors[] = {4.3, 3.1, 2.4, 1.8, 1.2};
     double pixels = MAX(1, (double)width * height) / (1920.0 * 1080.0);
     double frames = MIN(MAX(fps > 0 ? fps : 30, 15), 240) / 30.0;
-    double factor = factors[MIN(MAX(quality, 0), 2)];
+    double factor = factors[MIN(MAX(quality, 0), 4)];
     return (long long)(6000000 * pow(pixels, 0.75) * pow(frames, 0.6) * factor);
 }
 
@@ -131,7 +134,7 @@ NSInteger POResolutionClassOfSize(NSInteger width, NSInteger height) {
     return shorter >= 2000 ? 0 : shorter >= 1400 ? 1 : shorter >= 1000 ? 2 : 3;
 }
 
-POVideoJob *POPlanVideo(POVideoInfo *info, NSInteger maxHeight, NSInteger quality) {
+POVideoJob *POPlanVideo(POVideoInfo *info, NSInteger maxHeight, NSInteger quality, BOOL screenRecording) {
     if (info.width <= 0 || info.height <= 0 || info.duration <= 0 || info.kept) return nil;
     // Compressed by the earlier version, with B-frames: phones play it in jerks. Built again at its own size and its own
     // bitrate, without them (5 % larger), whatever was asked. As on Windows.
@@ -146,6 +149,9 @@ POVideoJob *POPlanVideo(POVideoInfo *info, NSInteger maxHeight, NSInteger qualit
     }
     CGSize size = POVideoSize(info.width, info.height, maxHeight);
     long long target = POVideoBitrate((NSInteger)size.width, (NSInteger)size.height, info.fps, quality);
+    // Brought down (4K to 1080p): only the size is to be lost. What is scaled down from 4K is sharper than any 1080p;
+    // on Windows a face and leaves needed 1.8 times the bits for the compressing to add nothing seen close up.
+    if (size.width * size.height < info.width * (double)info.height * 0.9) target = (long long)(target * 1.8);
     long long source = info.videoBitrate;
     // An older codec needs more bits for the same picture: H.264 about 1.7 times what HEVC does, MPEG-4, Motion JPEG
     // or DV 2.5 times and more. What it has is weighed as the HEVC it equals — an H.264 720p at 3 Mbit/s is
@@ -159,21 +165,30 @@ POVideoJob *POPlanVideo(POVideoInfo *info, NSInteger maxHeight, NSInteger qualit
     // Under two seconds one key frame is most of the file, and the bitrate says nothing: HEVC that short counts as
     // compressed already. As on Windows.
     double ratio = target > 0 ? (double)source / target : 0;
-    // A camera's own HEVC is never "compressed already", whatever its bitrate: an iPhone's 1080p60 at 13.6 Mbit/s
-    // (1.5 times the plan) was offered only to "squeeze further" and so skipped — it is to be compressed.
-    BOOL again = info.hevc && (info.reencoded ? ratio < 1.7 || info.duration < 2 : info.duration < 2);
+    // HEVC kept at its size is compressed already — an iPhone's own or another tool's — and squeezed again it gains
+    // little for what it loses. Offered apart, under "Уже сжатые", left alone unless ticked. Brought down to a smaller
+    // size (4K to 1080p) it is compressed like any other. As on Windows.
+    // A screen recording is HEVC too, but of a still picture the phone encodes in a hurry: compressed like an older
+    // codec (45 % of its size at VMAF 96.5 on Windows). As on Windows.
+    BOOL smaller = size.width * size.height < info.width * (double)info.height * 0.9;
+    // Not one this app (or another tool) has compressed already: that one is HEVC like any other.
+    BOOL hevc = info.hevc && !(screenRecording && !info.reencoded);
+    BOOL again = hevc && (!smaller || info.duration < 2);
     // Made smaller too: the bits it has against what the smaller size needs — an iPhone screen recording (1290 wide) is
     // HEVC of so few bits that at 1080 it would come out no lighter. As on Windows.
     // An older codec comes out lighter as HEVC whatever its bitrate: weighed as above, it always gains.
-    if (info.hevc && ratio < (again ? 1.15 : 1.3)) return nil;
+    if (hevc && ratio < (again ? 1.15 : 1.3)) return nil;
     if (bitrate <= 0) return nil;
+    // The media engine works to the bitrate planned: more than three quarters of what the video has comes out no
+    // lighter than 0.8 of it and is thrown away (POCompressVideoItem) — a whole encoding for nothing. Not planned.
+    if (info.videoBitrate > 0 && bitrate > info.videoBitrate * 0.75) return nil;
     POVideoJob *job = [POVideoJob new];
     job.width = (NSInteger)size.width;
     job.height = (NSInteger)size.height;
     job.bitrate = bitrate;
     job.estimatedSize = (long long)((bitrate + MAX(info.audioBitrate, 0)) * info.duration / 8 * 1.01);
     job.again = again;
-    job.quality = MIN(MAX(quality, 0), 2);
+    job.quality = MIN(MAX(quality, 0), 4);
     return job;
 }
 
@@ -869,7 +884,8 @@ static NSURL *POProbedVideosURL(void) {
     // 6: videos whose frames are marked shown in the order stored, though reordered (flatTimestamps).
     // 7: whether FFmpeg wrote the file (reencoded).
     // 8: whether a video is H.264 (see POPlanVideo).
-    return [folder URLByAppendingPathComponent:@"video-info-8.plist"];
+    // 9: live photos' videos are told by Apple's identifier (livePhoto). As on Windows.
+    return [folder URLByAppendingPathComponent:@"video-info-9.plist"];
 }
 
 static NSMutableDictionary<NSString *, NSDictionary *> *POProbedVideos(void) {
@@ -910,6 +926,7 @@ POVideoInfo *POProbeVideoRemembered(NSURL *url) {
         info.dynamicHdr = [known[@"dynamicHdr"] isKindOfClass:NSString.class] ? known[@"dynamicHdr"] : nil;
         info.flatTimestamps = [known[@"flatTimestamps"] boolValue];
         info.reencoded = [known[@"reencoded"] boolValue];
+        info.livePhoto = [known[@"livePhoto"] boolValue];
         return info;
     }
     POVideoInfo *info = POProbeVideo(url);
@@ -925,10 +942,17 @@ POVideoInfo *POProbeVideoRemembered(NSURL *url) {
     if (info.dynamicHdr) entry[@"dynamicHdr"] = info.dynamicHdr;
     entry[@"flatTimestamps"] = @(info.flatTimestamps);
     entry[@"reencoded"] = @(info.reencoded);
+    entry[@"livePhoto"] = @(info.livePhoto);
+    static NSUInteger sinceSave;
+    BOOL save;
     @synchronized (probed) {
         probed[url.path] = entry;
         POProbedChanged = YES;
+        save = ++sinceSave % 200 == 0;
     }
+    // Written as it goes, every 200 videos: written only at the end, a window closed halfway through 10 000 videos lost
+    // all that was read, and the next time began again from the first. As on Windows.
+    if (save) POSaveProbedVideos();
     return info;
 }
 
@@ -1169,6 +1193,15 @@ POVideoInfo *POProbeVideo(NSURL *url) {
     for (AVMetadataItem *item in asset.metadata) {
         NSString *key = [item.key isKindOfClass:NSString.class] ? (NSString *)item.key : item.identifier;
         if ([key.lowercaseString containsString:@"encoder"] && [item.stringValue hasPrefix:@"Lavf"]) info.reencoded = YES;
+        // A live photo's video carries the identifier that ties it to its photo, whatever the files are called
+        // (IMG_5871_HEVC.MOV beside IMG_5871.HEIC). As on Windows.
+        if ([key isEqualToString:@"com.apple.quicktime.content.identifier"] || [item.identifier isEqualToString:AVMetadataIdentifierQuickTimeMetadataContentIdentifier]) info.livePhoto = YES;
+    }
+    // FFmpeg's mark on the video track: the app keeps the original's metadata around the compressed picture, so the
+    // file's own says nothing of FFmpeg. As on Windows.
+    for (AVMetadataItem *item in track.metadata) {
+        NSString *key = [item.key isKindOfClass:NSString.class] ? (NSString *)item.key : item.identifier;
+        if ([key.lowercaseString containsString:@"encoder"] && [item.stringValue hasPrefix:@"Lavc"]) info.reencoded = YES;
     }
     if (info.hevc && track.requiresFrameReordering && info.reencoded) info.stutters = YES;
     if (spatial) info.kept = POL(@"пространственное (3D) видео — при сжатии пропал бы второй глаз");
@@ -1229,7 +1262,6 @@ static NSString *POEncodeVideo(NSURL *source, NSURL *destination, POVideoInfo *i
     if (info.ffmpeg) return POEncodeWholeVideoWithFFmpeg(source, destination, info, job, progress, cancelled);
     AVURLAsset *asset = [AVURLAsset URLAssetWithURL:source options:@{AVURLAssetPreferPreciseDurationAndTimingKey: @YES}];
     AVAssetTrack *videoTrack = [asset tracksWithMediaType:AVMediaTypeVideo].firstObject;
-    AVAssetTrack *audioTrack = [asset tracksWithMediaType:AVMediaTypeAudio].firstObject;
     if (!videoTrack) return POL(@"В файле нет видео");
     NSError *error = nil;
     NSString *extension = source.pathExtension.lowercaseString;
@@ -1251,9 +1283,8 @@ static NSString *POEncodeVideo(NSURL *source, NSURL *destination, POVideoInfo *i
                                   AVVideoMaxKeyFrameIntervalKey: @(MAX(1, (NSInteger)llround(info.fps))),
                                   AVVideoProfileLevelKey: tenBit ? (__bridge NSString *)kVTProfileLevel_HEVC_Main10_AutoLevel
                                                                  : (__bridge NSString *)kVTProfileLevel_HEVC_Main_AutoLevel} mutableCopy];
-    // The media engine at full speed: by default it spends a third more time on each frame for a difference no one
-    // sees at these bitrates (an M1 Pro: 170 frames of 1080p a second, 270 with this).
-    if (@available(macOS 13.0, *)) compression[(__bridge NSString *)kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality] = @YES;
+    // The media engine at its best quality, not its fastest (PrioritizeEncodingSpeedOverQuality, 270 frames of 1080p a
+    // second on an M1 Pro instead of 170): the picture comes first, and several videos at once keep the engine busy.
     NSMutableDictionary *settings = [@{AVVideoCodecKey: AVVideoCodecTypeHEVC,
                                        AVVideoWidthKey: @(turned ? job.height : job.width),
                                        AVVideoHeightKey: @(turned ? job.width : job.height),
@@ -1287,6 +1318,12 @@ static NSString *POEncodeVideo(NSURL *source, NSURL *destination, POVideoInfo *i
             matrix = bt601 || standard ? AVVideoYCbCrMatrix_ITU_R_601_4 : AVVideoYCbCrMatrix_ITU_R_709_2;
         }
         settings[AVVideoColorPropertiesKey] = @{AVVideoColorPrimariesKey: primaries, AVVideoTransferFunctionKey: transfer, AVVideoYCbCrMatrixKey: matrix};
+        // HDR10's static metadata (how bright the mastering display was, how bright the content gets): without it a
+        // player guesses the tone mapping.
+        id mastering = (__bridge id)CMFormatDescriptionGetExtension(format, kCMFormatDescriptionExtension_MasteringDisplayColorVolume);
+        id light = (__bridge id)CMFormatDescriptionGetExtension(format, kCMFormatDescriptionExtension_ContentLightLevelInfo);
+        if ([mastering isKindOfClass:NSData.class]) compression[(__bridge NSString *)kVTCompressionPropertyKey_MasteringDisplayColorVolume] = mastering;
+        if ([light isKindOfClass:NSData.class]) compression[(__bridge NSString *)kVTCompressionPropertyKey_ContentLightLevelInfo] = light;
     }
     // A setting the writer refuses throws: said as this file's error, never the end of the app.
     AVAssetWriterInput *videoInput = nil;
@@ -1299,31 +1336,62 @@ static NSString *POEncodeVideo(NSURL *source, NSURL *destination, POVideoInfo *i
     videoInput.expectsMediaDataInRealTime = NO;
     if (![writer canAddInput:videoInput]) return POL(@"Этот Mac не умеет кодировать HEVC");
     [writer addInput:videoInput];
-    AVAssetWriterInput *audioInput = nil;
-    if (audioTrack) {
-        CMFormatDescriptionRef audioFormat = (__bridge CMFormatDescriptionRef)audioTrack.formatDescriptions.firstObject;
-        audioInput = [AVAssetWriterInput assetWriterInputWithMediaType:AVMediaTypeAudio outputSettings:nil sourceFormatHint:audioFormat];
-        audioInput.expectsMediaDataInRealTime = NO;
-        if ([writer canAddInput:audioInput]) [writer addInput:audioInput];
-        else audioInput = nil;
+    AVAssetReader *reader = [AVAssetReader assetReaderWithAsset:asset error:&error];
+    if (!reader) return error.localizedDescription;
+    // Every sound track as it is (a second language, spatial audio): one that cannot be copied stops the compressing —
+    // a video is never kept without the sound it had.
+    NSMutableArray<NSArray *> *audioPumps = [NSMutableArray array];
+    for (AVAssetTrack *track in [asset tracksWithMediaType:AVMediaTypeAudio]) {
+        CMFormatDescriptionRef audioFormat = (__bridge CMFormatDescriptionRef)track.formatDescriptions.firstObject;
+        AVAssetWriterInput *input = nil;
+        @try {
+            input = [AVAssetWriterInput assetWriterInputWithMediaType:AVMediaTypeAudio outputSettings:nil sourceFormatHint:audioFormat];
+        } @catch (NSException *exception) {
+            input = nil;
+        }
+        AVAssetReaderTrackOutput *output = [AVAssetReaderTrackOutput assetReaderTrackOutputWithTrack:track outputSettings:nil];
+        output.alwaysCopiesSampleData = NO;
+        if (!input || ![writer canAddInput:input] || ![reader canAddOutput:output]) return POL(@"Звук этого видео не удалось бы сохранить");
+        input.expectsMediaDataInRealTime = NO;
+        [writer addInput:input];
+        [reader addOutput:output];
+        [audioPumps addObject:@[input, output]];
+    }
+    // Apple's timed metadata tracks (mebx: what makes a live photo's video one, the camera's own data): copied as they
+    // are, tied to the new video track as they were to the old. As on Windows.
+    // Only Apple's boxed metadata with samples (other kinds, or an empty stub, the writer may refuse mid-way); each
+    // only when it can be both read and written — an input that never gets data would hold the others up.
+    NSMutableArray<NSArray *> *metadataPumps = [NSMutableArray array];
+    for (AVAssetTrack *track in [asset tracksWithMediaType:AVMediaTypeMetadata]) {
+        CMFormatDescriptionRef metadataFormat = (__bridge CMFormatDescriptionRef)track.formatDescriptions.firstObject;
+        if (!metadataFormat || CMFormatDescriptionGetMediaSubType(metadataFormat) != kCMMetadataFormatType_Boxed || track.totalSampleDataLength <= 0) continue;
+        AVAssetWriterInput *input = nil;
+        @try {
+            input = [AVAssetWriterInput assetWriterInputWithMediaType:AVMediaTypeMetadata outputSettings:nil sourceFormatHint:metadataFormat];
+        } @catch (NSException *exception) {
+            continue;
+        }
+        AVAssetReaderTrackOutput *output = [AVAssetReaderTrackOutput assetReaderTrackOutputWithTrack:track outputSettings:nil];
+        output.alwaysCopiesSampleData = NO;
+        if (![writer canAddInput:input] || ![reader canAddOutput:output]) continue;
+        input.expectsMediaDataInRealTime = NO;
+        [writer addInput:input];
+        [reader addOutput:output];
+        if ([input canAddTrackAssociationWithTrackOfInput:videoInput type:AVTrackAssociationTypeMetadataReferent]) {
+            [input addTrackAssociationWithTrackOfInput:videoInput type:AVTrackAssociationTypeMetadataReferent];
+        }
+        [metadataPumps addObject:@[input, output]];
     }
     // The capture date, the place and the camera.
     writer.metadata = type == AVFileTypeQuickTimeMovie ? asset.metadata : asset.commonMetadata;
     writer.shouldOptimizeForNetworkUse = YES;
 
-    AVAssetReader *reader = [AVAssetReader assetReaderWithAsset:asset error:&error];
-    if (!reader) return error.localizedDescription;
     NSDictionary *pixels = @{(id)kCVPixelBufferPixelFormatTypeKey: @(tenBit ? kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
                                                                             : kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange)};
     AVAssetReaderTrackOutput *videoOutput = [AVAssetReaderTrackOutput assetReaderTrackOutputWithTrack:videoTrack outputSettings:pixels];
     videoOutput.alwaysCopiesSampleData = NO;
+    if (![reader canAddOutput:videoOutput]) return POL(@"Не удалось прочитать видео");
     [reader addOutput:videoOutput];
-    AVAssetReaderTrackOutput *audioOutput = nil;
-    if (audioInput) {
-        audioOutput = [AVAssetReaderTrackOutput assetReaderTrackOutputWithTrack:audioTrack outputSettings:nil];
-        audioOutput.alwaysCopiesSampleData = NO;
-        [reader addOutput:audioOutput];
-    }
     if (![reader startReading]) return reader.error.localizedDescription ?: POL(@"Не удалось прочитать видео");
     if (![writer startWriting]) {
         [reader cancelReading];
@@ -1344,8 +1412,13 @@ static NSString *POEncodeVideo(NSURL *source, NSURL *destination, POVideoInfo *i
         CMSampleBufferRef retimed = NULL;
         return CMSampleBufferCreateCopyWithNewTiming(kCFAllocatorDefault, sample, 1, &timing, &retimed) == noErr ? retimed : NULL;
     });
-    if (audioInput) POPump(audioInput, audioOutput, group, cancelled, nil);
-    dispatch_group_wait(group, DISPATCH_TIME_FOREVER);
+    for (NSArray *pump in audioPumps) POPump(pump[0], pump[1], group, cancelled, nil);
+    for (NSArray *pump in metadataPumps) POPump(pump[0], pump[1], group, cancelled, nil);
+    // When writing or reading fails the other inputs are not asked for more and would never finish: waited for in
+    // steps, and given up on then.
+    while (dispatch_group_wait(group, dispatch_time(DISPATCH_TIME_NOW, 500 * NSEC_PER_MSEC)) != 0) {
+        if (cancelled() || reader.status == AVAssetReaderStatusFailed || writer.status == AVAssetWriterStatusFailed) break;
+    }
 
     if (cancelled() || reader.status == AVAssetReaderStatusFailed || writer.status == AVAssetWriterStatusFailed) {
         NSString *why = cancelled() ? POL(@"Остановлено")
@@ -1354,9 +1427,9 @@ static NSString *POEncodeVideo(NSURL *source, NSURL *destination, POVideoInfo *i
         [reader cancelReading];
         [writer cancelWriting];
         [NSFileManager.defaultManager removeItemAtURL:destination error:NULL];
-        // A few damaged frames stop macOS ("Cannot Decode"); FFmpeg goes past them. Not with dynamic HDR, which it would
-        // not carry over.
-        if (unreadable && !info.dynamicHdr && POFFmpegAvailable()) return POEncodeWholeVideoWithFFmpeg(source, destination, info, job, progress, cancelled);
+        // Damaged frames stop macOS ("Cannot Decode"). FFmpeg would go past them — and the compressed video would lack
+        // them, and the sound's priming and Apple's tracks: the original stays as it is. As on Windows.
+        if (unreadable) return POL(@"в оригинале есть битые кадры: в сжатом их не будет");
         return why;
     }
     dispatch_semaphore_t finished = dispatch_semaphore_create(0);
@@ -1379,8 +1452,16 @@ static NSString *POEncodeVideo(NSURL *source, NSURL *destination, POVideoInfo *i
         }
     }
     // What came out must be the whole video, with the HDR it had.
+    // The video track's own length (a picture that stopped early, the sound running on, would pass by the file's),
+    // every sound track, HDR kept HDR.
     POVideoInfo *result = POProbeVideo(destination);
-    if (!result || fabs(result.duration - info.duration) > MAX(1, info.duration * 0.02)
+    AVURLAsset *written = [AVURLAsset URLAssetWithURL:destination options:@{AVURLAssetPreferPreciseDurationAndTimingKey: @YES}];
+    AVAssetTrack *writtenVideo = [written tracksWithMediaType:AVMediaTypeVideo].firstObject;
+    double was = CMTimeGetSeconds(videoTrack.timeRange.duration), now = writtenVideo ? CMTimeGetSeconds(writtenVideo.timeRange.duration) : 0;
+    if (!result || !writtenVideo || fabs(result.duration - info.duration) > MAX(1, info.duration * 0.02)
+        || fabs(now - was) > MAX(1, was * 0.02)
+        || [written tracksWithMediaType:AVMediaTypeAudio].count < [asset tracksWithMediaType:AVMediaTypeAudio].count
+        || result.hdr != info.hdr
         || (info.dynamicHdr && ![result.dynamicHdr isEqualToString:info.dynamicHdr])) {
         [NSFileManager.defaultManager removeItemAtURL:destination error:NULL];
         return POL(@"Сжатое видео получилось неполным");

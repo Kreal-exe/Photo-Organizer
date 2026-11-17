@@ -33,6 +33,10 @@ public static partial class MediaTypes
     /// video snippets and effects ("…-COLLAGE.jpg", "…-PHOTO_FRAME.jpg", "MOVIE.mp4") — told by the names Google Photos
     /// and Google Takeout give them. An edited copy ("…-отредактировано.jpg") is still a photo.
     /// </summary>
+    /// <summary>A screen recording, by the name iOS, Android and the usual recorders give it.</summary>
+    public static bool IsScreenRecording(PhotoItem item) =>
+        item.Video && ScreenRecordingName().IsMatch(Path.GetFileNameWithoutExtension(item.Name).Normalize());
+
     public static bool IsGooglePhotosCreation(PhotoItem item) =>
         GooglePhotosCreationName().IsMatch(Path.GetFileNameWithoutExtension(item.Name).Normalize());
 

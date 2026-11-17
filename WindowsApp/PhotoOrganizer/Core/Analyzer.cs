@@ -54,55 +54,25 @@ public sealed class RecognitionStore
         bool damaged = false;
         try
         {
-            byte[] data;
-            using (var file = new FileStream(_path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, 1 << 20))
-            {
-                length = file.Length;
-                data = new byte[length];
-                file.ReadExactly(data);
-            }
-            int version = data.Length >= 4 ? BitConverter.ToInt32(data, 0) : 0;
+            using var file = new FileStream(_path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, 1 << 20);
+            length = file.Length;
+            var head = new byte[4];
+            int version = length >= 4 ? file.ReadAtLeast(head, 4, throwOnEndOfStream: false) == 4 ? BitConverter.ToInt32(head, 0) : 0 : 0;
             if (version is >= 2 and <= Version)
             {
-                // Every record is looked for on its own — a key (its length, then digits and hyphens), then the flag of
-                // the fingerprint — and read from there: one record cut short or written wrong no longer takes the
-                // ones after it along (a key's length is itself a digit, so reading on from a wrong place never ended).
-                var starts = RecordStarts(data);
-                // Read on every core (a library of 100 000 files keeps a gigabyte here: one core took 12 seconds, and
-                // the duplicates waited for it), then taken in the file's order — a later record of a file replaces
-                // an earlier one.
-                var read = new (string Key, Entry Entry)?[starts.Count];
-                Parallel.For(0, starts.Count, i =>
+                // In pieces of 256 MB, each read with the 2 MB after it: the file is past what one array can hold
+                // (2.16 GB for 50 000 files, which stopped the app: "Arithmetic operation resulted in an overflow"). A
+                // record is a few kilobytes, never above a megabyte (see below), so each one that starts in a piece ends
+                // within what was read with it.
+                const int Piece = 256 << 20, Overlap = 2 << 20;
+                var buffer = new byte[(int)Math.Min(Piece + Overlap, Math.Max(0, length - 4))];
+                for (long at = 4; at < length; at += Piece)
                 {
-                    int start = starts[i];
-                    try
-                    {
-                        // A record read whole ends where the next one starts (or the file ends); one read wrong runs
-                        // past it, and is left out — each record is read on its own, so the next ones still are.
-                        // (A record is a few kilobytes: read within a megabyte, a wrong length fails at once.)
-                        using var stream = new MemoryStream(data, start, Math.Min(data.Length - start, 1 << 20), writable: false);
-                        using var reader = new BinaryReader(stream);
-                        string key = reader.ReadString();
-                        var entry = Read(reader, version);
-                        int end = start + (int)stream.Position;
-                        if (end != data.Length && starts.BinarySearch(end) < 0) throw new InvalidDataException();
-                        read[i] = (key, entry);
-                    }
-                    catch (Exception e) when (e is EndOfStreamException or FormatException or InvalidDataException or ArgumentException or IOException)
-                    {
-                    }
-                });
-                foreach (var record in read)
-                {
-                    if (record is not { } r)
-                    {
-                        damaged = true;
-                        continue;
-                    }
-                    records++;
-                    // Keys without the time of the last change (before 5) are never asked for again: the files are
-                    // looked at anew, and their old results dropped.
-                    if (HasTime(r.Key)) Add(r.Key, r.Entry);
+                    int count = (int)Math.Min(buffer.Length, length - at);
+                    file.Position = at;
+                    file.ReadExactly(buffer, 0, count);
+                    bool lastPiece = at + count >= length;
+                    ReadPiece(buffer, count, lastPiece ? count : Math.Min(Piece, count), lastPiece, version, ref records, ref damaged);
                 }
                 // Results of an older version are kept: rewritten in the new format, they are only completed.
                 if (version != Version) records = 0;
@@ -116,6 +86,54 @@ public sealed class RecognitionStore
         // Written anew only to drop results replaced since, or to start one: never when part of it could not be read —
         // results this reader cannot make out (as it once could not read negative keys) must stay for a better one.
         if (!damaged && (records > _entries.Count * 2 + 100 || !File.Exists(_path) || (records == 0 && length < 1 << 20))) Rewrite();
+    }
+
+    /// <summary>
+    /// The records that start in the first `owned` bytes of `data` (of which `count` were read), added in order.
+    /// </summary>
+    void ReadPiece(byte[] data, int count, int owned, bool lastPiece, int version, ref int records, ref bool damaged)
+    {
+        // Every record is looked for on its own — a key (its length, then digits and hyphens), then the flag of the
+        // fingerprint — and read from there: one record cut short or written wrong no longer takes the ones after it
+        // along (a key's length is itself a digit, so reading on from a wrong place never ended).
+        var starts = RecordStarts(data, count);
+        int mine = starts.BinarySearch(owned);
+        mine = mine < 0 ? ~mine : mine;
+        // Read on every core (a library of 100 000 files keeps a gigabyte here: one core took 12 seconds, and the
+        // duplicates waited for it), then taken in the file's order — a later record of a file replaces an earlier one.
+        var read = new (string Key, Entry Entry)?[mine];
+        Parallel.For(0, mine, i =>
+        {
+            int start = starts[i];
+            try
+            {
+                // A record read whole ends where the next one starts (or the file ends); one read wrong runs past it,
+                // and is left out — each record is read on its own, so the next ones still are. (A record is a few
+                // kilobytes: read within a megabyte, a wrong length fails at once.)
+                using var stream = new MemoryStream(data, start, Math.Min(count - start, 1 << 20), writable: false);
+                using var reader = new BinaryReader(stream);
+                string key = reader.ReadString();
+                var entry = Read(reader, version);
+                int end = start + (int)stream.Position;
+                if (!(lastPiece && end == count) && starts.BinarySearch(end) < 0) throw new InvalidDataException();
+                read[i] = (key, entry);
+            }
+            catch (Exception e) when (e is EndOfStreamException or FormatException or InvalidDataException or ArgumentException or IOException)
+            {
+            }
+        });
+        foreach (var record in read)
+        {
+            if (record is not { } r)
+            {
+                damaged = true;
+                continue;
+            }
+            records++;
+            // Keys without the time of the last change (before 5) are never asked for again: the files are looked at
+            // anew, and their old results dropped.
+            if (HasTime(r.Key)) Add(r.Key, r.Entry);
+        }
     }
 
     /// <summary>
@@ -342,20 +360,24 @@ public sealed class RecognitionStore
     }
 
     /// <summary>Where records may start: a key's length, the key, then the fingerprint's flag (0 or 1).</summary>
-    static List<int> RecordStarts(byte[] data)
+    static List<int> RecordStarts(byte[] data, int count)
     {
         // In pieces on every core, put together in order.
         const int Piece = 16 << 20;
-        int pieces = Math.Max(1, (data.Length - 4 + Piece - 1) / Piece);
+        int pieces = Math.Max(1, (count + Piece - 1) / Piece);
         var found = new List<int>[pieces];
         Parallel.For(0, pieces, piece =>
         {
             var starts = new List<int>();
-            int from = 4 + piece * Piece, to = Math.Min(data.Length, from + Piece);
-            for (int i = from; i < to && i + 2 < data.Length; i++)
+            int from = piece * Piece, to = Math.Min(count, from + Piece);
+            for (int i = from; i < to && i + 2 < count; i++)
             {
                 int length = data[i];
-                if (length is < 5 or >= 64 || i + 1 + length >= data.Length || data[i + 1 + length] > 1) continue;
+                // Up to 127 characters, what one byte of length says: a key of a file on exFAT runs to 64 and more
+                // ("0-16049954547887505408-15054715019432296449--5554909069080439841"). Read only below 64, such a record
+                // and the one before it were never found — those files were looked at again on every launch and
+                // appended again, and the file, never whole, never rewritten: 404 000 records for 160 000 files, 2.16 GB.
+                if (length is < 5 or >= 128 || i + 1 + length >= count || data[i + 1 + length] > 1) continue;
                 if (!char.IsAsciiDigit((char)data[i + 1]) || !char.IsAsciiDigit((char)data[i + length])) continue;
                 var key = data.AsSpan(i + 1, length);
                 if (key.IndexOfAnyExcept("0123456789-"u8) >= 0 || Numbers(key) is not (3 or 4)) continue;

@@ -154,11 +154,17 @@ models are downloaded the same way, nothing else is needed.
     date, the place
     and the camera stay. A 75 MB 48 MP ProRAW becomes a 2–4 MB 12 MP JPEG; the estimate comes from a trial
     compression of two of them.
-  - **Videos** become HEVC no larger than 1080p (4K or 720p if wanted) at a bitrate that loses nothing visible, **HDR
-    kept** (10 bits, HLG / PQ, the colour description as it was — Dolby Vision's extra layer is not kept, the HLG HDR
-    under it is); the sound, the date and the place are copied as they are, and a video that already weighs little is
-    left alone. On a Mac with AVFoundation; on Windows with FFmpeg (the one installed, or downloaded once, ~200 MB) on
-    the graphics card when it can (NVIDIA, Intel, AMD), otherwise x265.
+  - **Videos** become HEVC no larger than 1080p (4K or 720p if wanted), by default **with no visible loss**: on an
+    NVIDIA card the encoder works to a constant quality rather than a bitrate, so a busy scene gets the bits it needs
+    (VMAF 95–98 against the original, measured on every frame of ten videos of a real library); three stronger levels
+    save more. 4K brought to 1080p comes out at about an eighth of its size, an iPhone's 1080p H.264 at 60–70 %, a
+    screen recording at about half. HEVC kept at its own size (what an iPhone records) gains little and is offered apart,
+    unticked; every frame keeps the moment it was shown at, or the original stays. **HDR kept** (10 bits, HLG / PQ, the colour
+    description as it was; Dolby Vision, HDR Vivid and HDR10+ in every frame). The sound, Apple's metadata tracks, the
+    date and the place are the original's own, byte for byte. Live photos' videos are offered apart and left alone
+    unless ticked, and a video that already weighs little is left alone. On a Mac with AVFoundation on the media engine;
+    on Windows with FFmpeg (the one installed, or downloaded once, ~200 MB) on the graphics card when it can (NVIDIA,
+    Intel, AMD), otherwise x265.
   - Each compressed file takes the place of its original (a RAW becomes a `.jpg` of the same name), keeping its file
     dates; the original goes to the Trash / Recycle Bin, and stays if anything fails. It can be stopped between files.
 - The bottom bar says how many files are selected (or shown) and what they weigh.
@@ -416,11 +422,17 @@ open /Applications/PhotoOrganizer.app
     от Apple) переносится как карта Ultra HDR / ISO 21496-1, которую в HDR показывают iPhone и Mac (iOS 18, macOS 15),
     Android и Chrome / Edge; для других линейных DNG она вычисляется из RAW. Цветовой профиль (Display P3), дата и место съёмки и камера
     остаются. ProRAW на 48 Мп и 75 МБ становится JPEG на 12 Мп и 2–4 МБ; оценка — по пробному сжатию двух снимков.
-  - **Видео** становятся HEVC не больше 1080p (по желанию 4K или 720p) с битрейтом без видимых потерь, **HDR
-    сохраняется** (10 бит, HLG / PQ, описание цвета как было — дополнительный слой Dolby Vision не переносится, HDR в
-    HLG под ним остаётся); звук, дата и место съёмки копируются как есть, а видео, которое и так весит немного, не
-    трогается. На Mac — средствами AVFoundation, в Windows — FFmpeg (установленный или скачанный один раз, ~200 МБ)
-    на видеокарте, если она умеет (NVIDIA, Intel, AMD), иначе x265.
+  - **Видео** становятся HEVC не больше 1080p (по желанию 4K или 720p), по умолчанию **без видимых потерь**: на
+    видеокарте NVIDIA кодировщик держит постоянное качество, а не битрейт, так что сложная сцена получает столько бит,
+    сколько ей нужно (VMAF 95–98 против оригинала, по каждому кадру десяти видео настоящей медиатеки); три уровня
+    посильнее экономят больше. 4K, уменьшенное до 1080p, занимает около восьмой части, 1080p H.264 с iPhone — 60–70 %,
+    запись экрана — около половины. HEVC в своём разрешении (так снимает iPhone) почти не уменьшается и предлагается
+    отдельно, без галочки; каждый кадр остаётся в свой момент, иначе остаётся оригинал. **HDR сохраняется** (10 бит,
+    HLG / PQ, описание цвета как было; Dolby Vision, HDR Vivid и HDR10+ — в каждом кадре). Звук, служебные дорожки
+    Apple, дата и место съёмки — байт в байт из оригинала. Видео живых фото предлагаются отдельно и без галочки не
+    трогаются, а видео, которое и так весит немного, не трогается. На Mac — средствами AVFoundation на медиадвижке, в
+    Windows — FFmpeg (установленный или скачанный один раз, ~200 МБ) на видеокарте, если она умеет (NVIDIA, Intel,
+    AMD), иначе x265.
   - Сжатый файл встаёт на место оригинала (RAW становится `.jpg` с тем же именем) с его датами файла; оригинал уходит
     в Корзину, а если что-то пошло не так — остаётся. Сжатие можно остановить между файлами.
 - Внизу окна видно, сколько файлов выбрано (или показано) и сколько они весят.

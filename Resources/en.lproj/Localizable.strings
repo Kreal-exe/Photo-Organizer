@@ -564,9 +564,11 @@
 "Разрешение не больше" = "Resolution at most";
 "%@p — рекомендуется" = "%@p (recommended)";
 "Качество" = "Quality";
-"Максимальное" = "Maximum";
-"Высокое — без видимых потерь" = "High, no visible loss";
-"Экономное" = "Economical";
+"Максимальное качество" = "Maximum quality";
+"Без видимых потерь — рекомендуется" = "No visible loss (recommended)";
+"Высокое" = "High";
+"Среднее" = "Medium";
+"Максимальное сжатие" = "Maximum compression";
 "HDR сохраняется: HEVC 10 бит с тем же описанием цвета (HLG, PQ), Dolby Vision, HDR Vivid и HDR10+ — в каждом кадре. Без B-кадров, ключевой кадр каждую секунду — плавно на телефоне. Звук, дата и место съёмки — как в оригинале. Видео, которые и так весят немного, не трогаются." = "HDR is kept: 10-bit HEVC with the same colour description (HLG, PQ); Dolby Vision, HDR Vivid and HDR10+ in every frame. No B-frames, a key frame every second: smooth on phones. The sound, the date and the place stay as in the original. Videos that already weigh little are left alone.";
 "Среди выбранных файлов нет RAW-фото и видео — сжимать нечего. Обычные JPEG и HEIC уже сжаты." = "There are no RAW photos or videos among the chosen files: nothing to compress. Ordinary JPEG and HEIC files are compressed already.";
 "Станет ≈ %@ — %@ на снимок, %@." = "Will be ≈ %@, %@ a photo, %@.";
@@ -597,6 +599,8 @@
 "Не удалось записать видео" = "The video could not be written";
 "Остановлено" = "Stopped";
 "Сжатое видео получилось неполным" = "The compressed video came out incomplete";
+"в оригинале есть битые кадры: в сжатом их не будет" = "the original has damaged frames: the compressed one would lack them";
+"Звук этого видео не удалось бы сохранить" = "The sound of this video could not be kept";
 "Сжать выбранные RAW-фото и видео (или все показанные, если ничего не выбрано) — сначала покажет, сколько получится" = "Compress the selected RAW photos and videos (or everything shown, when nothing is selected); first it shows what it would give";
 "По размеру" = "By Size";
 "Как делить фото на разделы в окне: по годам, месяцам, дням или по размеру файла (сначала самые большие). На раскладку файлов по папкам не влияет." = "How the window divides photos into sections: by year, month, day or file size (largest first). Does not affect how files are organized into folders.";
@@ -655,7 +659,7 @@
 "Не читаются без FFmpeg (%@): AVI, MKV, WMV — установите его (brew install ffmpeg) и откройте окно снова." = "Not readable without FFmpeg (%@): AVI, MKV, WMV — install it (brew install ffmpeg) and open this window again.";
 "Для этого формата нужен FFmpeg: brew install ffmpeg" = "This format needs FFmpeg: brew install ffmpeg";
 "Уже сжатые — можно дожать: %@ · %@" = "Compressed already, can be squeezed further: %@ · %@";
-"Видео уже в HEVC и близко к выбранному качеству. Их можно сжать ещё раз — каждое повторное сжатие немного теряет в качестве." = "These videos are HEVC already and close to the chosen quality. They can be compressed again; each new pass loses a little quality.";
+"Видео уже в HEVC — так снимает iPhone. Сжатие без видимых потерь уменьшит их на четверть, не больше, а каждое пересжатие чуть портит картинку. Без галочки не трогаются." = "Already HEVC, as an iPhone records. Compressed with no visible loss they get a quarter smaller at most, and each re-encoding spoils the picture a little. Unticked, they are left alone.";
 "Список ▾" = "List ▾";
 "Какие это видео: имя, сколько весит сейчас и сколько будет" = "Which videos these are: the name, what each weighs now and what it will weigh";
 "%@ кадр/с" = "%@ fps";
@@ -665,7 +669,10 @@
 "Копии: оставлять сжатые" = "Copies: keep the compressed";
 "Какая копия остаётся: лучшая по качеству (из копий видео — файл камеры, не перекодированный) — или сжатая, чтобы сжатое не сменилось тяжёлым оригиналом: из RAW и JPEG одного кадра — JPEG, из копий видео — самая лёгкая" = "Which copy stays: the best quality (of copies of a video, the camera's file, not one encoded again), or the compressed one, so that what was compressed is not replaced by a heavy original: of a RAW and a JPEG of one shot the JPEG, of copies of a video the lightest";
 "Видео живых фото: %@ · %@" = "Videos of live photos: %@ · %@";
-"Короткие видео живых фото iPhone и Android (рядом лежит фото с тем же именем). После сжатия они чуть мягче, а весят и так немного — без галочки не трогаются." = "The short videos of iPhone and Android live photos (a photo of the same name lies next to them). Compressed they get a little softer, and they weigh little anyway: unticked, they are left alone.";
+"ещё ищутся" = "still being looked for";
+"Видео живых фото: ищутся…" = "Videos of live photos: being looked for…";
+"Видео живых фото: не найдены" = "Videos of live photos: none found";
+"Короткие видео живых фото iPhone и Android: рядом лежит фото с тем же именем или в видео есть метка живого фото Apple. Весят они и так немного — без галочки не трогаются." = "The short videos of iPhone and Android live photos: a photo of the same name lies next to them, or the video carries Apple's live photo mark. They weigh little anyway: unticked, they are left alone.";
 "Не удалось перенести HDR-данные: " = "The HDR metadata could not be carried over: ";
 "В %@ B-кадры (на телефоне идут рывками) — они будут убраны, кадры и HDR останутся те же: %@" = "%@ have B-frames (jerky on phones): they will be removed, the frames and the HDR stay the same: %@";
 "B-кадры будут убраны" = "B-frames will be removed";

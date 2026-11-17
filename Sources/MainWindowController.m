@@ -2860,11 +2860,8 @@ static NSMapTable<POPhotoItem *, POPhotoItem *> *POKeepersOfDuplicates(NSArray<P
         [NSUserDefaults.standardUserDefaults removeObjectForKey:POUnfinishedFolderKey];
         return;
     }
-    BOOL detectsNudity = POSettings.detectsNudity;
     POAnalyzer *analyzer = [[POAnalyzer alloc] initWithItems:_plan.items];
     _analyzer = analyzer;
-    NSString *notReady = detectsNudity && !POModel.selectedModel.isReady
-        ? POL(@"Модель наготы не загружена — «Настройки»") : nil;
     [_content setAnalysisStatus:POL(@"Распознавание…")];
     _analysisSettings = [self analysisSettings];
     if (POSettings.groupsFaces && POModel.faceModel.isReady) {
@@ -2891,7 +2888,8 @@ static NSMapTable<POPhotoItem *, POPhotoItem *> *POKeepersOfDuplicates(NSArray<P
         [me->_regroupTimer invalidate];
         me->_regroupTimer = nil;
         [NSUserDefaults.standardUserDefaults removeObjectForKey:POUnfinishedFolderKey];
-        [me analysisDidFinishWithMessage:errorMessage ?: notReady];
+        // Nothing at the top but what went wrong: the models are fetched by themselves (AppDelegate). As on Windows.
+        [me analysisDidFinishWithMessage:errorMessage];
     }];
 }
 

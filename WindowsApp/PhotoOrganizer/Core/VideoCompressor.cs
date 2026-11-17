@@ -129,8 +129,12 @@ public static class VideoCompressor
             string pixelFormat = Text(v, "pix_fmt") ?? "";
             // Compressed by the earlier version of this app: HEVC that FFmpeg wrote, with B-frames — jerky on phones.
             var tags = format.TryGetProperty("tags", out var t0) && t0.ValueKind == JsonValueKind.Object ? t0 : (JsonElement?)null;
-            // Written by FFmpeg (this app, or another tool): encoded again after the camera.
-            bool reencoded = tags is { } formatTags && Text(formatTags, "encoder") is { } encoder && encoder.StartsWith("Lavf", StringComparison.Ordinal);
+            // Written by FFmpeg (this app, or another tool): encoded again after the camera. The app keeps the original's
+            // metadata around a compressed picture (HdrCarry.Transplant), so FFmpeg's mark is on the video track.
+            var streamTags = v.TryGetProperty("tags", out var st) && st.ValueKind == JsonValueKind.Object ? st : (JsonElement?)null;
+            bool reencoded = (tags is { } formatTags && Text(formatTags, "encoder") is { } encoder && encoder.StartsWith("Lavf", StringComparison.Ordinal))
+                             || (streamTags is { } videoTags && Text(videoTags, "encoder") is { } coder && coder.StartsWith("Lavc", StringComparison.Ordinal));
+            bool live = tags is { } appleTags && Text(appleTags, "com.apple.quicktime.content.identifier") is { Length: > 0 };
             bool stutters = Text(v, "codec_name") == "hevc" && Int(v, "has_b_frames") > 0 && reencoded;
             // HDR with dynamic metadata — Dolby Vision (iPhone), HDR Vivid (Honor, Huawei), HDR10+ (Samsung): how bright
             // each scene is shown, which no encoder here writes again; HdrCarry puts it back into the compressed file.
@@ -139,7 +143,8 @@ public static class VideoCompressor
             return new VideoInfo(width, height, fps, duration,
                                  Long(v, "bit_rate"), audio is { } au ? Long(au, "bit_rate") : 0, Long(format, "bit_rate"),
                                  Text(v, "codec_name") ?? "", Text(v, "color_primaries"), Text(v, "color_transfer"), Text(v, "color_space"),
-                                 pixelFormat.Contains("10") || pixelFormat.Contains("12"), rotation, kept, stutters, nominal, dynamic, flat, reencoded);
+                                 pixelFormat.Contains("10") || pixelFormat.Contains("12"), rotation, kept, stutters, nominal, dynamic, flat, reencoded, live,
+                                 pixelFormat.StartsWith("yuvj", StringComparison.Ordinal) || Text(v, "color_range") == "pc");
         }
         catch (Exception e) when (e is JsonException or KeyNotFoundException or InvalidOperationException or FormatException)
         {
@@ -190,7 +195,9 @@ public static class VideoCompressor
     // 4: the videos the earlier version compressed with B-frames are told (VideoInfo.Stutters), and the stated frame rate.
     // 6: videos with dynamic HDR metadata are told (VideoInfo.DynamicHdr), to carry it over.
     // 7: videos whose frames are marked shown in the order stored, though reordered (FlatTimestamps).
-    static string ProbedPath => AppData.File("video-info-8.json");
+    // 9: live photos' videos are told by Apple's identifier (VideoInfo.LivePhoto); FFmpeg's mark is read off the video
+    // track too.
+    static string ProbedPath => AppData.File("video-info-10.json");
     static int _probedChanged;
 
     /// <summary>
@@ -215,18 +222,27 @@ public static class VideoCompressor
         if (info == null) return null;
         Probed.Value[path] = new ProbedFile(size, written, info);
         Interlocked.Exchange(ref _probedChanged, 1);
+        // Written as it goes, every 200 videos: written only at the end, a window or app closed halfway through 10 000
+        // videos lost all that was read, and the next time began again from the first.
+        if (Interlocked.Increment(ref _probedSinceSave) % 200 == 0) SaveProbed();
         return info;
     }
 
+    static int _probedSinceSave;
+    static readonly Lock SaveLock = new();
+
     public static void SaveProbed()
     {
-        if (Interlocked.Exchange(ref _probedChanged, 0) == 0) return;
-        try
+        lock (SaveLock)
         {
-            AppData.WriteAtomically(ProbedPath, JsonSerializer.Serialize(new Dictionary<string, ProbedFile>(Probed.Value)));
-        }
-        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
-        {
+            if (Interlocked.Exchange(ref _probedChanged, 0) == 0) return;
+            try
+            {
+                AppData.WriteAtomically(ProbedPath, JsonSerializer.Serialize(new Dictionary<string, ProbedFile>(Probed.Value)));
+            }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+            {
+            }
         }
     }
 
@@ -258,6 +274,20 @@ public static class VideoCompressor
     // --- Encoding -------------------------------------------------------------------------------------------------
 
     static string? _encoder;
+
+    /// <summary>
+    /// NVIDIA's preset and first pass for a compressing. At constant quality the preset changes the speed, hardly the
+    /// picture: at quality 25 on the shaky video of grass p7 with a full-size first pass gave VMAF 99.30 in 86 s, p6
+    /// 99.28 in 77 s, p5 with a quarter-size first pass 99.23 in 24 s — the same picture three times as fast.
+    /// </summary>
+    const string NvencPreset = "p5", NvencMultipass = "qres";
+
+    /// <summary>
+    /// Frames the encoder looks ahead to share out the quality. Without it every video started smeared: the first
+    /// second of a 4K video brought to 1080p came to VMAF 66 rising to 89 (the face and the leaves soft), with 20
+    /// frames 91 from the first frame on, for 15 % more bits — and no slower.
+    /// </summary>
+    const string NvencLookahead = "20";
 
     /// <summary>The encoder once it has been tried (see Encoder, which takes a moment the first time); null before.</summary>
     public static string? KnownEncoder => _encoder;
@@ -296,25 +326,80 @@ public static class VideoCompressor
     /// </summary>
     /// <summary>
     /// The moments the frames are shown at, in order, with how long each stays: the frames from the start the edit list
-    /// sets (frames before it are marked with a moment below zero). Null when the file can't be read.
+    /// sets (frames before it are marked with a moment below zero). Only frames that are shown: not those marked to be
+    /// discarded (Boomerang ends on one: 72 stored, 71 shown), and one per moment (a video of 1 811 stored frames, 279 of
+    /// them at the moment of another, shows 1 532 — as the file says, and as players show). Null when the file can't be read.
     /// </summary>
     static List<(double At, double For)>? Moments(string path)
     {
         if (FFprobe is not { } probe) return null;
-        string output = Run(probe, ["-v", "error", "-select_streams", "v:0", "-show_entries", "packet=pts_time,duration_time", "-of", "csv=p=0", path],
+        string output = Run(probe, ["-v", "error", "-select_streams", "v:0", "-show_entries", "packet=pts_time,duration_time,flags", "-of", "csv=p=0", path],
                             TimeSpan.FromMinutes(5), out int code);
         if (code != 0) return null;
         var moments = new List<(double, double)>();
+        var seen = new HashSet<long>();
         foreach (string line in output.Split('\n'))
         {
             string[] parts = line.Trim().TrimEnd(',').Split(',');
             if (parts.Length == 0 || parts[0].Length == 0) continue;
             if (!double.TryParse(parts[0], NumberStyles.Float, CultureInfo.InvariantCulture, out double at)) return null;
             double lasts = parts.Length > 1 && double.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out double d) ? d : 0;
-            if (at >= -0.0001) moments.Add((at, lasts));
+            if (parts.Length > 2 && parts[2].Contains('D')) continue;
+            if (at >= -0.0001 && seen.Add((long)Math.Round(at * 1_000_000))) moments.Add((at, lasts));
         }
         moments.Sort((a, b) => a.Item1.CompareTo(b.Item1));
-        return moments;
+        // Two frames at one moment are one shown: in the compressed file the second is put a tick later (a millionth of
+        // a second), where the muxer cannot write two at one moment — a video of 1 141 stored frames, its last two at
+        // 47.453215, came back with 1 141 shown instead of 1 140. No real frames come half a millisecond apart.
+        var shown = new List<(double, double)>(moments.Count);
+        foreach (var moment in moments)
+            if (shown.Count == 0 || moment.Item1 - shown[^1].Item1 > 0.0005) shown.Add(moment);
+        return shown;
+    }
+
+    /// <summary>
+    /// How the compressed video looks against the original, by VMAF on every frame of four pieces of 2 s: the very
+    /// start (where an encoder that had not yet seen what comes made every video smeared, VMAF 66) and at 30, 60 and
+    /// 90 % (the busiest scene is anywhere). The original is scaled to the compressed size, as it would be shown. The
+    /// worst piece's mean and the mean of all; null when it cannot be measured (FFmpeg without libvmaf).
+    /// </summary>
+    public static (double Worst, double Mean)? Quality(string original, string compressed, VideoInfo info)
+    {
+        if (FFmpeg is not { } ffmpeg || Probe(compressed) is not { } done) return null;
+        bool turned = Math.Abs(done.Rotation) % 180 == 90;
+        int width = turned ? done.Height : done.Width, height = turned ? done.Width : done.Height;
+        var starts = new List<double> { 0 };
+        if (info.Duration > 8) starts.AddRange(new[] { 0.3, 0.6, 0.9 }.Select(at => Math.Max(2, info.Duration * at - 2)));
+        double worst = 100, sum = 0;
+        foreach (double start in starts)
+        {
+            string at = start.ToString("0.###", CultureInfo.InvariantCulture);
+            // Frame by frame in the order shown, both on one clock: the files' own time bases differ (1/600, 1/90000),
+            // and paired by time the frames would not be the same ones.
+            string output = Run(ffmpeg, ["-hide_banner", "-nostdin", "-v", "info", "-noautorotate", "-ss", at, "-t", "2", "-i", compressed,
+                                         "-noautorotate", "-ss", at, "-t", "2", "-i", original, "-lavfi",
+                                         $"[0:v]settb=1/1000,setpts=N,format=yuv420p[d];[1:v]scale={width}:{height}:flags=lanczos,settb=1/1000,setpts=N,format=yuv420p[o];[d][o]libvmaf=n_threads={Math.Max(2, Environment.ProcessorCount / 2)}",
+                                         "-fps_mode", "passthrough", "-f", "null", "-"], TimeSpan.FromMinutes(5), out int code, stderr: true);
+            int found = output.LastIndexOf("VMAF score:", StringComparison.Ordinal);
+            if (code != 0 || found < 0) return null;
+            string number = output[(found + 11)..].Trim().Split('\n')[0].Trim();
+            if (!double.TryParse(number, NumberStyles.Float, CultureInfo.InvariantCulture, out double score)) return null;
+            worst = Math.Min(worst, score);
+            sum += score;
+        }
+        return (worst, sum / starts.Count);
+    }
+
+    /// <summary>Compress's answer for an original whose frames cannot all be decoded (see Compressor.Video).</summary>
+    public const string Damaged = "the original has frames that cannot be decoded";
+
+    /// <summary>How many frames FFmpeg's decoder makes of the video (every one decoded: a minute for a long one). Null when it fails.</summary>
+    static int? DecodedFrames(string path)
+    {
+        if (FFprobe is not { } probe) return null;
+        string output = Run(probe, ["-v", "quiet", "-select_streams", "v:0", "-count_frames", "-show_entries", "stream=nb_read_frames", "-of", "csv=p=0", path],
+                            TimeSpan.FromMinutes(10), out int code);
+        return code == 0 && int.TryParse(output.Trim().TrimEnd(','), out int frames) ? frames : null;
     }
 
     /// <summary>
@@ -347,7 +432,7 @@ public static class VideoCompressor
         // which every device that plays HEVC plays) takes them.
         foreach (bool tenBit in info.TenBit || info.Hdr ? [true] : new[] { false, true })
         {
-            if (Encoder == "hevc_nvenc" && info.Rotation % 90 == 0)
+            if (Encoder == "hevc_nvenc" && info.Rotation % 90 == 0 && !(info.FullRange && Scaled(info, job)))
             {
                 error = Encode(source, destination, info, job, onCard: true, tenBit, progress, token);
                 if (error == null || token.IsCancellationRequested) return error;
@@ -357,6 +442,67 @@ public static class VideoCompressor
         }
         return error;
     }
+
+    /// <summary>
+    /// What three pieces of 4 s (at a fifth, the middle and four fifths of the video) come to on the card, against what
+    /// the original spends on them: whether the whole is worth compressing, in a second rather than minutes. Null when it
+    /// cannot be told (shorter than 40 s, not on NVIDIA's card, turned other than by quarters, or a piece failed): the
+    /// whole is compressed and its size decides.
+    /// </summary>
+    public static double? TrialRatio(string source, VideoInfo info, VideoJob job, CancellationToken token)
+    {
+        if (FFmpeg is not { } ffmpeg || FFprobe is not { } probe || Encoder != "hevc_nvenc" || info.Duration < 40 || info.Rotation % 90 != 0
+            || (info.FullRange && Scaled(info, job))) return null;
+        bool turned = Math.Abs(info.Rotation) % 180 == 90, tenBit = info.TenBit || info.Hdr;
+        int width = turned ? job.Height : job.Width, height = turned ? job.Width : job.Height;
+        int cq = Compression.VideoCq(info, job);
+        string keyEvery = KeyEvery(info);
+        long encoded = 0, original = 0;
+        string piece = Path.Combine(Path.GetTempPath(), $"photoorganizer-trial-{Guid.NewGuid():N}.hevc");
+        try
+        {
+            foreach (double at in new[] { 0.2, 0.5, 0.8 })
+            {
+                if (token.IsCancellationRequested) return null;
+                string start = (info.Duration * at).ToString("0.###", CultureInfo.InvariantCulture);
+                Run(ffmpeg, ["-hide_banner", "-nostdin", "-y", "-v", "error", "-hwaccel", "cuda", "-hwaccel_output_format", "cuda", "-noautorotate",
+                             "-ss", start, "-t", "4", "-i", source, "-map", "0:v:0", "-an",
+                             "-vf", $"scale_cuda={width}:{height}:interp_algo=lanczos:format={(tenBit ? "p010le" : "nv12")}",
+                             "-c:v", "hevc_nvenc", "-preset", NvencPreset, "-tune", "hq", "-multipass", NvencMultipass, "-rc", "vbr",
+                             "-cq", cq.ToString(CultureInfo.InvariantCulture), "-b:v", "0", "-rc-lookahead", NvencLookahead,
+                             // Every frame as it comes, none added: a screen recording has frames only where the screen
+                             // changed, and evened out to its rate a piece came to 97 % where the whole came to 39.
+                             "-bf", "0", "-g", keyEvery, "-profile:v", tenBit ? "main10" : "main", "-fps_mode", "passthrough", "-f", "hevc", piece],
+                    TimeSpan.FromMinutes(2), out int code);
+                if (code != 0 || !File.Exists(piece)) return null;
+                encoded += new FileInfo(piece).Length;
+                // What the original spends on the same 4 s.
+                string sizes = Run(probe, ["-v", "error", "-select_streams", "v:0", "-read_intervals", $"{start}%+4",
+                                           "-show_entries", "packet=size", "-of", "csv=p=0", source], TimeSpan.FromMinutes(1), out code);
+                if (code != 0) return null;
+                foreach (string line in sizes.Split('\n'))
+                    if (long.TryParse(line.Trim().TrimEnd(','), out long bytes)) original += bytes;
+            }
+        }
+        finally
+        {
+            TryDelete(piece);
+        }
+        return original > 0 && encoded > 0 ? (double)encoded / original : null;
+    }
+
+    /// <summary>
+    /// A key frame every second, at least every second frame: NVIDIA's encoder will not open with one every frame (a video of
+    /// a frame a second, 15 frames of a slideshow: "Gop Length should be greater than number of B frames + 1").
+    /// </summary>
+    static string KeyEvery(VideoInfo info) => Math.Max(2, (int)Math.Round(info.Fps > 0 ? info.Fps : 30)).ToString(CultureInfo.InvariantCulture);
+
+    /// <summary>
+    /// Whether `job` changes the video's size. NVIDIA's scaler takes a full-range video (an iPhone's screen recording,
+    /// yuvj420p) for a limited-range one when it scales it: text came out bold and ringed, PSNR 16-18 against the same
+    /// scaling on the processor where every other video came to 45-51. Such a video is scaled on the processor.
+    /// </summary>
+    static bool Scaled(VideoInfo info, VideoJob job) => job.Width != info.Width || job.Height != info.Height;
 
     static string? Encode(string source, string destination, VideoInfo info, VideoJob job, bool onCard, bool tenBit, Action<VideoProgress>? progress, CancellationToken token)
     {
@@ -395,17 +541,27 @@ public static class VideoCompressor
         string buffer = (target * 3 / 1000).ToString(CultureInfo.InvariantCulture) + "k";
         // Built as a camera builds it: no B-frames (frames that wait for later ones) and a key frame every second. With
         // B-frames and a key frame every four seconds, phones played it in jerks; the computer smoothly.
-        string keyEvery = Math.Max(1, (int)Math.Round(info.Fps > 0 ? info.Fps : 30)).ToString(CultureInfo.InvariantCulture);
+        string keyEvery = KeyEvery(info);
+        // To a quality, not a bitrate, where the encoder can: it holds the same quality all through and gives a busy scene
+        // the bits it needs. To 6 Mbit/s a shaky video of grass came out at VMAF 95 against the original, its worst frames
+        // 74 (smeared grass); at constant quality 25, 12 Mbit/s and VMAF 99.3, its worst frames 89. A peak may go up to
+        // the original's bitrate, never the whole file: what comes out no lighter than 0.8 of it is not kept (Compressor).
+        int cq = Compression.VideoCq(info, job);
+        long cap = Math.Max(original, target * 2);
+        string peak = (cap / 1000).ToString(CultureInfo.InvariantCulture) + "k", peakBuffer = (cap * 2 / 1000).ToString(CultureInfo.InvariantCulture) + "k";
         args.AddRange(encoder switch
         {
             // A rebuild at the fastest preset: the card's encoder is the limit (1 200 frames a second, three videos at once).
             "hevc_nvenc" when job.Rebuild => ["-preset", "p1", "-tune", "hq", "-rc", "vbr", "-b:v", rate, "-maxrate", maxRate, "-bufsize", buffer,
                                               "-bf", "0", "-g", keyEvery],
-            "hevc_nvenc" => ["-preset", "p6", "-tune", "hq", "-rc", "vbr", "-b:v", rate, "-maxrate", maxRate, "-bufsize", buffer,
-                             "-multipass", "fullres", "-spatial-aq", "1", "-temporal-aq", "1", "-bf", "0", "-g", keyEvery],
+            "hevc_nvenc" => ["-preset", NvencPreset, "-tune", "hq", "-multipass", NvencMultipass, "-rc", "vbr", "-cq", cq.ToString(CultureInfo.InvariantCulture),
+                             "-b:v", "0", "-maxrate", peak, "-bufsize", peakBuffer, "-rc-lookahead", NvencLookahead, "-bf", "0", "-g", keyEvery],
             "hevc_qsv" => ["-preset", "slower", "-b:v", rate, "-maxrate", maxRate, "-bufsize", buffer, "-bf", "0", "-g", keyEvery],
             "hevc_amf" => ["-quality", "quality", "-rc", "vbr_peak", "-b:v", rate, "-maxrate", maxRate, "-bf", "0", "-g", keyEvery],
-            _ => ["-preset", "medium", "-b:v", rate, "-x265-params", $"vbv-maxrate={target * 3 / 2 / 1000}:vbv-bufsize={target * 3 / 1000}:bframes=0:keyint={keyEvery}"],
+            // x265's constant rate factor sits about three below NVENC's quality for the same picture.
+            _ when job.Rebuild => ["-preset", "medium", "-b:v", rate, "-x265-params", $"vbv-maxrate={target * 3 / 2 / 1000}:vbv-bufsize={target * 3 / 1000}:bframes=0:keyint={keyEvery}"],
+            _ => ["-preset", "medium", "-crf", (cq - 3).ToString(CultureInfo.InvariantCulture),
+                  "-x265-params", $"vbv-maxrate={cap / 1000}:vbv-bufsize={cap * 2 / 1000}:bframes=0:keyint={keyEvery}"],
         });
         args.AddRange(["-profile:v", tenBit ? "main10" : "main"]);
         // Every frame at its own moment: the encoder in the source's time base. In one of a frame a second (a video
@@ -477,6 +633,15 @@ public static class VideoCompressor
                 TryDelete(encoded);
                 if (code != 0) return Fail("the turn of the video could not be written");
             }
+            // The sound, Apple's metadata tracks, the date, the place and the camera: the original's own, byte for byte,
+            // around the new picture — FFmpeg drops the AAC priming frames the edit list hides and cannot write the
+            // metadata tracks (mebx). When that cannot be done (a fragmented file), FFmpeg's copy stays.
+            if (!foreign)
+            {
+                string whole = destination + ".tracks";
+                if (HdrCarry.Transplant(source, destination, whole) == null) File.Move(whole, destination, overwrite: true);
+                else TryDelete(whole);
+            }
             if (info.DynamicHdr != null)
             {
                 // The original's dynamic HDR metadata into every frame (FFmpeg's encoders drop it): the phone shows the
@@ -503,6 +668,35 @@ public static class VideoCompressor
         {
             return Fail("the compressed video is incomplete");
         }
+        // Every frame at the moment it was shown at, as the camera timed it: a phone's frames come at varying intervals
+        // (an iPhone's "60" is 58 to 60 a second, slowing in the dark), and a frame dropped, doubled or evened out would
+        // show as a jerk. Not for a video whose moments were wrong and are made afresh (FlatTimestamps), nor for one of
+        // another container, whose times FFmpeg reads its own way.
+        if (!info.FlatTimestamps && !foreign && !job.Rebuild)
+        {
+            if (now.Count != was.Count)
+            {
+                // Fewer because the original's own cannot all be decoded (a file of 6 834 stored frames, 4 800 moments,
+                // of which the decoder makes 3 562 to 3 841, differently each time): no compressing will have them.
+                if (now.Count < was.Count && DecodedFrames(source) is { } decoded && decoded < was.Count) return Fail(Damaged);
+                return Fail($"the compressed video has {now.Count} frames instead of {was.Count}");
+            }
+            // A video without sound may start later as a whole: FFmpeg starts the new file at its first frame (one whose
+            // first frame was at 0.05 s, with nothing before it, came back from 0). With nothing to keep in step with, the
+            // frames are compared from the first; with sound, to the moment.
+            double shift = info.AudioBitrate == 0 && now.Count > 0 ? now[0].At - was[0].At : 0;
+            int moved = 0;
+            double farthest = 0;
+            for (int i = 0; i < was.Count; i++)
+            {
+                double off = Math.Abs(now[i].At - shift - was[i].At);
+                if (off > 0.002) { moved++; farthest = Math.Max(farthest, off); }
+            }
+            // A few frames at a splice in the original, where its moments go back and forth (a frame stored for 229.079
+            // shown between 228.999 and 229.119), are put by the decoder at the next tick of the rate: 3 of 10 034, by
+            // 40–100 ms, unseen. More, or farther, is a change of the timing.
+            if (moved > 0 && (moved * 1000 > was.Count || farthest > 0.2)) return Fail($"{moved} frames of the compressed video are at other moments than in the original");
+        }
         // A rebuild replaces a file whose original is gone: every frame there, none of them waiting for a later one.
         if (job.Rebuild)
         {
@@ -527,9 +721,12 @@ public static class VideoCompressor
 
         string Fail(string why)
         {
+            if (Environment.GetEnvironmentVariable("PHOTOORGANIZER_KEEP_FAILED") == "1" && File.Exists(destination))
+                File.Copy(destination, destination + ".failed", overwrite: true);
             TryDelete(destination);
             TryDelete(destination + ".turn");
             TryDelete(destination + ".hdr");
+            TryDelete(destination + ".tracks");
             return why;
         }
     }
@@ -540,7 +737,8 @@ public static class VideoCompressor
     }
 
 
-    static string Run(string exe, IEnumerable<string> args, TimeSpan timeout, out int exitCode)
+    /// <summary>Runs `exe` and returns what it wrote to its output — or, with `stderr`, to its error stream (FFmpeg's reports).</summary>
+    static string Run(string exe, IEnumerable<string> args, TimeSpan timeout, out int exitCode, bool stderr = false)
     {
         var start = new ProcessStartInfo(exe) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true };
         foreach (string arg in args) start.ArgumentList.Add(arg);
@@ -556,8 +754,7 @@ public static class VideoCompressor
                 return "";
             }
             exitCode = process.ExitCode;
-            _ = error.Result;
-            return output.Result;
+            return stderr ? error.Result : output.Result;
         }
         catch (Exception e) when (e is System.ComponentModel.Win32Exception or IOException)
         {

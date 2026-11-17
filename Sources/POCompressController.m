@@ -1,8 +1,12 @@
 #import "POCompressController.h"
 #import "POStrings.h"
+#import "POMediaTypes.h"
 
 static NSString *const POCompressVideoHeightKey = @"compressVideoHeight";
-static NSString *const POCompressVideoQualityKey = @"compressVideoQuality";
+static NSString *const POCompressVideoQualityKey = @"compressVideoLevel";
+
+@interface POCompressController () <NSPopoverDelegate>
+@end
 
 @implementation POCompressController {
     NSArray<POPhotoItem *> *_raws, *_allVideos;
@@ -26,6 +30,7 @@ static NSString *const POCompressVideoQualityKey = @"compressVideoQuality";
     BOOL _liveOn;
     NSMutableArray<NSArray<NSArray *> *> *_rowJobs;   // the videos of each row of resolutions, for its list (by the button's tag)
     NSPopover *_listPopover;
+    BOOL _classesStale;   // the rows are to be built anew once the open list closes
 }
 
 - (instancetype)initWithItems:(NSArray<POPhotoItem *> *)items library:(NSArray<POPhotoItem *> *)library {
@@ -146,9 +151,9 @@ static NSStackView *POIndented(NSArray<NSView *> *views) {
         _heightPopup.target = self;
         _heightPopup.action = @selector(update);
         _qualityPopup = [NSPopUpButton new];
-        [_qualityPopup addItemsWithTitles:@[POL(@"Максимальное"), POL(@"Высокое — без видимых потерь"), POL(@"Экономное")]];
+        [_qualityPopup addItemsWithTitles:@[POL(@"Максимальное качество"), POL(@"Без видимых потерь — рекомендуется"), POL(@"Высокое"), POL(@"Среднее"), POL(@"Максимальное сжатие")]];
         id savedQuality = [NSUserDefaults.standardUserDefaults objectForKey:POCompressVideoQualityKey];
-        [_qualityPopup selectItemAtIndex:MIN(MAX(savedQuality ? [savedQuality integerValue] : POCompressionDefaultVideoQuality, 0), 2)];
+        [_qualityPopup selectItemAtIndex:MIN(MAX(savedQuality ? [savedQuality integerValue] : POCompressionDefaultVideoQuality, 0), 4)];
         _qualityPopup.target = self;
         _qualityPopup.action = @selector(update);
         _videoEstimate = POHint(@"");
@@ -222,6 +227,13 @@ static NSStackView *POIndented(NSArray<NSView *> *views) {
     return MAX(_qualityPopup.indexOfSelectedItem, 0);
 }
 
+/// A live photo's video: next to a photo of its name, or — whatever it is called (IMG_5871_HEVC.MOV beside
+/// IMG_5871.HEIC: 359 of them in one library went in with the other videos) — carrying Apple's live photo identifier.
+/// As on Windows.
+- (BOOL)isLive:(NSArray *)video {
+    return [_live containsObject:video[0]] || ((POVideoInfo *)video[1]).livePhoto;
+}
+
 - (NSArray<POPhotoItem *> *)photos {
     return _photosCheckbox.state == NSControlStateValueOn ? _raws : @[];
 }
@@ -230,7 +242,7 @@ static NSStackView *POIndented(NSArray<NSView *> *views) {
     if (_videosCheckbox.state != NSControlStateValueOn) return @[];
     NSMutableArray<NSArray *> *videos = [NSMutableArray array];
     for (NSArray *video in [self allJobs]) {
-        BOOL live = [_live containsObject:video[0]] && !((POVideoJob *)video[2]).rebuild;
+        BOOL live = [self isLive:video] && !((POVideoJob *)video[2]).rebuild;
         BOOL on = live ? _liveOn : ((POVideoJob *)video[2]).again ? _againOn : _classOn[POVideoResolutionClass(video[1])];
         if (on) [videos addObject:video];
     }
@@ -242,7 +254,7 @@ static NSStackView *POIndented(NSArray<NSView *> *views) {
     NSMutableArray<NSArray *> *videos = [NSMutableArray array];
     for (POPhotoItem *item in _allVideos) {
         POVideoInfo *info = [_probed objectForKey:item];
-        POVideoJob *job = info ? POPlanVideo(info, self.videoHeight, self.videoQuality) : nil;
+        POVideoJob *job = info ? POPlanVideo(info, self.videoHeight, self.videoQuality, (PONameTraits(item) & PONameTraitScreenRecording) != 0) : nil;
         if (job) [videos addObject:@[item, info, job]];
     }
     return videos;
@@ -250,6 +262,13 @@ static NSStackView *POIndented(NSArray<NSView *> *views) {
 
 /// A checkbox for each resolution found: "4K: 1 234 видео · 400 ГБ → 90 ГБ (−78 %)".
 - (void)updateClasses {
+    // While a list is open the rows are not built anew (the videos still being read rebuilt them, and the list went with
+    // its button after a second); they are once it closes. As on Windows.
+    if (_listPopover.isShown) {
+        _classesStale = YES;
+        return;
+    }
+    _classesStale = NO;
     NSArray<NSArray *> *all = [self allJobs];
     NSUInteger found[4] = {0}, count[4] = {0}, planned[4] = {0}, rebuilt[4] = {0}, againCount = 0;
     long long againBefore = 0, againAfter = 0;
@@ -261,7 +280,7 @@ static NSStackView *POIndented(NSArray<NSView *> *views) {
     for (NSArray *video in all) {
         NSInteger kind = POVideoResolutionClass(video[1]);
         planned[kind]++;
-        if ([_live containsObject:video[0]] && !((POVideoJob *)video[2]).rebuild) continue;   // a row of their own
+        if ([self isLive:video] && !((POVideoJob *)video[2]).rebuild) continue;   // a row of their own
         if (((POVideoJob *)video[2]).again) {
             againCount++;
             againBefore += (long long)((POPhotoItem *)video[0]).fileSize;
@@ -285,7 +304,7 @@ static NSStackView *POIndented(NSArray<NSView *> *views) {
     NSMutableArray<NSMutableArray<NSArray *> *> *byKind = [NSMutableArray array];
     for (NSInteger kind = 0; kind < 6; kind++) [byKind addObject:[NSMutableArray array]];
     for (NSArray *video in all) {
-        NSInteger row = [_live containsObject:video[0]] && !((POVideoJob *)video[2]).rebuild ? 5 : ((POVideoJob *)video[2]).again ? 4 : POVideoResolutionClass(video[1]);
+        NSInteger row = [self isLive:video] && !((POVideoJob *)video[2]).rebuild ? 5 : ((POVideoJob *)video[2]).again ? 4 : POVideoResolutionClass(video[1]);
         [byKind[row] addObject:video];
     }
     NSArray<NSString *> *names = POVideoResolutionNames();
@@ -315,7 +334,7 @@ static NSStackView *POIndented(NSArray<NSView *> *views) {
         NSString *text = [NSString stringWithFormat:POL(@"Уже сжатые — можно дожать: %@ · %@"), POCount(againCount, POL(@"видео"), POL(@"видео"), POL(@"видео")),
                           POCompressionSaving(againBefore, againAfter)];
         NSButton *again = [NSButton checkboxWithTitle:text target:self action:@selector(againToggled:)];
-        again.toolTip = POL(@"Видео уже в HEVC и близко к выбранному качеству. Их можно сжать ещё раз — каждое повторное сжатие немного теряет в качестве.");
+        again.toolTip = POL(@"Видео уже в HEVC — так снимает iPhone. Сжатие без видимых потерь уменьшит их на четверть, не больше, а каждое пересжатие чуть портит картинку. Без галочки не трогаются.");
         again.state = _againOn ? NSControlStateValueOn : NSControlStateValueOff;
         [_classStack addArrangedSubview:[self row:again listing:byKind[4]]];
     }
@@ -330,7 +349,7 @@ static NSStackView *POIndented(NSArray<NSView *> *views) {
     NSString *liveText = [NSString stringWithFormat:POL(@"Видео живых фото: %@ · %@"), POCount(live.count, POL(@"видео"), POL(@"видео"), POL(@"видео")),
                           POCompressionSaving(liveBefore, liveAfter)];
     NSButton *liveBox = [NSButton checkboxWithTitle:liveText target:self action:@selector(liveToggled:)];
-    liveBox.toolTip = POL(@"Короткие видео живых фото iPhone и Android (рядом лежит фото с тем же именем). После сжатия они чуть мягче, а весят и так немного — без галочки не трогаются.");
+    liveBox.toolTip = POL(@"Короткие видео живых фото iPhone и Android: рядом лежит фото с тем же именем или в видео есть метка живого фото Apple. Весят они и так немного — без галочки не трогаются.");
     liveBox.state = _liveOn ? NSControlStateValueOn : NSControlStateValueOff;
     [_classStack addArrangedSubview:[self row:liveBox listing:live]];
 }
@@ -356,6 +375,8 @@ static NSStackView *POIndented(NSArray<NSView *> *views) {
 /// The videos of a row, in a list under its button: the largest first, each with what it weighs now and what it
 /// should weigh, its size and frame rate.
 - (void)showList:(NSButton *)sender {
+    // A button of rows rebuilt meanwhile (see popoverDidClose:): its list is gone, or another's.
+    if (!sender.window || (NSUInteger)sender.tag >= _rowJobs.count) return;
     if (_listPopover.isShown) [_listPopover close];
     NSArray<NSArray *> *videos = [_rowJobs[(NSUInteger)sender.tag] sortedArrayUsingComparator:^NSComparisonResult(NSArray *a, NSArray *b) {
         unsigned long long sizeA = ((POPhotoItem *)a[0]).fileSize, sizeB = ((POPhotoItem *)b[0]).fileSize;
@@ -387,9 +408,17 @@ static NSStackView *POIndented(NSArray<NSView *> *views) {
     content.view = scroll;
     _listPopover = [NSPopover new];
     _listPopover.behavior = NSPopoverBehaviorTransient;
+    _listPopover.delegate = self;
     _listPopover.contentViewController = content;
     _listPopover.contentSize = scroll.frame.size;
     [_listPopover showRelativeToRect:sender.bounds ofView:sender preferredEdge:NSRectEdgeMaxY];
+}
+
+- (void)popoverDidClose:(NSNotification *)notification {
+    // After the click that closed it has been handled: rebuilding now would pull its button out from under it.
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (self->_classesStale && !self->_listPopover.isShown) [self updateClasses];
+    });
 }
 
 - (void)againToggled:(NSButton *)sender {

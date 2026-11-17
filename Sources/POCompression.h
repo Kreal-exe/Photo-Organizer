@@ -11,7 +11,7 @@ NS_ASSUME_NONNULL_BEGIN
 /// The heights a video may be brought down to: 4K, 1080p, 720p (its shorter side, for a vertical one).
 FOUNDATION_EXPORT NSArray<NSNumber *> *POCompressionVideoHeights(void);
 FOUNDATION_EXPORT const NSInteger POCompressionDefaultVideoHeight;
-/// "Максимальное", "Высокое", "Экономное".
+/// "Максимальное качество", "Без видимых потерь" (the default), "Высокое", "Среднее", "Максимальное сжатие".
 FOUNDATION_EXPORT const NSInteger POCompressionDefaultVideoQuality;
 
 /// A camera RAW photo (DNG, CR2, NEF…).
@@ -51,6 +51,8 @@ FOUNDATION_EXPORT CGSize POCompressedPhotoSize(NSInteger width, NSInteger height
 @property (nonatomic) BOOL flatTimestamps;
 /// Written by FFmpeg (this app, or another tool): encoded again after the camera.
 @property (nonatomic) BOOL reencoded;
+/// The video of a live photo: it carries Apple's identifier that ties it to its photo, whatever the files are called.
+@property (nonatomic) BOOL livePhoto;
 @end
 
 /// A video to compress: its new size (upright) and bitrate, and how large it should come out.
@@ -59,7 +61,7 @@ FOUNDATION_EXPORT CGSize POCompressedPhotoSize(NSInteger width, NSInteger height
 @property (nonatomic) long long bitrate, estimatedSize;
 /// The video is compressed already (HEVC near the quality asked); it can be squeezed further, if asked.
 @property (nonatomic) BOOL again;
-/// The quality asked (0 maximum, 1 high, 2 compact): the encoder works to it rather than to `bitrate`, the plan's
+/// The quality asked (0 nearly the original … 4 maximum compression): the encoder works to it rather than to `bitrate`, the plan's
 /// average, so that a busy scene gets the bits it needs. As on Windows.
 @property (nonatomic) NSInteger quality;
 /// Built again as a camera builds it, at its own size and almost without loss; it replaces the old one even if larger.
@@ -75,7 +77,8 @@ FOUNDATION_EXPORT NSInteger POVideoResolutionClass(POVideoInfo *info);
 /// The same for a size: by the shorter side, so that a vertical video is what its horizontal twin is.
 FOUNDATION_EXPORT NSInteger POResolutionClassOfSize(NSInteger width, NSInteger height);
 /// What compressing a video does; nil when it would gain too little.
-FOUNDATION_EXPORT POVideoJob *_Nullable POPlanVideo(POVideoInfo *info, NSInteger maxHeight, NSInteger quality);
+/// `screenRecording`: compressed whatever its codec (see POPlanVideo).
+FOUNDATION_EXPORT POVideoJob *_Nullable POPlanVideo(POVideoInfo *info, NSInteger maxHeight, NSInteger quality, BOOL screenRecording);
 /// Reads a video's size, frame rate, bitrate and colours; nil when it cannot be read.
 FOUNDATION_EXPORT POVideoInfo *_Nullable POProbeVideo(NSURL *url);
 /// Whether FFmpeg is installed (Homebrew, MacPorts or on the PATH): videos macOS cannot read — AVI of an old camera,

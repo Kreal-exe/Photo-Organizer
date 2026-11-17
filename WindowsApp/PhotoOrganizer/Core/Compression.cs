@@ -22,8 +22,49 @@ public static class Compression
     /// <summary>The heights a video may be brought down to: 4K, 1080p, 720p (its shorter side, for a vertical one).</summary>
     public static readonly int[] VideoHeights = [2160, 1080, 720];
     public const int DefaultVideoHeight = 1080;
-    /// <summary>"Максимальное", "Высокое", "Экономное": how many bits a video keeps relative to the default.</summary>
-    public static readonly double[] VideoQualityFactors = [1.6, 1.0, 0.6];
+    /// <summary>The levels of "Качество", from the original's own picture to the smallest file.</summary>
+    public static string[] VideoQualityNames =>
+    [
+        L("Максимальное качество"),
+        L("Без видимых потерь — рекомендуется"),
+        L("Высокое"),
+        L("Среднее"),
+        L("Максимальное сжатие"),
+    ];
+    /// <summary>
+    /// The constant quality NVIDIA's encoder works to at each level for a video kept at its size (lower is better; x265
+    /// three below), with 20 frames of look-ahead and no adaptive quantisation. Measured with VMAF on every frame
+    /// against the original — a picture above 95 is taken for the original (Netflix), a difference below 2 points is
+    /// seen by no one — on the hardest videos of 2 245 compressed at 28 with AQ before, where a random dozen came to
+    /// 84–99 (4K of leaves 85, its first second 66). Kept at its size, an iPhone's 1080p H.264 at 26 came to VMAF
+    /// 94.7–95.8 at 59–76 % of its size; at 24 to 95.8–96.5 at 76–96 %; at 28 to 92–94. AQ, which moves bits from busy
+    /// parts to flat ones, cost VMAF for the same size (24 with it 92.8, without 93.9 at about the size).
+    /// </summary>
+    static readonly int[] VideoCqKept = [22, 26, 28, 30, 33];
+    /// <summary>
+    /// Brought down (4K to 1080p): only the size is to be lost, the compressing to add nothing a face seen close up would
+    /// show. What is scaled down from 4K is sharper than any 1080p and takes far more bits. Against the 4K brought to
+    /// 1080p without loss, a face and leaves at 22 came to PSNR 36.6–48.5 dB (VMAF 95 said otherwise: the skin and the
+    /// leaves were visibly smoothed), at 16 to 39.9–51.3 — where 1080p kept at its size comes at 26 (43.7–47.7). At 16
+    /// a busy 4K comes to 92–100 % of its size and stays as it is; a calm one to 61–88 %.
+    /// </summary>
+    static readonly int[] VideoCqSmaller = [14, 16, 20, 24, 29];
+
+    /// <summary>The quality NVIDIA's encoder works to for `job` (see VideoCqKept, VideoCqSmaller).</summary>
+    public static int VideoCq(VideoInfo info, VideoJob job)
+    {
+        int level = Math.Clamp(job.Quality, 0, VideoCqKept.Length - 1);
+        bool smaller = (long)job.Width * job.Height < (long)info.Width * info.Height * 0.9;
+        return (smaller ? VideoCqSmaller[level] : VideoCqKept[level]) - job.CqLower;
+    }
+
+    /// <summary>
+    /// The bits a video is expected to keep at each level, relative to 6 Mbit/s for 1080p30 — what the size is guessed
+    /// from, and what the encoders that work to a bitrate (Intel, AMD) are given. From the same measurements: at the
+    /// recommended level 4K brought to 1080p kept 9–30 Mbit/s (a factor of 1.5–5, 2.6 at the middle), an iPhone's 1080p
+    /// H.264 at its size 13–17; each step of quality about 0.77.
+    /// </summary>
+    public static readonly double[] VideoQualityFactors = [3.6, 2.6, 2.0, 1.5, 1.0];
     public const int DefaultVideoQuality = 1;
 
     public static bool IsRaw(PhotoItem item) =>
@@ -105,7 +146,7 @@ public static class Compression
     /// What compressing a video does: its new size and bitrate, or null when it would gain too little — already
     /// small enough and at about that bitrate.
     /// </summary>
-    public static VideoJob? PlanVideo(VideoInfo info, int maxHeight, int quality)
+    public static VideoJob? PlanVideo(VideoInfo info, int maxHeight, int quality, bool screenRecording = false)
     {
         if (info.Width <= 0 || info.Height <= 0 || info.Duration <= 0 || info.Kept != null) return null;
         // Compressed by the earlier version, with B-frames: phones play it in jerks. Built again at its own size and its
@@ -118,6 +159,8 @@ public static class Compression
         }
         var (width, height) = VideoSize(info.Width, info.Height, maxHeight);
         long target = VideoBitrate(width, height, info.Fps, quality);
+        // Brought down it is made at a higher quality (VideoCqSmaller): about 1.8 times the bits of a 1080p of its own.
+        if ((long)width * height < (long)info.Width * info.Height * 0.9) target = (long)(target * 1.8);
         long source = info.VideoBitrate > 0 ? info.VideoBitrate : Math.Max(0, info.TotalBitrate - info.AudioBitrate);
         // An older codec needs more bits for the same picture: H.264 about 1.7 times what HEVC does, MPEG-4, Motion JPEG
         // or DV 2.5 times and more. What it has is weighed as the HEVC it equals — an H.264 720p at 3 Mbit/s is HEVC of
@@ -132,9 +175,17 @@ public static class Compression
         // camera's own HEVC, there is nothing to gain. Under two seconds one key frame is most of the file, and the
         // bitrate says nothing: HEVC that short counts as compressed already.
         double ratio = target > 0 ? (double)source / target : 0;
-        // A camera's own HEVC is never "compressed already", whatever its bitrate: an iPhone's 1080p60 at 13.6 Mbit/s
-        // (1.5 times the plan) was offered only to "squeeze further" and so skipped — it is to be compressed.
-        bool again = info.Codec == "hevc" && (info.Reencoded ? ratio < 1.7 || info.Duration < 2 : info.Duration < 2);
+        // HEVC kept at its size is compressed already — an iPhone's own or another tool's — and squeezed again it gains
+        // little for what it loses: an iPhone's 1080p at VMAF 95 against itself came out at the size it had, at two
+        // thirds VMAF 94. Offered apart, under "Уже сжатые", left alone unless ticked. Brought down to a smaller size
+        // (4K to 1080p) it is compressed like any other: the size chosen is what gains.
+        // A screen recording is HEVC too, but of a still picture that the phone encodes in a hurry: at quality 28 it came
+        // out at 45 % of its size and VMAF 96.5 — compressed like an older codec, whatever its bitrate.
+        // Not one this app (or another tool) has compressed already: that one is HEVC like any other.
+        bool screen = screenRecording && !info.Reencoded;
+        bool smaller = (long)width * height < (long)info.Width * info.Height * 0.9;
+        bool again = hevc && !screen && (!smaller || info.Duration < 2);
+        if (screen) hevc = false;
         // Made smaller too: the bits it has against what the smaller size needs — an iPhone screen recording (1290 wide)
         // is HEVC of so few bits that at 1080 it would come out no lighter.
         // An older codec comes out lighter as HEVC whatever its bitrate: weighed as above, it always gains.
@@ -499,8 +550,10 @@ public static class Compression
 public sealed record VideoInfo(int Width, int Height, double Fps, double Duration, long VideoBitrate, long AudioBitrate, long TotalBitrate,
                                string Codec, string? Primaries, string? Transfer, string? Matrix, bool TenBit, int Rotation = 0,
                                string? Kept = null, bool Stutters = false, double NominalFps = 0, string? DynamicHdr = null, bool FlatTimestamps = false,
-                               bool Reencoded = false)
+                               bool Reencoded = false, bool LivePhoto = false, bool FullRange = false)
 {
+    // LivePhoto: the video of an iPhone's live photo — it carries Apple's identifier that ties it to its photo, whatever
+    // the files are called (IMG_5871.HEIC with IMG_5871_HEVC.MOV, as some exports name them).
     // Kept: why the video is not compressed at all (a 3D video, a second video track) — compressing would lose part of it.
     // FlatTimestamps: the frames are stored out of order (B-frames) but the file says they are shown in the order
     // stored (no ctts): players show them out of order, in jerks. The timestamps are made afresh from the order the
@@ -530,4 +583,4 @@ public sealed record VideoProgress(double Fraction, double Speed, double Fps, lo
 /// <summary>The size a video is made, the bitrate it is encoded to, and what it should come out at.</summary>
 /// Rebuild: a video the earlier version compressed with B-frames (VideoInfo.Stutters), built again as a camera builds it,
 /// at its own size and almost without loss; it replaces the old one even if it comes out larger.
-public sealed record VideoJob(int Width, int Height, long Bitrate, long EstimatedSize, bool Again = false, int Quality = 1, bool Rebuild = false);
+public sealed record VideoJob(int Width, int Height, long Bitrate, long EstimatedSize, bool Again = false, int Quality = 1, bool Rebuild = false, int CqLower = 0);
